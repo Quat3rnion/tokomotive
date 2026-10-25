@@ -10,18 +10,22 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Features
 
-- Supports OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/responses`)
-  and the Anthropic API (`/v1/messages`), with and without streaming.
-- Records five Token Classes: input, output, cache read, cache write
-  (5 minutes) and cache write (1 hour).
+- Supports OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/responses`,
+  `/v1/embeddings`, `/v1/images/generations`, `/v1/images/edits`) and the
+  Anthropic API (`/v1/messages`), with and without streaming.
+- Records seven Token Classes: input, output, cache read, cache write
+  (5 minutes), cache write (1 hour), image input and image output.
 - Uses a Cost Card and a Price Card for each Model. A Price Card is a Markup or
   explicit rates. A Team can override the Price Card of a Model.
 - Supports Context Tiers, for example higher rates above 200,000 input tokens.
 - Issues Virtual Keys to Users. The Provider Keys stay on the server.
-- Rejects requests with HTTP 402 when a User reaches the Budget.
+- Uses a Key Pool for each Provider. After a 429, a 5xx or a connection
+  error, the proxy tries the next key before it sends data to the client.
+- Rejects requests with HTTP 402 when the Budget of the User does not cover
+  the worst-case Price of the request (see Reservation below).
 - Shows requests, tokens, latency, time to first token, Cost, Price and
   Profit per Model, User and Team in the dashboard.
-- Exports Prometheus metrics at `/metrics`.
+- Exports Prometheus metrics at `/metrics`, optionally with a token.
 
 ## Start the proxy
 
@@ -98,6 +102,7 @@ settings.
 | `LLM_ACCOUNTING_LISTEN`           | Replaces `server.listen`.               |
 | `LLM_ACCOUNTING_DATABASE`         | Replaces `server.database`.             |
 | `LLM_ACCOUNTING_ADMIN_PASSWORD`   | The dashboard password.                 |
+| `LLM_ACCOUNTING_METRICS_TOKEN`    | The bearer token for `/metrics`.        |
 | `RUST_LOG`                        | Log level, for example `info`.          |
 
 ## How the proxy calculates amounts
@@ -116,22 +121,32 @@ settings.
 - If a Model has no card, the proxy forwards the request and records an
   Unpriced Entry. After you add a card, open **Ledger > Unpriced** and click
   **Price unpriced entries**.
+- Before a request goes to the Provider, the proxy makes a Reservation of
+  its worst-case Price: the request size divided by 4 as input tokens, plus
+  `max_tokens` (or `server.reserve_output_tokens`) as output tokens. The
+  proxy rejects the request when spend, open Reservations and this
+  Reservation are more than the Budget. The proxy releases the Reservation
+  after it writes the Ledger Entry.
+- For streamed Chat Completions, the proxy adds
+  `stream_options.include_usage`. If the client did not ask for usage, the
+  proxy removes the usage chunk from the stream that the client receives.
 - If a client disconnects during a stream, the proxy continues to read the
   stream to get the full usage. See
   [ADR 0001](docs/adr/0001-drain-aborted-streams.md).
 
 ## Limits
 
-- One Provider Key for each Provider. No key pools and no fallback.
-- The proxy does not record usage for embeddings, images and audio. It
-  forwards these requests and records them as Unpriced Entries.
-- A Budget can be exceeded by a small amount when many requests run at the
-  same time.
-- For streamed Chat Completions, the proxy adds
-  `stream_options.include_usage`. The client then gets one more chunk with
-  usage and no choices.
-- `/metrics` has no authentication. Do not expose it to the internet.
-- Dashboard sessions are in memory. A restart logs out the Operator.
+- The proxy does not fall back to a different Provider or Model.
+- The proxy does not record usage for audio. It forwards these requests and
+  records them as Unpriced Entries.
+- The Reservation uses an estimate of the input tokens. A request can cost
+  more than its Reservation, for example when it refers to files or cached
+  content that is not in the request body. Thus, a Budget can be exceeded by
+  a small amount.
+- Reservations are in memory. Run one proxy process for each database.
+- Cached image input tokens (Responses API) are recorded as image input,
+  not as cache read.
+- `/metrics` has no authentication when `metrics_token` is not set.
 
 ## Development
 

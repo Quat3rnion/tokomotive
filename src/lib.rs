@@ -41,7 +41,20 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn metrics_endpoint(State(st): State<AppState>) -> Response {
+async fn metrics_endpoint(State(st): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(token) = &st.metrics_token {
+        let given = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        if !given.is_some_and(|g| web::ct_eq(g.trim(), token)) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer")],
+            )
+                .into_response();
+        }
+    }
     match &st.metrics {
         Some(h) => (
             [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],

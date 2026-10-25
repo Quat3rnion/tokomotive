@@ -144,6 +144,7 @@ pub struct GroupView {
     pub output: String,
     pub cache_read: String,
     pub cache_write: String,
+    pub image: String,
     pub cost: String,
     pub price: String,
     pub profit: String,
@@ -173,7 +174,8 @@ fn avg_ms(sum: i64, n: i64) -> String {
 }
 
 fn tps(t: &Totals) -> String {
-    if t.latency_ms_sum == 0 {
+    // Below one second of total latency the ratio is noise.
+    if t.latency_ms_sum < 1000 {
         "-".into()
     } else {
         format!("{:.1}", t.output as f64 * 1000.0 / t.latency_ms_sum as f64)
@@ -194,6 +196,7 @@ impl GroupView {
             output: int(t.output),
             cache_read: int(t.cache_read),
             cache_write: int(t.cache_write_5m + t.cache_write_1h),
+            image: format!("{} / {}", int(t.image_input), int(t.image_output)),
             cost: money(t.cost_micros),
             price: money(t.price_micros),
             profit: money(t.price_micros - t.cost_micros),
@@ -231,7 +234,13 @@ impl OverviewPage {
         unpriced: i64,
         estimated: i64,
     ) -> OverviewPage {
-        let tokens = t.input + t.output + t.cache_read + t.cache_write_5m + t.cache_write_1h;
+        let tokens = t.input
+            + t.output
+            + t.cache_read
+            + t.cache_write_5m
+            + t.cache_write_1h
+            + t.image_input
+            + t.image_output;
         let hours = range.span() as f64 / 3600.0;
         let stats = vec![
             Stat {
@@ -247,11 +256,12 @@ impl OverviewPage {
                 label: "Tokens",
                 value: int(tokens),
                 sub: format!(
-                    "in {} / out {} / cache r {} w {}",
+                    "in {} / out {} / cache r {} w {} / image {}",
                     int(t.input),
                     int(t.output),
                     int(t.cache_read),
-                    int(t.cache_write_5m + t.cache_write_1h)
+                    int(t.cache_write_5m + t.cache_write_1h),
+                    int(t.image_input + t.image_output)
                 ),
             },
             Stat {
@@ -306,8 +316,13 @@ impl OverviewPage {
             profit.push((tt.price_micros - tt.cost_micros) as f64 / 1e6);
             reqs.push(tt.requests as f64);
             toks.push(
-                (tt.input + tt.output + tt.cache_read + tt.cache_write_5m + tt.cache_write_1h)
-                    as f64
+                (tt.input
+                    + tt.output
+                    + tt.cache_read
+                    + tt.cache_write_5m
+                    + tt.cache_write_1h
+                    + tt.image_input
+                    + tt.image_output) as f64
                     / 1000.0,
             );
             at += b;
@@ -402,7 +417,7 @@ impl UsersPage {
                 disabled: u.disabled,
                 spend: money(u.period_spend),
                 used: match u.budget_micros {
-                    Some(b) if b > 0 => format!("{:.0}%", u.period_spend as f64 * 100.0 / b as f64),
+                    Some(b) if b > 0 => format!("{:.1}%", u.period_spend as f64 * 100.0 / b as f64),
                     _ => "-".into(),
                 },
                 over: u.budget_micros.is_some_and(|b| u.period_spend >= b),
@@ -485,8 +500,11 @@ pub struct RatesView {
     pub cache_read: String,
     pub cache_write_5m: String,
     pub cache_write_1h: String,
+    pub image_input: String,
+    pub image_output: String,
     pub tiers: String,
     pub tier_count: usize,
+    has_image: bool,
 }
 
 impl RatesView {
@@ -498,6 +516,8 @@ impl RatesView {
                 x.cache_read,
                 x.cache_write_5m,
                 x.cache_write_1h,
+                x.image_input,
+                x.image_output,
             ]
             .map(fmt_rate)
         };
@@ -508,14 +528,39 @@ impl RatesView {
             cache_read: b[2].clone(),
             cache_write_5m: b[3].clone(),
             cache_write_1h: b[4].clone(),
+            image_input: b[5].clone(),
+            image_output: b[6].clone(),
+            has_image: std::iter::once(&c.base)
+                .chain(c.tiers.iter().map(|t| &t.rates))
+                .any(|x| x.image_input != 0 || x.image_output != 0),
             tiers: c
                 .tiers
                 .iter()
-                .map(|t| format!("{} {}", t.above_input_tokens, r(&t.rates).join(" ")))
+                .map(|t| {
+                    let v = r(&t.rates);
+                    // Leave out the image rates when they are zero.
+                    let n = if t.rates.image_input == 0 && t.rates.image_output == 0 {
+                        5
+                    } else {
+                        7
+                    };
+                    format!("{} {}", t.above_input_tokens, v[..n].join(" "))
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
             tier_count: c.tiers.len(),
         }
+    }
+
+    pub fn summary(&self) -> String {
+        let mut s = format!(
+            "in {} / out {} / cache r {} w5m {} w1h {}",
+            self.input, self.output, self.cache_read, self.cache_write_5m, self.cache_write_1h
+        );
+        if self.has_image {
+            s += &format!(" / image in {} out {}", self.image_input, self.image_output);
+        }
+        s
     }
 }
 
@@ -524,11 +569,7 @@ fn describe_price(spec: Option<&PriceSpec>, default_bp: i64) -> String {
         None => format!("default markup {}%", bp_percent(default_bp)),
         Some(PriceSpec::MarkupBp(bp)) => format!("markup {}%", bp_percent(*bp)),
         Some(PriceSpec::Rates(r)) => {
-            let v = RatesView::new(r);
-            format!(
-                "explicit: in {} / out {} / cache r {} w5m {} w1h {}",
-                v.input, v.output, v.cache_read, v.cache_write_5m, v.cache_write_1h
-            )
+            format!("explicit: {}", RatesView::new(r).summary())
         }
     }
 }
@@ -644,15 +685,7 @@ impl ModelPage {
                     serde_json::from_str::<CardRates>(&h.spec)
                         .map(|c| {
                             let v = RatesView::new(&c);
-                            format!(
-                                "in {} / out {} / cache r {} w5m {} w1h {}; {} tier(s)",
-                                v.input,
-                                v.output,
-                                v.cache_read,
-                                v.cache_write_5m,
-                                v.cache_write_1h,
-                                v.tier_count
-                            )
+                            format!("{}; {} tier(s)", v.summary(), v.tier_count)
                         })
                         .unwrap_or_else(|_| h.spec.clone())
                 } else {
@@ -712,6 +745,8 @@ pub struct LedgerView {
     pub output: String,
     pub cache_read: String,
     pub cache_write: String,
+    pub image: String,
+    pub key: String,
     pub cost: String,
     pub price: String,
     pub unpriced: bool,
@@ -755,6 +790,16 @@ impl LedgerPage {
                     output: int(r.output),
                     cache_read: int(r.cache_read),
                     cache_write: int(r.cache_write_5m + r.cache_write_1h),
+                    image: if r.image_input + r.image_output == 0 {
+                        "-".into()
+                    } else {
+                        format!("{} / {}", int(r.image_input), int(r.image_output))
+                    },
+                    key: match (r.provider_key, r.attempts) {
+                        (None, _) => "-".into(),
+                        (Some(k), a) if a > 1 => format!("#{k} ({a} tries)"),
+                        (Some(k), _) => format!("#{k}"),
+                    },
                     cost: money(r.cost_micros),
                     price: money(r.price_micros),
                     unpriced: r.unpriced,

@@ -5,7 +5,7 @@
 <p class="muted">The Budget is a limit on Price (what the user owes). When the user reaches it, the proxy rejects requests with HTTP 402.</p>
 <div class="panel scroll">
 <table>
-  <tr><th>Name</th><th>Team</th><th>Budget (USD)</th><th>Monthly</th><th>Disabled</th><th class="n">Spend this period</th><th class="n">Used</th><th class="n">Keys</th><th></th></tr>
+  <tr><th>Name</th><th colspan="4">Team, Budget (USD), options</th><th class="n">Spend this period</th><th class="n">Used</th><th class="n">Keys</th><th></th></tr>
   {% for u in users %}
   <tr>
     <td>{{ u.name }}</td>
@@ -33,7 +33,7 @@
   <label>Name <input name="name" required style="width:180px"></label>
   <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
   <label>Budget (USD) <input name="budget_usd" placeholder="none"></label>
-  <label><span><input type="checkbox" name="monthly"> reset monthly</span></label>
+  <label class="check"><input type="checkbox" name="monthly"> reset monthly</label>
   <button>Add user</button>
 </form>
 {% endblock %}

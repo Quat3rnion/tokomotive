@@ -24,6 +24,9 @@ pub enum Endpoint {
     ChatCompletions,
     Responses,
     Messages,
+    Embeddings,
+    /// `/v1/images/generations` and `/v1/images/edits`.
+    Images,
     /// Any other path. Forwarded, recorded as an Unpriced Entry.
     Other,
 }
@@ -37,6 +40,10 @@ impl Endpoint {
             Endpoint::Responses
         } else if p.ends_with("/messages") {
             Endpoint::Messages
+        } else if p.ends_with("/embeddings") {
+            Endpoint::Embeddings
+        } else if p.ends_with("/images/generations") || p.ends_with("/images/edits") {
+            Endpoint::Images
         } else {
             Endpoint::Other
         }
@@ -45,7 +52,10 @@ impl Endpoint {
     /// The Provider kind that speaks this endpoint, if the endpoint decides it.
     pub fn native_kind(&self) -> Option<ProviderKind> {
         match self {
-            Endpoint::ChatCompletions | Endpoint::Responses => Some(ProviderKind::Openai),
+            Endpoint::ChatCompletions
+            | Endpoint::Responses
+            | Endpoint::Embeddings
+            | Endpoint::Images => Some(ProviderKind::Openai),
             Endpoint::Messages => Some(ProviderKind::Anthropic),
             Endpoint::Other => None,
         }
@@ -54,12 +64,25 @@ impl Endpoint {
     pub fn is_accounted(&self) -> bool {
         !matches!(self, Endpoint::Other)
     }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Endpoint::ChatCompletions => "chat_completions",
+            Endpoint::Responses => "responses",
+            Endpoint::Messages => "messages",
+            Endpoint::Embeddings => "embeddings",
+            Endpoint::Images => "images",
+            Endpoint::Other => "other",
+        }
+    }
 }
 
 impl ProviderKind {
     /// Mutate the request body before it goes upstream.
     /// For streamed Chat Completions, ask the Provider to report usage.
-    pub fn prepare_body(&self, endpoint: Endpoint, body: &mut Value) {
+    /// Returns true when the Proxy turned on `include_usage` itself; the
+    /// usage-only chunk must then be removed from the client stream.
+    pub fn prepare_body(&self, endpoint: Endpoint, body: &mut Value) -> bool {
         if *self == ProviderKind::Openai
             && endpoint == Endpoint::ChatCompletions
             && is_stream(body)
@@ -69,22 +92,30 @@ impl ProviderKind {
                 .entry("stream_options")
                 .or_insert_with(|| Value::Object(Default::default()));
             if let Some(o) = opts.as_object_mut() {
+                let had = o.get("include_usage").and_then(Value::as_bool) == Some(true);
                 o.insert("include_usage".into(), Value::Bool(true));
+                return !had;
             }
         }
+        false
     }
 
     /// Usage from a non-streamed JSON response body.
-    pub fn usage_from_json(&self, v: &Value) -> Option<Usage> {
-        match self {
-            ProviderKind::Openai => openai_usage(v.get("usage")?),
-            ProviderKind::Anthropic => anthropic_usage(v.get("usage")?, None),
+    pub fn usage_from_json(&self, endpoint: Endpoint, v: &Value) -> Option<Usage> {
+        match (self, endpoint) {
+            (ProviderKind::Openai, Endpoint::Images) => image_usage(v.get("usage")?),
+            (ProviderKind::Openai, _) => openai_usage(v.get("usage")?),
+            (ProviderKind::Anthropic, _) => anthropic_usage(v.get("usage")?, None),
         }
     }
 
-    pub fn new_stream_tracker(&self) -> StreamTracker {
+    /// `strip_usage_chunk`: drop the Chat Completions usage-only chunk from
+    /// the forwarded stream (see `prepare_body`).
+    pub fn new_stream_tracker(&self, endpoint: Endpoint, strip_usage_chunk: bool) -> StreamTracker {
         StreamTracker {
             kind: *self,
+            endpoint: Some(endpoint),
+            strip_usage_chunk,
             ..Default::default()
         }
     }
@@ -133,6 +164,31 @@ fn openai_usage(u: &Value) -> Option<Usage> {
     })
 }
 
+/// OpenAI image generation usage. Output tokens are image tokens. Input is
+/// split into text and image tokens; cached tokens are text tokens.
+fn image_usage(u: &Value) -> Option<Usage> {
+    if !u.is_object() {
+        return None;
+    }
+    let input = int(u, "input_tokens");
+    let (text, image, cached) = match u.get("input_tokens_details").filter(|d| d.is_object()) {
+        Some(d) => (
+            int(d, "text_tokens"),
+            int(d, "image_tokens"),
+            int(d, "cached_tokens"),
+        ),
+        None => (input, 0, 0),
+    };
+    let cached = cached.min(text);
+    Some(Usage {
+        input: text - cached,
+        cache_read: cached,
+        image_input: image,
+        image_output: int(u, "output_tokens"),
+        ..Default::default()
+    })
+}
+
 /// Anthropic usage. Cache tokens are separate from `input_tokens`.
 /// When `prev` is given, fields missing in `u` keep their previous value
 /// (stream `message_delta` events carry only some fields).
@@ -148,6 +204,7 @@ fn anthropic_usage(u: &Value, prev: Option<Usage>) -> Option<Usage> {
         cache_read: get("cache_read_input_tokens", p.cache_read),
         cache_write_5m: p.cache_write_5m,
         cache_write_1h: p.cache_write_1h,
+        ..Default::default()
     };
     match u.get("cache_creation").filter(|c| c.is_object()) {
         Some(cc) => {
@@ -168,6 +225,8 @@ fn anthropic_usage(u: &Value, prev: Option<Usage>) -> Option<Usage> {
 #[derive(Debug, Default)]
 pub struct StreamTracker {
     kind: ProviderKind,
+    endpoint: Option<Endpoint>,
+    strip_usage_chunk: bool,
     buf: Vec<u8>,
     pub usage: Option<Usage>,
     pub model: Option<String>,
@@ -179,29 +238,39 @@ pub struct StreamTracker {
 const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 
 impl StreamTracker {
-    pub fn feed(&mut self, chunk: &[u8]) {
+    /// Process a chunk. Returns the bytes to forward to the client: whole
+    /// events only, without dropped events.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.buf.extend_from_slice(chunk);
+        let mut out = Vec::with_capacity(chunk.len());
         while let Some((end, sep)) = find_event_end(&self.buf) {
             let event: Vec<u8> = self.buf.drain(..end + sep).collect();
-            self.handle_event(&event[..end]);
+            if self.handle_event(&event[..end]) {
+                out.extend_from_slice(&event);
+            }
         }
         if self.buf.len() > MAX_EVENT_BYTES {
-            // A single event this large is not usage data. Drop it.
-            self.buf.clear();
+            // A single event this large is not usage data. Forward it as is.
+            out.append(&mut self.buf);
+        }
+        out
+    }
+
+    /// Call at end of stream. Processes a trailing event with no separator
+    /// and returns the bytes to forward.
+    pub fn finish(&mut self) -> Vec<u8> {
+        let event = std::mem::take(&mut self.buf);
+        if !event.is_empty() && self.handle_event(&event) {
+            event
+        } else {
+            Vec::new()
         }
     }
 
-    /// Call at end of stream to process a trailing event with no separator.
-    pub fn finish(&mut self) {
-        if !self.buf.is_empty() {
-            let event = std::mem::take(&mut self.buf);
-            self.handle_event(&event);
-        }
-    }
-
-    fn handle_event(&mut self, raw: &[u8]) {
+    /// Returns false when the event must not go to the client.
+    fn handle_event(&mut self, raw: &[u8]) -> bool {
         let Ok(text) = std::str::from_utf8(raw) else {
-            return;
+            return true;
         };
         let mut data = String::new();
         for line in text.lines() {
@@ -213,18 +282,39 @@ impl StreamTracker {
             }
         }
         if data.is_empty() || data == "[DONE]" {
-            return;
+            return true;
         }
         let Ok(v) = serde_json::from_str::<Value>(&data) else {
-            return;
+            return true;
         };
         match self.kind {
             ProviderKind::Openai => self.handle_openai(&v),
-            ProviderKind::Anthropic => self.handle_anthropic(&v),
+            ProviderKind::Anthropic => {
+                self.handle_anthropic(&v);
+                true
+            }
         }
     }
 
-    fn handle_openai(&mut self, v: &Value) {
+    fn handle_openai(&mut self, v: &Value) -> bool {
+        // Image generation stream: usage in the `*.completed` event.
+        if self.endpoint == Some(Endpoint::Images) {
+            if let Some(m) = v.get("model").and_then(Value::as_str) {
+                self.model = Some(m.to_owned());
+            }
+            if v.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.ends_with(".partial_image"))
+            {
+                self.saw_content = true;
+            }
+            if let Some(u) = v.get("usage").and_then(image_usage) {
+                self.usage = Some(u);
+                self.usage_final = true;
+                self.saw_content = true;
+            }
+            return true;
+        }
         // Responses API: usage arrives in the `response.completed` event.
         if let Some(t) = v.get("type").and_then(Value::as_str) {
             if let Some(resp) = v.get("response") {
@@ -243,22 +333,27 @@ impl StreamTracker {
             if t == "response.output_text.delta" {
                 self.saw_content = true;
             }
-            return;
+            return true;
         }
         // Chat Completions chunk.
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             self.model = Some(m.to_owned());
         }
-        if v.get("choices")
+        let has_choices = v
+            .get("choices")
             .and_then(Value::as_array)
-            .is_some_and(|c| !c.is_empty())
-        {
+            .is_some_and(|c| !c.is_empty());
+        if has_choices {
             self.saw_content = true;
         }
         if let Some(u) = v.get("usage").and_then(openai_usage) {
             self.usage = Some(u);
             self.usage_final = true;
+            if self.strip_usage_chunk && !has_choices {
+                return false;
+            }
         }
+        true
     }
 
     fn handle_anthropic(&mut self, v: &Value) {
@@ -309,7 +404,9 @@ mod tests {
     fn openai_chat_cached_tokens_are_subtracted_from_input() {
         let v = json!({"usage": {"prompt_tokens": 1000, "completion_tokens": 50,
             "prompt_tokens_details": {"cached_tokens": 800}}});
-        let u = ProviderKind::Openai.usage_from_json(&v).unwrap();
+        let u = ProviderKind::Openai
+            .usage_from_json(Endpoint::ChatCompletions, &v)
+            .unwrap();
         assert_eq!(
             u,
             Usage {
@@ -325,7 +422,9 @@ mod tests {
     fn openai_responses_usage() {
         let v = json!({"usage": {"input_tokens": 300, "output_tokens": 20,
             "input_tokens_details": {"cached_tokens": 100}}});
-        let u = ProviderKind::Openai.usage_from_json(&v).unwrap();
+        let u = ProviderKind::Openai
+            .usage_from_json(Endpoint::ChatCompletions, &v)
+            .unwrap();
         assert_eq!(
             u,
             Usage {
@@ -342,7 +441,9 @@ mod tests {
         let v = json!({"usage": {"input_tokens": 10, "output_tokens": 5,
             "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 300,
             "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}}});
-        let u = ProviderKind::Anthropic.usage_from_json(&v).unwrap();
+        let u = ProviderKind::Anthropic
+            .usage_from_json(Endpoint::Messages, &v)
+            .unwrap();
         assert_eq!(
             u,
             Usage {
@@ -350,7 +451,8 @@ mod tests {
                 output: 5,
                 cache_read: 1000,
                 cache_write_5m: 100,
-                cache_write_1h: 200
+                cache_write_1h: 200,
+                ..Default::default()
             }
         );
     }
@@ -360,7 +462,7 @@ mod tests {
         let v = json!({"usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 42}});
         assert_eq!(
             ProviderKind::Anthropic
-                .usage_from_json(&v)
+                .usage_from_json(Endpoint::Messages, &v)
                 .unwrap()
                 .cache_write_5m,
             42
@@ -384,7 +486,7 @@ mod tests {
             "data: {\"model\":\"gpt-4o-2024-08-06\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\n",
             "data: [DONE]\n\n"
         );
-        let mut t = ProviderKind::Openai.new_stream_tracker();
+        let mut t = ProviderKind::Openai.new_stream_tracker(Endpoint::ChatCompletions, false);
         for c in s.as_bytes().chunks(7) {
             t.feed(c);
         }
@@ -405,7 +507,7 @@ mod tests {
     #[test]
     fn responses_stream_completed_event() {
         let s = "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5\",\"usage\":{\"input_tokens\":7,\"output_tokens\":2}}}\r\n\r\n";
-        let mut t = ProviderKind::Openai.new_stream_tracker();
+        let mut t = ProviderKind::Openai.new_stream_tracker(Endpoint::ChatCompletions, false);
         t.feed(s.as_bytes());
         assert!(t.usage_final);
         assert_eq!(t.usage.unwrap().input, 7);
@@ -418,7 +520,7 @@ mod tests {
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"x\"}}\n\n",
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}\n\n",
         );
-        let mut t = ProviderKind::Anthropic.new_stream_tracker();
+        let mut t = ProviderKind::Anthropic.new_stream_tracker(Endpoint::Messages, false);
         t.feed(s.as_bytes());
         assert!(t.usage_final);
         assert_eq!(
@@ -435,9 +537,69 @@ mod tests {
     #[test]
     fn anthropic_stream_without_delta_is_not_final() {
         let s = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n";
-        let mut t = ProviderKind::Anthropic.new_stream_tracker();
+        let mut t = ProviderKind::Anthropic.new_stream_tracker(Endpoint::Messages, false);
         t.feed(s.as_bytes());
         assert!(!t.usage_final);
         assert_eq!(t.usage.unwrap().input, 20);
+    }
+
+    #[test]
+    fn injected_usage_chunk_is_stripped_but_counted() {
+        let s = concat!(
+            "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut t = ProviderKind::Openai.new_stream_tracker(Endpoint::ChatCompletions, true);
+        let mut out = Vec::new();
+        for c in s.as_bytes().chunks(5) {
+            out.extend(t.feed(c));
+        }
+        out.extend(t.finish());
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("hi") && out.contains("[DONE]"));
+        assert!(!out.contains("usage"));
+        assert_eq!(t.usage.unwrap().output, 3);
+
+        let mut keep = ProviderKind::Openai.new_stream_tracker(Endpoint::ChatCompletions, false);
+        assert_eq!(keep.feed(s.as_bytes()), s.as_bytes());
+    }
+
+    #[test]
+    fn prepare_body_reports_whether_it_injected() {
+        let mut a = json!({"stream": true});
+        assert!(ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut a));
+        let mut b = json!({"stream": true, "stream_options": {"include_usage": true}});
+        assert!(!ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut b));
+    }
+
+    #[test]
+    fn embeddings_and_images_usage() {
+        let e = json!({"usage": {"prompt_tokens": 12, "total_tokens": 12}});
+        assert_eq!(
+            ProviderKind::Openai
+                .usage_from_json(Endpoint::Embeddings, &e)
+                .unwrap(),
+            Usage {
+                input: 12,
+                ..Default::default()
+            }
+        );
+        let i = json!({"usage": {"input_tokens": 120, "output_tokens": 4160,
+            "input_tokens_details": {"text_tokens": 50, "image_tokens": 70, "cached_tokens": 10}}});
+        assert_eq!(
+            ProviderKind::Openai
+                .usage_from_json(Endpoint::Images, &i)
+                .unwrap(),
+            Usage {
+                input: 40,
+                cache_read: 10,
+                image_input: 70,
+                image_output: 4160,
+                ..Default::default()
+            }
+        );
+        assert_eq!(Endpoint::from_path("/v1/images/edits"), Endpoint::Images);
+        assert_eq!(Endpoint::from_path("/v1/embeddings"), Endpoint::Embeddings);
     }
 }

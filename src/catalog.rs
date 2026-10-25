@@ -27,6 +27,8 @@ pub struct Catalog {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Quote {
     pub model_id: Option<i64>,
+    /// The name of the matched Model (not the dated name from the response).
+    pub model_name: Option<String>,
     pub cost_micros: i64,
     pub price_micros: i64,
     pub cost_card_id: Option<i64>,
@@ -71,6 +73,7 @@ impl Catalog {
         let Some((cost_id, cost)) = &entry.cost else {
             return Quote {
                 model_id: Some(entry.id),
+                model_name: Some(entry.name.clone()),
                 unpriced: true,
                 ..Default::default()
             };
@@ -82,6 +85,7 @@ impl Catalog {
         };
         Quote {
             model_id: Some(entry.id),
+            model_name: Some(entry.name.clone()),
             cost_micros: cost.amount(usage),
             price_micros: price_rates.amount(usage),
             cost_card_id: Some(*cost_id),

@@ -4,8 +4,11 @@
 # and Users that are not in the database yet. It does not overwrite changes
 # that you made in the dashboard.
 #
-# All rates are USD per million tokens. Check the rates against the current
-# Provider price lists before you use them.
+# All rates are USD per million tokens. The rates below are the Provider
+# list prices on 2026-10-24, from:
+#   https://developers.openai.com/api/docs/pricing
+#   https://platform.claude.com/docs/en/about-claude/pricing
+# Check them again before you use them.
 
 [server]
 listen = "127.0.0.1:8787"
@@ -15,12 +18,22 @@ admin_password_env = "LLM_ACCOUNTING_ADMIN_PASSWORD"
 # Markup for Models that have no Price Card.
 default_markup_percent = 20
 upstream_timeout_secs = 600
+# When set, /metrics needs "Authorization: Bearer <token>".
+metrics_token_env = "LLM_ACCOUNTING_METRICS_TOKEN"
+# Output tokens that a Budget reservation assumes when a request sets no
+# max_tokens.
+reserve_output_tokens = 4096
+# Dashboard login duration.
+session_days = 7
 
 [[providers]]
 name = "openai"
 kind = "openai"
 base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
+# A key pool: the proxy uses the keys in turn, and tries the next key after a
+# 429, a 5xx or a connection error.
+# api_keys_env = ["OPENAI_API_KEY_2", "OPENAI_API_KEY_3"]
 
 [[providers]]
 name = "anthropic"
@@ -31,6 +44,19 @@ api_key_env = "ANTHROPIC_API_KEY"
 # A Model also matches dated names that start with "<name>-",
 # for example "gpt-4o-2024-08-06". The longest matching name wins.
 
+# ---- OpenAI
+
+[[models]]
+name = "gpt-6.1-sol"
+provider = "openai"
+cost = { input = 2.00, output = 10.00, cache_read = 0.10 }
+
+[[models]]
+name = "gpt-6-luna"
+provider = "openai"
+cost = { input = 0.10, output = 0.50, cache_read = 0.01 }
+price = { input = 0.20, output = 1.00, cache_read = 0.02 }
+
 [[models]]
 name = "gpt-4o"
 provider = "openai"
@@ -40,33 +66,57 @@ cost = { input = 2.50, output = 10.00, cache_read = 1.25 }
 name = "gpt-4o-mini"
 provider = "openai"
 cost = { input = 0.15, output = 0.60, cache_read = 0.075 }
-price = { input = 0.30, output = 1.20, cache_read = 0.15 }
 
 [[models]]
-name = "claude-sonnet-4-5"
+name = "text-embedding-3-small"
+provider = "openai"
+cost = { input = 0.02 }
+
+[[models]]
+name = "text-embedding-3-large"
+provider = "openai"
+cost = { input = 0.13 }
+
+# Image generation: text input, cached text input, image input and image
+# output have different rates.
+[[models]]
+name = "gpt-image-2"
+provider = "openai"
+cost = { input = 5.00, cache_read = 1.25, image_input = 8.00, image_output = 30.00 }
+
+# ---- Anthropic
+
+[[models]]
+name = "claude-opus-5-5"
 provider = "anthropic"
-aliases = ["claude-sonnet-4-5-latest"]
+cost = { input = 4.00, output = 20.00, cache_read = 0.20, cache_write_5m = 5.00, cache_write_1h = 8.00 }
+
+[[models]]
+name = "claude-sonnet-5-5"
+provider = "anthropic"
 price = { markup_percent = 25 }
+cost = { input = 2.00, output = 10.00, cache_read = 0.10, cache_write_5m = 2.50, cache_write_1h = 4.00 }
+
+# Haiku 5.5 has higher rates when the prompt, including cache tokens, is
+# more than 100,000 tokens.
+[[models]]
+name = "claude-haiku-5-5"
+provider = "anthropic"
 
 [models.cost]
-input = 3.00
-output = 15.00
-cache_read = 0.30
-cache_write_5m = 3.75
-cache_write_1h = 6.00
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write_5m = 0.125
+cache_write_1h = 0.20
 
 [[models.cost.tiers]]
-above_input_tokens = 200000
-input = 6.00
-output = 22.50
-cache_read = 0.60
-cache_write_5m = 7.50
-cache_write_1h = 12.00
-
-[[models]]
-name = "claude-haiku-4-5"
-provider = "anthropic"
-cost = { input = 1.00, output = 5.00, cache_read = 0.10, cache_write_5m = 1.25, cache_write_1h = 2.00 }
+above_input_tokens = 100000
+input = 0.50
+output = 2.50
+cache_read = 0.05
+cache_write_5m = 0.625
+cache_write_1h = 1.00
 
 [[teams]]
 name = "acme"

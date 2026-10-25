@@ -22,6 +22,10 @@ pub struct Rates {
     pub cache_write_5m: i64,
     #[serde(default)]
     pub cache_write_1h: i64,
+    #[serde(default)]
+    pub image_input: i64,
+    #[serde(default)]
+    pub image_output: i64,
 }
 
 impl Rates {
@@ -34,6 +38,8 @@ impl Rates {
             cache_read: f(self.cache_read),
             cache_write_5m: f(self.cache_write_5m),
             cache_write_1h: f(self.cache_write_1h),
+            image_input: f(self.image_input),
+            image_output: f(self.image_output),
         }
     }
 
@@ -43,7 +49,9 @@ impl Rates {
             + u.output as i128 * self.output as i128
             + u.cache_read as i128 * self.cache_read as i128
             + u.cache_write_5m as i128 * self.cache_write_5m as i128
-            + u.cache_write_1h as i128 * self.cache_write_1h as i128;
+            + u.cache_write_1h as i128 * self.cache_write_1h as i128
+            + u.image_input as i128 * self.image_input as i128
+            + u.image_output as i128 * self.image_output as i128;
         div_round(sum, 1_000_000) as i64
     }
 }
@@ -131,14 +139,11 @@ pub fn fmt_usd(micros: i64) -> String {
 
 /// Format a per-Mtok rate as dollars, e.g. `3.00`.
 pub fn fmt_rate(micros: i64) -> String {
+    // At least 2 decimals, at most 6, no trailing zeros after the second.
     let s = format!("{:.6}", micros as f64 / MICROS_PER_USD as f64);
-    let s = s.trim_end_matches('0');
-
-    if s.ends_with('.') {
-        format!("{s}00")
-    } else {
-        s.to_string()
-    }
+    let (whole, frac) = s.split_once('.').unwrap_or((&s, ""));
+    let frac = frac.trim_end_matches('0');
+    format!("{whole}.{frac:0<2}")
 }
 
 /// Parse a dollar amount such as `3`, `3.5` or `0.000125` into micro-dollars.
@@ -180,6 +185,8 @@ mod tests {
                 cache_read: 300_000,
                 cache_write_5m: 3_750_000,
                 cache_write_1h: 6_000_000,
+                image_input: 8_000_000,
+                image_output: 30_000_000,
             },
             tiers: vec![ContextTier {
                 above_input_tokens: 200_000,
@@ -189,6 +196,7 @@ mod tests {
                     cache_read: 600_000,
                     cache_write_5m: 7_500_000,
                     cache_write_1h: 12_000_000,
+                    ..Default::default()
                 },
             }],
         }
@@ -202,9 +210,11 @@ mod tests {
             cache_read: 10_000,
             cache_write_5m: 2000,
             cache_write_1h: 1000,
+            image_input: 100,
+            image_output: 10,
         };
-        // 1000*3 + 500*15 + 10000*0.3 + 2000*3.75 + 1000*6 = 3000+7500+3000+7500+6000
-        assert_eq!(sonnet().amount(&u), 27_000);
+        // 1000*3 + 500*15 + 10000*0.3 + 2000*3.75 + 1000*6 + 100*8 + 10*30
+        assert_eq!(sonnet().amount(&u), 28_100);
     }
 
     #[test]
@@ -262,5 +272,8 @@ mod tests {
         assert_eq!(fmt_usd(-5), "-$0.000005");
         assert_eq!(fmt_rate(3_000_000), "3.00");
         assert_eq!(fmt_rate(125), "0.000125");
+        assert_eq!(fmt_rate(100_000), "0.10");
+        assert_eq!(fmt_rate(2_500_000), "2.50");
+        assert_eq!(fmt_rate(125_000), "0.125");
     }
 }

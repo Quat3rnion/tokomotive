@@ -35,6 +35,13 @@ pub struct Server {
     /// Markup used when a Model has no Price Card.
     pub default_markup_percent: f64,
     pub upstream_timeout_secs: u64,
+    /// When set, `/metrics` needs `Authorization: Bearer <token>`.
+    pub metrics_token: Option<String>,
+    pub metrics_token_env: Option<String>,
+    /// Output tokens assumed for a Budget reservation when the request does
+    /// not set a maximum.
+    pub reserve_output_tokens: i64,
+    pub session_days: i64,
 }
 
 impl Default for Server {
@@ -46,6 +53,10 @@ impl Default for Server {
             admin_password_env: Some("LLM_ACCOUNTING_ADMIN_PASSWORD".into()),
             default_markup_percent: 0.0,
             upstream_timeout_secs: 600,
+            metrics_token: None,
+            metrics_token_env: Some("LLM_ACCOUNTING_METRICS_TOKEN".into()),
+            reserve_output_tokens: 4096,
+            session_days: 7,
         }
     }
 }
@@ -58,6 +69,12 @@ pub struct ProviderCfg {
     pub base_url: String,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
+    /// A Provider Key pool. Keys are used in turn.
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+    /// Environment variables, each holds one key of the pool.
+    #[serde(default)]
+    pub api_keys_env: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +102,10 @@ pub struct RatesCfg {
     pub cache_write_5m: f64,
     #[serde(default)]
     pub cache_write_1h: f64,
+    #[serde(default)]
+    pub image_input: f64,
+    #[serde(default)]
+    pub image_output: f64,
 }
 
 // No deny_unknown_fields: serde does not support it with flatten.
@@ -159,6 +180,8 @@ impl RatesCfg {
             cache_read: usd_to_micros(self.cache_read),
             cache_write_5m: usd_to_micros(self.cache_write_5m),
             cache_write_1h: usd_to_micros(self.cache_write_1h),
+            image_input: usd_to_micros(self.image_input),
+            image_output: usd_to_micros(self.image_output),
         }
     }
 
@@ -237,22 +260,45 @@ impl Config {
     }
 
     pub fn admin_password(&self) -> Option<String> {
-        self.server
-            .admin_password_env
-            .as_ref()
-            .and_then(|e| std::env::var(e).ok())
-            .filter(|s| !s.is_empty())
-            .or_else(|| self.server.admin_password.clone())
+        env_or(
+            self.server.admin_password_env.as_deref(),
+            self.server.admin_password.as_deref(),
+        )
+    }
+
+    pub fn metrics_token(&self) -> Option<String> {
+        env_or(
+            self.server.metrics_token_env.as_deref(),
+            self.server.metrics_token.as_deref(),
+        )
     }
 }
 
+/// The value of the environment variable when set and not empty, else the
+/// value from the file.
+fn env_or(env: Option<&str>, file: Option<&str>) -> Option<String> {
+    env.and_then(|e| std::env::var(e).ok())
+        .filter(|s| !s.is_empty())
+        .or_else(|| file.map(str::to_owned))
+        .filter(|s| !s.is_empty())
+}
+
 impl ProviderCfg {
-    pub fn key(&self) -> Option<String> {
-        self.api_key_env
-            .as_ref()
-            .and_then(|e| std::env::var(e).ok())
-            .filter(|s| !s.is_empty())
-            .or_else(|| self.api_key.clone())
+    /// All keys of the pool: the single key first, then `api_keys`, then
+    /// `api_keys_env`. Empty values are skipped; duplicates are removed.
+    pub fn keys(&self) -> Vec<String> {
+        let single = env_or(self.api_key_env.as_deref(), self.api_key.as_deref());
+        let mut out: Vec<String> = single.into_iter().collect();
+        out.extend(self.api_keys.iter().cloned());
+        out.extend(
+            self.api_keys_env
+                .iter()
+                .filter_map(|e| std::env::var(e).ok()),
+        );
+        out.retain(|k| !k.trim().is_empty());
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|k| seen.insert(k.clone()));
+        out
     }
 }
 

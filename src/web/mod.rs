@@ -60,8 +60,13 @@ impl FromRequestParts<AppState> for Admin {
                 "The dashboard is off. Set the admin password in the configuration.",
             ));
         }
-        let ok = session_cookie(&parts.headers)
-            .is_some_and(|s| st.sessions.lock().expect("sessions").contains(&s));
+        let ok = match session_cookie(&parts.headers) {
+            Some(s) => db::session_valid(&st.db, &s).await.unwrap_or_else(|e| {
+                tracing::error!(error = %e, "session lookup failed");
+                false
+            }),
+            None => false,
+        };
         if ok {
             Ok(Admin)
         } else {
@@ -80,7 +85,7 @@ fn session_cookie(h: &HeaderMap) -> Option<String> {
         .map(|(_, v)| v.to_owned())
 }
 
-fn ct_eq(a: &str, b: &str) -> bool {
+pub fn ct_eq(a: &str, b: &str) -> bool {
     let (x, y) = (Sha256::digest(a.as_bytes()), Sha256::digest(b.as_bytes()));
     x.iter()
         .zip(y.iter())
@@ -114,11 +119,14 @@ async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
-    st.sessions.lock().expect("sessions").insert(token.clone());
+    if let Err(e) = db::create_session(&st.db, &token, st.session_days).await {
+        return internal(e);
+    }
+    let max_age = st.session_days * 86_400;
     (
         [(
             header::SET_COOKIE,
-            format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin"),
+            format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}"),
         )],
         Redirect::to("/admin"),
     )
@@ -126,8 +134,10 @@ async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
 }
 
 async fn logout(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    if let Some(s) = session_cookie(&headers) {
-        st.sessions.lock().expect("sessions").remove(&s);
+    if let Some(s) = session_cookie(&headers)
+        && let Err(e) = db::delete_session(&st.db, &s).await
+    {
+        return internal(e);
     }
     (
         [(
@@ -393,6 +403,10 @@ struct RatesForm {
     #[serde(default)]
     cache_write_1h: String,
     #[serde(default)]
+    image_input: String,
+    #[serde(default)]
+    image_output: String,
+    #[serde(default)]
     tiers: String,
 }
 
@@ -405,13 +419,16 @@ impl RatesForm {
                 cache_read: usd(&self.cache_read)?,
                 cache_write_5m: usd(&self.cache_write_5m)?,
                 cache_write_1h: usd(&self.cache_write_1h)?,
+                image_input: usd(&self.image_input)?,
+                image_output: usd(&self.image_output)?,
             },
             tiers: parse_tiers(&self.tiers)?,
         })
     }
 }
 
-/// One tier per line: `above_input_tokens input output cache_read cache_write_5m cache_write_1h`.
+/// One tier per line: `above_input_tokens input output cache_read
+/// cache_write_5m cache_write_1h [image_input image_output]`.
 fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
     let mut out = vec![];
     for line in s.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -428,6 +445,8 @@ fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
                 cache_read: r(3)?,
                 cache_write_5m: r(4)?,
                 cache_write_1h: r(5)?,
+                image_input: r(6)?,
+                image_output: r(7)?,
             },
         });
     }

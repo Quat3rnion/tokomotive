@@ -5,15 +5,15 @@
 <div class="panel scroll">
 <table>
   <tr><th>{{ title }}</th><th class="n">Requests</th><th class="n">Errors</th><th class="n">Input</th><th class="n">Output</th>
-      <th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Price</th><th class="n">Cost</th><th class="n">Profit</th>
+      <th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Image in/out</th><th class="n">Price</th><th class="n">Cost</th><th class="n">Profit</th>
       <th class="n">Margin</th><th class="n">Latency</th><th class="n">TTFT</th><th class="n">Out tok/s</th></tr>
   {% for r in rows %}
   <tr><td>{{ r.key }}</td><td class="n">{{ r.requests }}</td><td class="n">{{ r.errors }}</td><td class="n">{{ r.input }}</td>
       <td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write }}</td>
-      <td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>
+      <td class="n">{{ r.image }}</td><td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>
       <td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="n">{{ r.tps }}</td></tr>
   {% else %}
-  <tr><td colspan="14" class="muted">No requests in this range.</td></tr>
+  <tr><td colspan="15" class="muted">No requests in this range.</td></tr>
   {% endfor %}
 </table>
 </div>

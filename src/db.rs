@@ -455,6 +455,19 @@ pub struct NewEntry {
     pub latency_ms: i64,
     pub ttft_ms: Option<i64>,
     pub client_aborted: bool,
+    pub provider_key: Option<i64>,
+    pub attempts: i64,
+}
+
+/// The model key of a rollup row: the matched Model name, so that dated
+/// names such as `gpt-4o-2024-08-06` count as `gpt-4o`.
+fn rollup_model(e: &NewEntry) -> String {
+    e.quote
+        .model_name
+        .clone()
+        .or_else(|| e.model.clone())
+        .or_else(|| e.requested_model.clone())
+        .unwrap_or_default()
 }
 
 pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
@@ -464,8 +477,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let id = sqlx::query(
         "INSERT INTO ledger(ts_ms, user_id, key_id, team_id, provider, endpoint, requested_model, model, model_id, status, streamed,
             input, output, cache_read, cache_write_5m, cache_write_1h, cost_micros, price_micros, cost_card_id, price_card_id,
-            unpriced, estimated, latency_ms, ttft_ms, client_aborted)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(e.ts_ms)
     .bind(e.user_id)
@@ -492,6 +505,10 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(e.latency_ms)
     .bind(e.ttft_ms)
     .bind(e.client_aborted)
+    .bind(u.image_input)
+    .bind(u.image_output)
+    .bind(e.provider_key)
+    .bind(e.attempts)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -500,8 +517,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let error = (e.status >= 400) as i64;
     sqlx::query(
         "INSERT INTO rollup_hourly(hour, user_id, model, requests, errors, input, output, cache_read, cache_write_5m, cache_write_1h,
-            cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count)
-         VALUES(?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count, image_input, image_output)
+         VALUES(?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(hour, user_id, model) DO UPDATE SET
             requests = requests + 1, errors = errors + excluded.errors,
             input = input + excluded.input, output = output + excluded.output,
@@ -510,11 +527,12 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
             cache_write_1h = cache_write_1h + excluded.cache_write_1h,
             cost_micros = cost_micros + excluded.cost_micros, price_micros = price_micros + excluded.price_micros,
             latency_ms_sum = latency_ms_sum + excluded.latency_ms_sum,
-            ttft_ms_sum = ttft_ms_sum + excluded.ttft_ms_sum, ttft_count = ttft_count + excluded.ttft_count",
+            ttft_ms_sum = ttft_ms_sum + excluded.ttft_ms_sum, ttft_count = ttft_count + excluded.ttft_count,
+            image_input = image_input + excluded.image_input, image_output = image_output + excluded.image_output",
     )
     .bind(hour)
     .bind(e.user_id)
-    .bind(e.model.clone().or_else(|| e.requested_model.clone()).unwrap_or_default())
+    .bind(rollup_model(e))
     .bind(error)
     .bind(u.input)
     .bind(u.output)
@@ -526,6 +544,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(e.latency_ms)
     .bind(e.ttft_ms.unwrap_or(0))
     .bind(e.ttft_ms.is_some() as i64)
+    .bind(u.image_input)
+    .bind(u.image_output)
     .execute(&mut *tx)
     .await?;
 
@@ -542,7 +562,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
 /// exception). Returns the number of entries priced.
 pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
     let rows = sqlx::query(
-        "SELECT id, ts_ms, user_id, team_id, requested_model, model, input, output, cache_read, cache_write_5m, cache_write_1h
+        "SELECT id, ts_ms, user_id, team_id, requested_model, model, input, output, cache_read, cache_write_5m, cache_write_1h,
+            image_input, image_output
          FROM ledger WHERE unpriced = 1",
     )
     .fetch_all(db)
@@ -557,6 +578,8 @@ pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
             cache_read: r.get("cache_read"),
             cache_write_5m: r.get("cache_write_5m"),
             cache_write_1h: r.get("cache_write_1h"),
+            image_input: r.get("image_input"),
+            image_output: r.get("image_output"),
         };
         let model: Option<String> = r
             .get::<Option<String>, _>("model")
@@ -595,12 +618,15 @@ async fn rebuild_rollup_hour(
         .execute(&mut **tx)
         .await?;
     sqlx::query(
-        "INSERT INTO rollup_hourly
-         SELECT ?1, user_id, IFNULL(model, IFNULL(requested_model, '')), COUNT(*), SUM(status >= 400),
+        "INSERT INTO rollup_hourly(hour, user_id, model, requests, errors, input, output, cache_read, cache_write_5m,
+            cache_write_1h, cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count, image_input, image_output)
+         SELECT ?1, user_id, COALESCE(m.name, l.model, l.requested_model, ''), COUNT(*), SUM(status >= 400),
             SUM(input), SUM(output), SUM(cache_read), SUM(cache_write_5m), SUM(cache_write_1h),
-            SUM(cost_micros), SUM(price_micros), SUM(latency_ms), IFNULL(SUM(ttft_ms), 0), COUNT(ttft_ms)
-         FROM ledger WHERE ts_ms >= ?1 * 1000 AND ts_ms < (?1 + 3600) * 1000
-         GROUP BY user_id, IFNULL(model, IFNULL(requested_model, ''))",
+            SUM(cost_micros), SUM(price_micros), SUM(latency_ms), IFNULL(SUM(ttft_ms), 0), COUNT(ttft_ms),
+            SUM(image_input), SUM(image_output)
+         FROM ledger l LEFT JOIN models m ON m.id = l.model_id
+         WHERE ts_ms >= ?1 * 1000 AND ts_ms < (?1 + 3600) * 1000
+         GROUP BY user_id, COALESCE(m.name, l.model, l.requested_model, '')",
     )
     .bind(hour)
     .execute(&mut **tx)
@@ -619,6 +645,8 @@ pub struct Totals {
     pub cache_read: i64,
     pub cache_write_5m: i64,
     pub cache_write_1h: i64,
+    pub image_input: i64,
+    pub image_output: i64,
     pub cost_micros: i64,
     pub price_micros: i64,
     pub latency_ms_sum: i64,
@@ -631,7 +659,8 @@ const TOTALS_COLS: &str = "IFNULL(SUM(requests),0) AS requests, IFNULL(SUM(error
     IFNULL(SUM(cache_write_5m),0) AS cache_write_5m, IFNULL(SUM(cache_write_1h),0) AS cache_write_1h,
     IFNULL(SUM(cost_micros),0) AS cost_micros, IFNULL(SUM(price_micros),0) AS price_micros,
     IFNULL(SUM(latency_ms_sum),0) AS latency_ms_sum, IFNULL(SUM(ttft_ms_sum),0) AS ttft_ms_sum,
-    IFNULL(SUM(ttft_count),0) AS ttft_count";
+    IFNULL(SUM(ttft_count),0) AS ttft_count,
+    IFNULL(SUM(image_input),0) AS image_input, IFNULL(SUM(image_output),0) AS image_output";
 
 pub async fn totals_since(db: &Db, since_s: i64) -> Result<Totals> {
     Ok(sqlx::query_as(&format!(
@@ -782,6 +811,10 @@ pub struct LedgerRow {
     pub latency_ms: i64,
     pub ttft_ms: Option<i64>,
     pub client_aborted: bool,
+    pub image_input: i64,
+    pub image_output: i64,
+    pub provider_key: Option<i64>,
+    pub attempts: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -803,7 +836,8 @@ pub async fn recent_ledger(db: &Db, filter: LedgerFilter, limit: i64) -> Result<
     Ok(sqlx::query_as(&format!(
         "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
-            l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted
+            l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
+            l.image_input, l.image_output, l.provider_key, l.attempts
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE {cond} ORDER BY l.id DESC LIMIT ?"
     ))
     .bind(limit)
@@ -837,4 +871,39 @@ pub async fn card_history(db: &Db, model_id: i64) -> Result<Vec<CardHistoryRow>>
     .bind(model_id)
     .fetch_all(db)
     .await?)
+}
+
+// ---------------------------------------------------------------- sessions
+
+/// Store a new dashboard session. Only the hash of the token is stored.
+pub async fn create_session(db: &Db, token: &str, days: i64) -> Result<()> {
+    sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
+        .bind(now_s())
+        .execute(db)
+        .await?;
+    sqlx::query("INSERT INTO sessions(token_hash, expires_at) VALUES(?, ?)")
+        .bind(hash_key(token))
+        .bind(now_s() + days * 86_400)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn session_valid(db: &Db, token: &str) -> Result<bool> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sessions WHERE token_hash = ? AND expires_at >= ?",
+    )
+    .bind(hash_key(token))
+    .bind(now_s())
+    .fetch_one(db)
+    .await?;
+    Ok(n > 0)
+}
+
+pub async fn delete_session(db: &Db, token: &str) -> Result<()> {
+    sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+        .bind(hash_key(token))
+        .execute(db)
+        .await?;
+    Ok(())
 }

@@ -22,10 +22,10 @@
 <form class="panel" method="post" action="/admin/models/{{ id }}/price">
   <p>Current: <b>{{ price_desc }}</b></p>
   <div class="row" style="margin-bottom:10px">
-    <label><span><input type="radio" name="mode" value="default" {% if price_mode == "default" %}checked{% endif %}> Default markup ({{ default_markup }}%)</span></label>
-    <label><span><input type="radio" name="mode" value="markup" {% if price_mode == "markup" %}checked{% endif %}> Markup</span></label>
+    <label class="check"><input type="radio" name="mode" value="default" {% if price_mode == "default" %}checked{% endif %}> Default markup ({{ default_markup }}%)</label>
+    <label class="check"><input type="radio" name="mode" value="markup" {% if price_mode == "markup" %}checked{% endif %}> Markup</label>
     <label>Markup % <input name="markup_percent" value="{{ price_markup }}"></label>
-    <label><span><input type="radio" name="mode" value="rates" {% if price_mode == "rates" %}checked{% endif %}> Explicit rates (below)</span></label>
+    <label class="check"><input type="radio" name="mode" value="rates" {% if price_mode == "rates" %}checked{% endif %}> Explicit rates (below)</label>
   </div>
   {% call f::rates_fields(price_rates) %}
   <p><button>Save new Price Card version</button></p>
@@ -49,9 +49,9 @@
 <form class="panel" method="post" action="/admin/models/{{ id }}/team-price">
   <div class="row" style="margin-bottom:10px">
     <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
-    <label><span><input type="radio" name="mode" value="markup" checked> Markup</span></label>
+    <label class="check"><input type="radio" name="mode" value="markup" checked> Markup</label>
     <label>Markup % <input name="markup_percent"></label>
-    <label><span><input type="radio" name="mode" value="rates"> Explicit rates (below)</span></label>
+    <label class="check"><input type="radio" name="mode" value="rates"> Explicit rates (below)</label>
   </div>
   {% call f::rates_fields(price_rates) %}
   <p><button>Set Team override</button></p>

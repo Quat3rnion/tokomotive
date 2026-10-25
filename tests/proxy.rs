@@ -34,7 +34,10 @@ async fn mock_openai(
     headers: HeaderMap,
     Json(b): Json<Value>,
 ) -> Response {
-    seen.0.lock().unwrap().push((headers, b.clone()));
+    seen.0.lock().unwrap().push((headers.clone(), b.clone()));
+    if headers["authorization"] == "Bearer bad-key" {
+        return (axum::http::StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
+    }
     let usage = json!({"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 400}});
     if b["stream"] == json!(true) {
         let mut ev = vec![format!(
@@ -84,11 +87,24 @@ async fn mock_anthropic(
     Json(json!({"model": "claude-sonnet-4-5-20250929", "usage": u})).into_response()
 }
 
+async fn mock_embeddings(Json(b): Json<Value>) -> Response {
+    Json(json!({"model": b["model"], "data": [], "usage": {"prompt_tokens": 1000, "total_tokens": 1000}})).into_response()
+}
+
+async fn mock_images(Json(_): Json<Value>) -> Response {
+    Json(
+        json!({"data": [], "usage": {"input_tokens": 300, "output_tokens": 1000,
+        "input_tokens_details": {"text_tokens": 100, "image_tokens": 200}}}),
+    )
+    .into_response()
+}
+
 struct Env {
     proxy: String,
     st: AppState,
     seen: Seen,
     http: reqwest::Client,
+    cfg: Config,
     _dir: tempfile::TempDir,
 }
 
@@ -97,6 +113,8 @@ async fn env() -> Env {
     let upstream = axum::Router::new()
         .route("/v1/chat/completions", post(mock_openai))
         .route("/v1/messages", post(mock_anthropic))
+        .route("/v1/embeddings", post(mock_embeddings))
+        .route("/v1/images/generations", post(mock_images))
         .with_state(seen.clone());
     let ul = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let uaddr = ul.local_addr().unwrap();
@@ -109,6 +127,8 @@ async fn env() -> Env {
 database = "sqlite://{db}"
 admin_password = "pw"
 admin_password_env = "LLMA_TEST_UNSET_VAR"
+metrics_token = "mtok"
+metrics_token_env = "LLMA_TEST_UNSET_VAR"
 default_markup_percent = 20
 
 [[providers]]
@@ -122,6 +142,27 @@ name = "anthropic"
 kind = "anthropic"
 base_url = "http://{u}"
 api_key = "upstream-anthropic-key"
+
+[[providers]]
+name = "pool"
+kind = "openai"
+base_url = "http://{u}"
+api_keys = ["bad-key", "good-key"]
+
+[[models]]
+name = "gpt-pool"
+provider = "pool"
+cost = {{ input = 1, output = 1 }}
+
+[[models]]
+name = "text-embedding-3-small"
+provider = "openai"
+cost = {{ input = 0.02 }}
+
+[[models]]
+name = "gpt-image-2"
+provider = "openai"
+cost = {{ input = 5, cache_read = 1.25, image_input = 8, image_output = 30 }}
 
 [[models]]
 name = "gpt-4o"
@@ -167,6 +208,7 @@ keys = ["sk-carol"]
         st,
         seen,
         http: reqwest::Client::new(),
+        cfg,
         _dir: dir,
     }
 }
@@ -231,6 +273,10 @@ async fn openai_stream_gets_include_usage_and_default_markup() {
     assert_eq!(i(&row, "cost_micros"), 3000);
     assert_eq!(i(&row, "price_micros"), 3600); // default 20%
     assert!(row.get::<Option<i64>, _>("ttft_ms").is_some());
+    // Rollups group the dated name under the matched Model.
+    let groups = llm_accounting::db::by_model(&e.st.db, 0).await.unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].key, "gpt-4o");
 }
 
 #[tokio::test]
@@ -291,12 +337,13 @@ async fn auth_allowlist_and_budget() {
         e.http
             .post(format!("{}/v1/chat/completions", e.proxy))
             .bearer_auth(key)
-            .json(&json!({"model": model}))
+            .json(&json!({"model": model, "max_tokens": 100}))
             .send()
     };
     assert_eq!(post("nope", "gpt-4o").await.unwrap().status(), 401);
 
     // Budget $0.01 = 10_000 micros; each request is 3600 micros at +20%.
+    // The reservation for each is about 1_200 micros (100 output tokens).
     for _ in 0..3 {
         assert_eq!(post("sk-bob", "gpt-4o").await.unwrap().status(), 200);
         e.st.flush().await;
@@ -473,7 +520,11 @@ async fn dashboard_requires_login_and_renders_every_page() {
 
     // New Price Card version through the form.
     let r = c
-        .post(format!("{}/admin/models/1/price", e.proxy))
+        .post(format!(
+            "{}/admin/models/{}/price",
+            e.proxy,
+            e.st.catalog().resolve("gpt-4o").unwrap().id
+        ))
         .header("cookie", &cookie)
         .form(&[("mode", "markup"), ("markup_percent", "30")])
         .send()
@@ -485,4 +536,241 @@ async fn dashboard_requires_login_and_renders_every_page() {
         m.resolve("gpt-4o").unwrap().price,
         Some((_, llm_accounting::pricing::PriceSpec::MarkupBp(3000)))
     ));
+}
+
+#[tokio::test]
+async fn key_pool_retries_with_next_key_on_429() {
+    let e = env().await;
+    for _ in 0..2 {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model": "gpt-pool"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    e.st.flush().await;
+    let rows = sqlx::query("SELECT provider_key, attempts, status FROM ledger ORDER BY id")
+        .fetch_all(&e.st.db)
+        .await
+        .unwrap();
+    // Round-robin: one request starts on the bad key and retries.
+    let attempts: Vec<i64> = rows.iter().map(|r| i(r, "attempts")).collect();
+    let mut sorted = attempts.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec![1, 2]);
+    assert!(
+        rows.iter()
+            .all(|r| i(r, "provider_key") == 1 && i(r, "status") == 200)
+    );
+}
+
+#[tokio::test]
+async fn injected_usage_chunk_is_not_sent_to_client() {
+    let e = env().await;
+    let text = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model": "gpt-4o", "stream": true}))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        text.contains("[DONE]") && !text.contains("\"usage\""),
+        "{text}"
+    );
+    assert_eq!(i(&last_entry(&e.st).await, "output"), 100);
+
+    // A client that asked for usage still gets it.
+    let text = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(
+            &json!({"model": "gpt-4o", "stream": true, "stream_options": {"include_usage": true}}),
+        )
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains("\"usage\""));
+}
+
+#[tokio::test]
+async fn embeddings_and_images_are_priced() {
+    let e = env().await;
+    let r = e
+        .http
+        .post(format!("{}/v1/embeddings", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model": "text-embedding-3-small", "input": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let row = last_entry(&e.st).await;
+    assert_eq!(row.get::<String, _>("endpoint"), "embeddings");
+    assert_eq!(
+        (
+            i(&row, "input"),
+            i(&row, "cost_micros"),
+            i(&row, "unpriced")
+        ),
+        (1000, 20, 0)
+    );
+
+    let r = e
+        .http
+        .post(format!("{}/v1/images/generations", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model": "gpt-image-2", "prompt": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let row = last_entry(&e.st).await;
+    assert_eq!(
+        (
+            i(&row, "input"),
+            i(&row, "image_input"),
+            i(&row, "image_output")
+        ),
+        (100, 200, 1000)
+    );
+    // 100*5 + 200*8 + 1000*30 = 500 + 1600 + 30000
+    assert_eq!(i(&row, "cost_micros"), 32_100);
+}
+
+#[tokio::test]
+async fn budget_reservation_covers_worst_case() {
+    let e = env().await;
+    // bob has $0.01. 1M output tokens at $12/M cannot fit.
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model": "gpt-4o", "max_tokens": 1_000_000}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 402);
+
+    // Open reservations count against the Budget.
+    let bob: i64 = sqlx::query_scalar("SELECT id FROM users WHERE name = 'bob'")
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
+    let held = e.st.reserve(bob, 10_000, 0, 9_000).unwrap();
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model": "gpt-4o", "max_tokens": 100}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 402);
+    drop(held);
+    assert_eq!(e.st.reserved(bob), 0);
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model": "gpt-4o", "max_tokens": 100}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    e.st.flush().await;
+    // Released after the Ledger Entry is written.
+    assert_eq!(e.st.reserved(bob), 0);
+}
+
+#[tokio::test]
+async fn metrics_token_is_required() {
+    let e = env().await;
+    let r = e
+        .http
+        .get(format!("{}/metrics", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    let r = e
+        .http
+        .get(format!("{}/metrics", e.proxy))
+        .bearer_auth("wrong")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    // Right token; this test state has no recorder, so 404.
+    let r = e
+        .http
+        .get(format!("{}/metrics", e.proxy))
+        .bearer_auth("mtok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn sessions_survive_restart_and_logout_ends_them() {
+    let e = env().await;
+    let c = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let r = c
+        .post(format!("{}/admin/login", e.proxy))
+        .form(&[("password", "pw")])
+        .send()
+        .await
+        .unwrap();
+    let set = r.headers()["set-cookie"].to_str().unwrap().to_owned();
+    assert!(set.contains("Max-Age=604800"));
+    let cookie = set.split(';').next().unwrap().to_owned();
+    let token = cookie.split_once('=').unwrap().1.to_owned();
+
+    // A new process on the same database accepts the session.
+    let st2 = llm_accounting::init(&e.cfg, None).await.unwrap();
+    let app2 = llm_accounting::router(st2.clone());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app2).await.unwrap() });
+    let r = c
+        .get(format!("http://{addr}/admin"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    c.post(format!("http://{addr}/admin/logout"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !llm_accounting::db::session_valid(&e.st.db, &token)
+            .await
+            .unwrap()
+    );
+    let r = c
+        .get(format!("{}/admin", e.proxy))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
 }

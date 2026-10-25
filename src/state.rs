@@ -1,6 +1,6 @@
 //! Shared application state.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -19,7 +19,51 @@ pub struct Provider {
     pub name: String,
     pub kind: ProviderKind,
     pub base_url: String,
-    pub key: String,
+    /// The Provider Key pool. Empty when no key is configured.
+    pub keys: Arc<Vec<String>>,
+    next: Arc<AtomicUsize>,
+}
+
+impl Provider {
+    pub fn new(name: &str, kind: ProviderKind, base_url: &str, keys: Vec<String>) -> Provider {
+        Provider {
+            name: name.into(),
+            kind,
+            base_url: base_url.into(),
+            keys: Arc::new(keys),
+            next: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// The order of key indexes to try for one request: round-robin start,
+    /// then the other keys in turn.
+    pub fn key_order(&self) -> Vec<usize> {
+        let n = self.keys.len();
+        if n == 0 {
+            return vec![];
+        }
+        let start = self.next.fetch_add(1, Ordering::Relaxed) % n;
+        (0..n).map(|i| (start + i) % n).collect()
+    }
+}
+
+/// A Budget reservation. It is released when dropped.
+pub struct Reservation {
+    st: AppState,
+    user_id: i64,
+    amount: i64,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut r = self.st.reservations.lock().expect("reservations");
+        if let Some(v) = r.get_mut(&self.user_id) {
+            *v -= self.amount;
+            if *v <= 0 {
+                r.remove(&self.user_id);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -30,8 +74,11 @@ pub struct Inner {
     pub http: reqwest::Client,
     pub providers: Vec<Provider>,
     pub admin_password: Option<String>,
-    pub sessions: Mutex<HashSet<String>>,
+    pub metrics_token: Option<String>,
+    pub session_days: i64,
+    pub reserve_output_tokens: i64,
     pub metrics: Option<PrometheusHandle>,
+    reservations: Mutex<HashMap<i64, i64>>,
     catalog: RwLock<Arc<Catalog>>,
     pending: AtomicUsize,
     idle: Notify,
@@ -50,16 +97,11 @@ impl AppState {
             .providers
             .iter()
             .map(|p| {
-                let key = p.key().unwrap_or_else(|| {
+                let keys = p.keys();
+                if keys.is_empty() {
                     tracing::warn!(provider = %p.name, "no API key is set for this provider");
-                    String::new()
-                });
-                Provider {
-                    name: p.name.clone(),
-                    kind: p.kind,
-                    base_url: p.base_url.clone(),
-                    key,
                 }
+                Provider::new(&p.name, p.kind, &p.base_url, keys)
             })
             .collect();
         let http = reqwest::Client::builder()
@@ -72,8 +114,11 @@ impl AppState {
             http,
             providers,
             admin_password: cfg.admin_password(),
-            sessions: Mutex::new(HashSet::new()),
+            metrics_token: cfg.metrics_token(),
+            session_days: cfg.server.session_days.max(1),
+            reserve_output_tokens: cfg.server.reserve_output_tokens.max(0),
             metrics,
+            reservations: Mutex::new(HashMap::new()),
             catalog: RwLock::new(Arc::new(catalog)),
             pending: AtomicUsize::new(0),
             idle: Notify::new(),
@@ -115,6 +160,37 @@ impl AppState {
             .find(|p| p.kind == kind)
             .or(self.providers.first())
             .cloned()
+    }
+
+    /// Reserve `amount` of a User's Budget if `spent` plus all open
+    /// reservations plus `amount` stay within `budget`.
+    pub fn reserve(
+        &self,
+        user_id: i64,
+        budget: i64,
+        spent: i64,
+        amount: i64,
+    ) -> Option<Reservation> {
+        let mut r = self.reservations.lock().expect("reservations");
+        let open = r.get(&user_id).copied().unwrap_or(0);
+        if spent >= budget || spent + open + amount > budget {
+            return None;
+        }
+        *r.entry(user_id).or_insert(0) += amount;
+        Some(Reservation {
+            st: self.clone(),
+            user_id,
+            amount,
+        })
+    }
+
+    pub fn reserved(&self, user_id: i64) -> i64 {
+        self.reservations
+            .lock()
+            .expect("reservations")
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Spawn a background write. `flush` waits for all of them.

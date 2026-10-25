@@ -6,7 +6,7 @@
 
 **Model** — A named LLM offered by a Provider. Each Model has one Cost Card and one Price Card.
 
-**Token Class** — One billable category of tokens: input, output, cache read, cache write (5 minute), cache write (1 hour).
+**Token Class** — One billable category of tokens: input, output, cache read, cache write (5 minute), cache write (1 hour), image input, image output.
 
 **Cost Card** — The rates per million tokens, per Token Class, that the Provider charges the operator for a Model.
 
@@ -32,6 +32,8 @@
 
 **Provider Key** — The secret credential that the Proxy uses to call a Provider. Users never see it.
 
+**Key Pool** — The set of Provider Keys for one Provider. The Proxy uses them in turn, and tries the next key when the Provider refuses a request.
+
 **Ledger Entry** — The record of one request: User, Model, token counts per Token Class, Cost, Price.
 
 A Ledger Entry does not change after it is written.
@@ -41,5 +43,7 @@ A Ledger Entry does not change after it is written.
 **Estimated Entry** — A Ledger Entry whose token counts are partly estimated, because the Provider did not report full usage.
 
 **Budget** — A limit on the total Price for a User, optionally reset each month. When the User reaches it, the Proxy rejects new requests.
+
+**Reservation** — The worst-case Price of a request in progress. It counts against the Budget until the Ledger Entry for the request is written.
 
 **Operator** — The person who runs the Proxy, sets cards and Budgets, and uses the dashboard.

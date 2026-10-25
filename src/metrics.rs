@@ -36,6 +36,8 @@ pub fn record(user: &str, e: &NewEntry) {
         ("cache_read", u.cache_read),
         ("cache_write_5m", u.cache_write_5m),
         ("cache_write_1h", u.cache_write_1h),
+        ("image_input", u.image_input),
+        ("image_output", u.image_output),
     ] {
         if n > 0 {
             let mut l = base.to_vec();
