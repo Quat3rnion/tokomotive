@@ -1,0 +1,84 @@
+# llm-accounting example configuration.
+#
+# This file seeds the database at start. The proxy adds Models, cards, Teams
+# and Users that are not in the database yet. It does not overwrite changes
+# that you made in the dashboard.
+#
+# All rates are USD per million tokens. Check the rates against the current
+# Provider price lists before you use them.
+
+[server]
+listen = "127.0.0.1:8787"
+database = "sqlite://llm-accounting.db"
+# The dashboard password. The environment variable has priority.
+admin_password_env = "LLM_ACCOUNTING_ADMIN_PASSWORD"
+# Markup for Models that have no Price Card.
+default_markup_percent = 20
+upstream_timeout_secs = 600
+
+[[providers]]
+name = "openai"
+kind = "openai"
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# A Model also matches dated names that start with "<name>-",
+# for example "gpt-4o-2024-08-06". The longest matching name wins.
+
+[[models]]
+name = "gpt-4o"
+provider = "openai"
+cost = { input = 2.50, output = 10.00, cache_read = 1.25 }
+
+[[models]]
+name = "gpt-4o-mini"
+provider = "openai"
+cost = { input = 0.15, output = 0.60, cache_read = 0.075 }
+price = { input = 0.30, output = 1.20, cache_read = 0.15 }
+
+[[models]]
+name = "claude-sonnet-4-5"
+provider = "anthropic"
+aliases = ["claude-sonnet-4-5-latest"]
+price = { markup_percent = 25 }
+
+[models.cost]
+input = 3.00
+output = 15.00
+cache_read = 0.30
+cache_write_5m = 3.75
+cache_write_1h = 6.00
+
+[[models.cost.tiers]]
+above_input_tokens = 200000
+input = 6.00
+output = 22.50
+cache_read = 0.60
+cache_write_5m = 7.50
+cache_write_1h = 12.00
+
+[[models]]
+name = "claude-haiku-4-5"
+provider = "anthropic"
+cost = { input = 1.00, output = 5.00, cache_read = 0.10, cache_write_5m = 1.25, cache_write_1h = 2.00 }
+
+[[teams]]
+name = "acme"
+price_overrides = [{ model = "gpt-4o", markup_percent = 50 }]
+
+[[users]]
+name = "alice"
+team = "acme"
+budget_usd = 100.0
+budget_monthly = true
+# Development only: create this Virtual Key at start.
+keys = ["sk-dev-alice-change-me"]
+
+[[users]]
+name = "bob"

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% import "rates_fields.html" as f %}
+{% block nav_models %}class="on"{% endblock %}
+{% block content %}
+<h1>{{ name }}</h1>
+<p class="muted">A change to a card makes a new Card Version. Old Ledger Entries keep the amounts they had.</p>
+
+<h2>Model</h2>
+<form class="panel row" method="post" action="/admin/models/{{ id }}">
+  <label>Provider <select name="provider">{% for o in provider_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
+  <label>Aliases (comma list) <input name="aliases" value="{{ aliases }}" style="width:320px"></label>
+  <button>Save</button>
+</form>
+
+<h2>Cost Card (what the provider charges you)</h2>
+<form class="panel" method="post" action="/admin/models/{{ id }}/cost">
+  {% call f::rates_fields(cost) %}
+  <p><button>Save new Cost Card version</button></p>
+</form>
+
+<h2>Price Card (what users pay)</h2>
+<form class="panel" method="post" action="/admin/models/{{ id }}/price">
+  <p>Current: <b>{{ price_desc }}</b></p>
+  <div class="row" style="margin-bottom:10px">
+    <label><span><input type="radio" name="mode" value="default" {% if price_mode == "default" %}checked{% endif %}> Default markup ({{ default_markup }}%)</span></label>
+    <label><span><input type="radio" name="mode" value="markup" {% if price_mode == "markup" %}checked{% endif %}> Markup</span></label>
+    <label>Markup % <input name="markup_percent" value="{{ price_markup }}"></label>
+    <label><span><input type="radio" name="mode" value="rates" {% if price_mode == "rates" %}checked{% endif %}> Explicit rates (below)</span></label>
+  </div>
+  {% call f::rates_fields(price_rates) %}
+  <p><button>Save new Price Card version</button></p>
+</form>
+
+<h2>Team price overrides</h2>
+<div class="panel">
+<table>
+  <tr><th>Team</th><th>Price</th><th></th></tr>
+  {% for o in overrides %}
+  <tr><td>{{ o.team }}</td><td>{{ o.desc }}</td><td>
+    <form class="inline" method="post" action="/admin/models/{{ id }}/team-price">
+      <input type="hidden" name="team_id" value="{{ o.team_id }}"><input type="hidden" name="mode" value="default">
+      <button class="danger">Remove</button>
+    </form></td></tr>
+  {% else %}
+  <tr><td colspan="3" class="muted">No overrides.</td></tr>
+  {% endfor %}
+</table>
+</div>
+<form class="panel" method="post" action="/admin/models/{{ id }}/team-price">
+  <div class="row" style="margin-bottom:10px">
+    <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
+    <label><span><input type="radio" name="mode" value="markup" checked> Markup</span></label>
+    <label>Markup % <input name="markup_percent"></label>
+    <label><span><input type="radio" name="mode" value="rates"> Explicit rates (below)</span></label>
+  </div>
+  {% call f::rates_fields(price_rates) %}
+  <p><button>Set Team override</button></p>
+</form>
+
+<h2>Card history</h2>
+<div class="panel scroll">
+<table>
+  <tr><th>Version</th><th>Scope</th><th>Kind</th><th>Rates</th><th>Created</th></tr>
+  {% for h in history %}
+  <tr><td>#{{ h.id }}</td><td>{{ h.scope }}</td><td>{{ h.kind }}</td><td>{{ h.desc }}</td><td>{{ h.created }}</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

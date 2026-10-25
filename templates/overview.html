@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block nav_overview %}class="on"{% endblock %}
+
+{% macro group_table(rows, title) %}
+<div class="panel scroll">
+<table>
+  <tr><th>{{ title }}</th><th class="n">Requests</th><th class="n">Errors</th><th class="n">Input</th><th class="n">Output</th>
+      <th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Price</th><th class="n">Cost</th><th class="n">Profit</th>
+      <th class="n">Margin</th><th class="n">Latency</th><th class="n">TTFT</th><th class="n">Out tok/s</th></tr>
+  {% for r in rows %}
+  <tr><td>{{ r.key }}</td><td class="n">{{ r.requests }}</td><td class="n">{{ r.errors }}</td><td class="n">{{ r.input }}</td>
+      <td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write }}</td>
+      <td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>
+      <td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="n">{{ r.tps }}</td></tr>
+  {% else %}
+  <tr><td colspan="14" class="muted">No requests in this range.</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div id="live" hx-get="/admin?range={{ range }}" hx-trigger="every 15s" hx-select="#live" hx-swap="outerHTML">
+<div class="row" style="justify-content:space-between;margin-bottom:12px">
+  <h1 style="margin:0">Overview</h1>
+  <div class="tabs">
+    <a href="/admin?range=24h" {% if range == "24h" %}class="on"{% endif %}>24 hours</a>
+    <a href="/admin?range=7d" {% if range == "7d" %}class="on"{% endif %}>7 days</a>
+    <a href="/admin?range=30d" {% if range == "30d" %}class="on"{% endif %}>30 days</a>
+  </div>
+</div>
+
+{% if unpriced > 0 || estimated > 0 %}
+<div class="panel">
+  {% if unpriced > 0 %}<a href="/admin/ledger?filter=unpriced"><span class="tag warn">{{ unpriced }} unpriced</span></a> requests used a model with no card. {% endif %}
+  {% if estimated > 0 %}<a href="/admin/ledger?filter=estimated"><span class="tag info">{{ estimated }} estimated</span></a> requests have incomplete usage from the provider.{% endif %}
+</div>
+{% endif %}
+
+<div class="stats">
+  {% for s in stats %}
+  <div class="panel stat"><div class="l">{{ s.label }}</div><div class="v">{{ s.value }}</div><div class="s">{{ s.sub }}</div></div>
+  {% endfor %}
+</div>
+
+<div class="grid2">
+  <div class="panel"><h2 style="margin-top:0">Money (USD)</h2>{{ money_chart|safe }}</div>
+  <div class="panel"><h2 style="margin-top:0">Traffic</h2>{{ traffic_chart|safe }}</div>
+</div>
+
+<h2>By model</h2>
+{% call group_table(by_model, "Model") %}
+<h2>By user</h2>
+{% call group_table(by_user, "User") %}
+<h2>By team</h2>
+{% call group_table(by_team, "Team") %}
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% macro rates_fields(r) %}
+<div class="row">
+  <label>Input <input name="input" value="{{ r.input }}"></label>
+  <label>Output <input name="output" value="{{ r.output }}"></label>
+  <label>Cache read <input name="cache_read" value="{{ r.cache_read }}"></label>
+  <label>Cache write 5m <input name="cache_write_5m" value="{{ r.cache_write_5m }}"></label>
+  <label>Cache write 1h <input name="cache_write_1h" value="{{ r.cache_write_1h }}"></label>
+</div>
+<p class="muted" style="margin:10px 0 4px">Context Tiers, one per line: <code>above_input_tokens input output cache_read cache_write_5m cache_write_1h</code>. Input tokens include cache tokens.</p>
+<textarea name="tiers" rows="2" placeholder="200000 6 22.5 0.6 7.5 12">{{ r.tiers }}</textarea>
+{% endmacro %}

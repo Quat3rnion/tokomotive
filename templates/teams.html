@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block nav_teams %}class="on"{% endblock %}
+{% block content %}
+<h1>Teams</h1>
+<p class="muted">A Team groups users for billing. Set Team price overrides on the page of each model.</p>
+<div class="panel">
+<table>
+  <tr><th>Name</th><th class="n">Users</th></tr>
+  {% for t in teams %}
+  <tr><td>{{ t.name }}</td><td class="n">{{ t.users }}</td></tr>
+  {% else %}
+  <tr><td colspan="2" class="muted">No teams.</td></tr>
+  {% endfor %}
+</table>
+</div>
+<h2>Add team</h2>
+<form class="panel row" method="post" action="/admin/teams">
+  <label>Name <input name="name" required style="width:200px"></label>
+  <button>Add team</button>
+</form>
+{% endblock %}

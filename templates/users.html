@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block nav_users %}class="on"{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<p class="muted">The Budget is a limit on Price (what the user owes). When the user reaches it, the proxy rejects requests with HTTP 402.</p>
+<div class="panel scroll">
+<table>
+  <tr><th>Name</th><th>Team</th><th>Budget (USD)</th><th>Monthly</th><th>Disabled</th><th class="n">Spend this period</th><th class="n">Used</th><th class="n">Keys</th><th></th></tr>
+  {% for u in users %}
+  <tr>
+    <td>{{ u.name }}</td>
+    <td colspan="4">
+      <form class="inline" method="post" action="/admin/users/{{ u.id }}" id="u{{ u.id }}">
+        <select name="team_id">{% for o in u.team_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+        <input name="budget_usd" value="{{ u.budget }}" placeholder="none" size="8">
+        <label><input type="checkbox" name="monthly" {% if u.monthly %}checked{% endif %}> monthly</label>
+        <label><input type="checkbox" name="disabled" {% if u.disabled %}checked{% endif %}> disabled</label>
+      </form>
+    </td>
+    <td class="n">{{ u.spend }}</td>
+    <td class="n {% if u.over %}bad{% endif %}">{{ u.used }}</td>
+    <td class="n">{{ u.keys }}</td>
+    <td><button form="u{{ u.id }}">Save</button></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="9" class="muted">No users.</td></tr>
+  {% endfor %}
+</table>
+</div>
+
+<h2>Add user</h2>
+<form class="panel row" method="post" action="/admin/users">
+  <label>Name <input name="name" required style="width:180px"></label>
+  <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
+  <label>Budget (USD) <input name="budget_usd" placeholder="none"></label>
+  <label><span><input type="checkbox" name="monthly"> reset monthly</span></label>
+  <button>Add user</button>
+</form>
+{% endblock %}

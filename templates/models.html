@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block nav_models %}class="on"{% endblock %}
+{% block content %}
+<h1>Models</h1>
+<p class="muted">Rates are USD per million tokens. A Model also matches dated names that start with <code>name-</code>.</p>
+<div class="panel scroll">
+<table>
+  <tr><th>Model</th><th>Provider</th><th>Aliases</th><th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th>
+      <th class="n">Write 5m</th><th class="n">Write 1h</th><th class="n">Tiers</th><th>Price</th><th class="n">Team overrides</th></tr>
+  {% for m in models %}
+  <tr>
+    <td><a href="/admin/models/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.provider }}</td><td class="muted">{{ m.aliases }}</td>
+    {% if let Some(c) = m.cost %}
+    <td class="n">{{ c.input }}</td><td class="n">{{ c.output }}</td><td class="n">{{ c.cache_read }}</td>
+    <td class="n">{{ c.cache_write_5m }}</td><td class="n">{{ c.cache_write_1h }}</td><td class="n">{{ c.tier_count }}</td>
+    {% else %}
+    <td colspan="6"><span class="tag warn">no cost card</span></td>
+    {% endif %}
+    <td>{{ m.price }}</td><td class="n">{{ m.overrides }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="11" class="muted">No models.</td></tr>
+  {% endfor %}
+</table>
+</div>
+
+<h2>Default markup</h2>
+<form class="panel row" method="post" action="/admin/settings">
+  <label>Markup for models with no Price Card (%) <input name="default_markup_percent" value="{{ default_markup }}"></label>
+  <button>Save</button>
+</form>
+
+<h2>Add model</h2>
+<form class="panel" method="post" action="/admin/models">
+  <div class="row" style="margin-bottom:10px">
+    <label>Name <input name="name" required style="width:220px"></label>
+    <label>Provider <select name="provider">{% for p in providers %}<option>{{ p }}</option>{% endfor %}</select></label>
+    <label>Aliases (comma list) <input name="aliases" style="width:260px"></label>
+  </div>
+  <p class="muted" style="margin:0 0 4px">Cost Card (what the provider charges you):</p>
+  <div class="row">
+    <label>Input <input name="input" value="0"></label>
+    <label>Output <input name="output" value="0"></label>
+    <label>Cache read <input name="cache_read" value="0"></label>
+    <label>Cache write 5m <input name="cache_write_5m" value="0"></label>
+    <label>Cache write 1h <input name="cache_write_1h" value="0"></label>
+  </div>
+  <p class="muted" style="margin:10px 0 4px">Context Tiers, one per line: <code>above_input_tokens input output cache_read cache_write_5m cache_write_1h</code></p>
+  <textarea name="tiers" rows="2"></textarea>
+  <p><button>Add model</button></p>
+</form>
+{% endblock %}
