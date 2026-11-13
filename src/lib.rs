@@ -8,6 +8,7 @@ pub mod pricing;
 pub mod provider;
 pub mod proxy;
 pub mod state;
+pub mod translate;
 pub mod usage;
 pub mod web;
 
