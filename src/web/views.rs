@@ -148,7 +148,7 @@ pub struct Opt {
 fn team_opts(teams: &[TeamRow], selected: Option<i64>) -> Vec<Opt> {
     let mut v = vec![Opt {
         value: String::new(),
-        label: "(no team)".into(),
+        label: "No Team".into(),
         selected: selected.is_none(),
     }];
     v.extend(teams.iter().map(|t| Opt {
@@ -694,14 +694,21 @@ impl OverviewPage {
 pub struct UserView {
     pub id: i64,
     pub name: String,
+    pub team: String,
     pub team_opts: Vec<Opt>,
+    /// The Budget for the form, for example "12.5".
     pub budget: String,
+    /// The Budget for display, for example "$12.50" or "None".
+    pub budget_text: String,
     pub monthly: bool,
     pub disabled: bool,
-    pub spend: String,
+    pub spend: Money,
+    /// The Budget period of the spend: "this month" or "all time".
+    pub period: &'static str,
     pub used: String,
     pub over: bool,
     pub keys: i64,
+    pub limits: String,
     pub rpm_limit: String,
     pub tpm_limit: String,
 }
@@ -721,20 +728,36 @@ impl UsersPage {
             .map(|u| UserView {
                 id: u.id,
                 name: u.name.clone(),
+                team: u.team.clone().unwrap_or_else(|| "No Team".into()),
                 team_opts: team_opts(teams, u.team_id),
                 budget: u
                     .budget_micros
                     .map(crate::pricing::fmt_rate)
                     .unwrap_or_default(),
+                budget_text: u.budget_micros.map(money).unwrap_or_else(|| "None".into()),
                 monthly: u.budget_monthly,
                 disabled: u.disabled,
-                spend: money(u.period_spend),
+                spend: Money::total(u.period_spend),
+                period: if u.budget_monthly {
+                    "this month"
+                } else {
+                    "all time"
+                },
                 used: match u.budget_micros {
                     Some(b) if b > 0 => format!("{:.1}%", u.period_spend as f64 * 100.0 / b as f64),
                     _ => "-".into(),
                 },
                 over: u.budget_micros.is_some_and(|b| u.period_spend >= b),
                 keys: u.keys,
+                limits: if u.rpm_limit.is_none() && u.tpm_limit.is_none() {
+                    "Unlimited".into()
+                } else {
+                    format!(
+                        "RPM {}, TPM {}",
+                        limit_text(u.rpm_limit),
+                        limit_text(u.tpm_limit)
+                    )
+                },
                 rpm_limit: u.rpm_limit.map(|v| v.to_string()).unwrap_or_default(),
                 tpm_limit: u.tpm_limit.map(|v| v.to_string()).unwrap_or_default(),
             })
@@ -747,11 +770,45 @@ impl UsersPage {
     }
 }
 
+pub struct TeamView {
+    pub id: i64,
+    pub name: String,
+    pub users: Vec<String>,
+    /// Models with a price override for this Team: (Model id, name).
+    pub overrides: Vec<(i64, String)>,
+}
+
 #[derive(Template)]
 #[template(path = "teams.html")]
 pub struct TeamsPage {
     pub base: Base,
-    pub teams: Vec<TeamRow>,
+    pub teams: Vec<TeamView>,
+}
+
+impl TeamsPage {
+    pub fn build(base: Base, teams: &[TeamRow], users: &[UserRow], cat: &Catalog) -> TeamsPage {
+        TeamsPage {
+            base,
+            teams: teams
+                .iter()
+                .map(|t| TeamView {
+                    id: t.id,
+                    name: t.name.clone(),
+                    users: users
+                        .iter()
+                        .filter(|u| u.team_id == Some(t.id))
+                        .map(|u| u.name.clone())
+                        .collect(),
+                    overrides: cat
+                        .models
+                        .iter()
+                        .filter(|m| m.team_price.contains_key(&t.id))
+                        .map(|m| (m.id, m.name.clone()))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 // -------------------------------------------------------------------- keys

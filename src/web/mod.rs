@@ -51,6 +51,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/users", get(users).post(create_user))
         .route("/admin/users/{id}", post(update_user))
         .route("/admin/teams", get(teams).post(create_team))
+        .route("/admin/teams/{id}", post(rename_team))
+        .route("/admin/teams/{id}/delete", post(delete_team))
         .route("/admin/keys", get(keys).post(create_key))
         .route("/admin/keys/{id}", post(update_key))
         .route("/admin/keys/{id}/limits", post(update_key_limits))
@@ -534,6 +536,14 @@ fn render<T: Template>(t: T) -> Response {
     }
 }
 
+/// A Budget in USD: blank for no Budget, else 0 or more.
+fn opt_budget(s: &str) -> Result<Option<i64>, Response> {
+    match opt_usd(s)? {
+        Some(v) if v < 0 => Err(bad("A Budget must be 0 or more, or blank for no Budget.")),
+        v => Ok(v),
+    }
+}
+
 fn opt_usd(s: &str) -> Result<Option<i64>, Response> {
     if s.trim().is_empty() {
         return Ok(None);
@@ -589,7 +599,7 @@ impl LimitsForm {
                 .filter(|&n| n >= 0)
                 .map(Some)
                 .ok_or_else(|| {
-                    bad("Rate Limits must be non-negative integers, or blank for unlimited.")
+                    bad("Rate Limits must be whole numbers of 0 or more, or blank for unlimited.")
                 })
         };
         Ok(Limits {
@@ -681,7 +691,7 @@ async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserFor
     if name.is_empty() {
         return bad("A User needs a name.");
     }
-    let budget = match opt_usd(&f.budget_usd) {
+    let budget = match opt_budget(&f.budget_usd) {
         Ok(b) => b,
         Err(r) => return r,
     };
@@ -713,52 +723,84 @@ async fn update_user(
     Path(id): Path<i64>,
     Form(f): Form<UserForm>,
 ) -> Response {
-    if st.settings().mode == "simple" {
-        tryr!(
-            sqlx::query("UPDATE users SET team_id=?, disabled=? WHERE id=?")
-                .bind(team_id(&f.team_id))
-                .bind(f.disabled.is_some())
-                .bind(id)
-                .execute(&st.db)
-                .await
-        );
-        return saved(&format!("/admin/users#u{id}"), "User saved.");
+    let simple = st.settings().mode == "simple";
+    // Simple Mode hides Budgets and Rate Limits; keep the stored values.
+    let money = if simple {
+        None
+    } else {
+        let budget = match opt_budget(&f.budget_usd) {
+            Ok(b) => b,
+            Err(r) => return r,
+        };
+        let limits = match f.limits.parse() {
+            Ok(l) => l,
+            Err(r) => return r,
+        };
+        Some((budget, limits))
+    };
+    let mut tx = tryr!(st.db.begin().await);
+    // A blank name keeps the current name.
+    let name = f.name.trim();
+    if !name.is_empty()
+        && let Err(e) = sqlx::query("UPDATE users SET name=? WHERE id=?")
+            .bind(name)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+    {
+        let e = anyhow::Error::from(e);
+        if is_unique_violation(&e) {
+            return bad(format!("A User named {name} already exists."));
+        }
+        return internal(e);
     }
-    let budget = match opt_usd(&f.budget_usd) {
-        Ok(b) => b,
-        Err(r) => return r,
-    };
-    let limits = match f.limits.parse() {
-        Ok(l) => l,
-        Err(r) => return r,
-    };
     tryr!(
-        db::update_user_with_limits(
-            &st.db,
-            id,
-            team_id(&f.team_id),
-            budget,
-            f.monthly.is_some(),
-            f.disabled.is_some(),
-            limits
-        )
-        .await
+        sqlx::query("UPDATE users SET team_id=?, disabled=? WHERE id=?")
+            .bind(team_id(&f.team_id))
+            .bind(f.disabled.is_some())
+            .bind(id)
+            .execute(&mut *tx)
+            .await
     );
-    saved(&format!("/admin/users#u{id}"), "User saved.")
+    if let Some((budget, limits)) = money {
+        tryr!(
+            sqlx::query(
+                "UPDATE users SET budget_micros=?, budget_monthly=?, rpm_limit=?, tpm_limit=? WHERE id=?"
+            )
+            .bind(budget)
+            .bind(f.monthly.is_some())
+            .bind(limits.rpm)
+            .bind(limits.tpm)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+        );
+    }
+    tryr!(tx.commit().await);
+    let label = if name.is_empty() {
+        "User saved.".to_owned()
+    } else {
+        format!("User {name} saved.")
+    };
+    saved(&format!("/admin/users#u{id}"), &label)
 }
 
 // ------------------------------------------------------------------ teams
 
 async fn teams(_: Admin, State(st): State<AppState>) -> Response {
     let teams = tryr!(db::list_teams(&st.db).await);
-    render(TeamsPage {
-        base: Base::new(&st),
-        teams,
-    })
+    let users = tryr!(db::list_users(&st.db).await);
+    render(TeamsPage::build(
+        Base::new(&st),
+        &teams,
+        &users,
+        &st.catalog(),
+    ))
 }
 
 #[derive(Deserialize)]
 struct NameForm {
+    #[serde(default)]
     name: String,
 }
 
@@ -774,6 +816,66 @@ async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameFor
         return internal(e);
     }
     saved("/admin/teams", &format!("Team {name} added."))
+}
+
+async fn rename_team(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Form(f): Form<NameForm>,
+) -> Response {
+    let name = f.name.trim();
+    if name.is_empty() {
+        return bad("A Team needs a name.");
+    }
+    if let Err(e) = sqlx::query("UPDATE teams SET name=? WHERE id=?")
+        .bind(name)
+        .bind(id)
+        .execute(&st.db)
+        .await
+    {
+        let e = anyhow::Error::from(e);
+        if is_unique_violation(&e) {
+            return bad(format!("A Team named {name} already exists."));
+        }
+        return internal(e);
+    }
+    // Overrides show the Team name from the catalog.
+    tryr!(st.reload_catalog().await);
+    saved(
+        &format!("/admin/teams#t{id}"),
+        &format!("Team {name} saved."),
+    )
+}
+
+async fn delete_team(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
+    let (users, used): (i64, bool) = tryr!(
+        sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM users WHERE team_id=?1), \
+             EXISTS(SELECT 1 FROM cards WHERE team_id=?1) OR EXISTS(SELECT 1 FROM ledger WHERE team_id=?1)"
+        )
+        .bind(id)
+        .fetch_one(&st.db)
+        .await
+    );
+    if users > 0 {
+        return bad("This Team has Users. Move its Users to another Team first.");
+    }
+    if used {
+        return bad(
+            "This Team has price overrides or Ledger Entries, so it stays for the records. Rename it instead.",
+        );
+    }
+    let name: Option<String> = tryr!(
+        sqlx::query_scalar("DELETE FROM teams WHERE id=? RETURNING name")
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await
+    );
+    match name {
+        Some(name) => saved("/admin/teams", &format!("Team {name} deleted.")),
+        None => bad("Team not found. Reload the page."),
+    }
 }
 
 // ------------------------------------------------------------------- keys

@@ -3,47 +3,83 @@
 {% block nav_users %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Users</h1>
-{% if !base.simple %}<p class="muted">The Budget is a limit on Price (what the user owes). When the user reaches it, the proxy rejects requests with HTTP 402.</p>
-<p class="muted">Rate Limits apply across all keys of the User. RPM = requests per minute; TPM = completed tokens per minute. Blank = unlimited; 0 blocks requests.</p>
-{% endif %}
-<div class="panel scroll">
-<table>
-  <tr><th>Name</th><th colspan="4">Team{% if !base.simple %}, Budget (USD){% endif %}, options</th>{% if !base.simple %}<th class="n">Spend this period</th><th class="n">Used</th>{% endif %}<th class="n">Keys</th><th></th></tr>
-  {% for u in users %}
-  <tr>
-    <td>{{ u.name }}</td>
-    <td colspan="4">
-      <form class="inline" method="post" action="/admin/users/{{ u.id }}" id="u{{ u.id }}">
-        <select name="team_id">{% for o in u.team_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
-        {% if !base.simple %}<input name="budget_usd" value="{{ u.budget }}" placeholder="none" size="8">
-        <label>RPM <input type="number" min="0" step="1" name="rpm_limit" value="{{ u.rpm_limit }}" placeholder="unlimited" style="width:110px"></label>
-        <label>TPM <input type="number" min="0" step="1" name="tpm_limit" value="{{ u.tpm_limit }}" placeholder="unlimited" style="width:130px"></label>
-        <label><input type="checkbox" name="monthly" {% if u.monthly %}checked{% endif %}> monthly</label>
-        {% endif %}
-        <label><input type="checkbox" name="disabled" {% if u.disabled %}checked{% endif %}> disabled</label>
-      </form>
-    </td>
-    {% if !base.simple %}<td class="n">{{ u.spend }}</td>
-    <td class="n {% if u.over %}bad{% endif %}">{{ u.used }}</td>
+<p class="muted">A User holds Virtual Keys. Usage is recorded per User.{% if !base.simple %} The Budget is a limit on Price: when the User reaches it, the Proxy refuses requests with HTTP 402.{% endif %}</p>
+
+<section class="panel" aria-labelledby="add-user-h">
+  <h2 id="add-user-h">Add a User</h2>
+  <form method="post" action="/admin/users" class="stack">
+    <div class="row">
+      <div class="field"><label for="new-name">Name</label><input id="new-name" name="name" required autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label for="new-team">Team</label><select id="new-team" name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></div>
+      {% if !base.simple %}
+      <div class="field"><label for="new-budget">Budget (USD)</label><input id="new-budget" name="budget_usd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="No Budget" aria-describedby="budget-help"><p class="hint" id="budget-help">Blank for no Budget.</p></div>
+      <label class="check"><input type="checkbox" name="monthly"> Reset monthly</label>
+      {% endif %}
+    </div>
+    {% if !base.simple %}
+    <fieldset aria-describedby="user-limits-help">
+      <legend>Rate Limits</legend>
+      <div class="row">
+        <label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited" inputmode="numeric"></label>
+        <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited" inputmode="numeric"></label>
+      </div>
+      <p class="hint" id="user-limits-help">Requests and completed tokens per minute, across all keys of the User. Blank is unlimited; 0 blocks requests.</p>
+    </fieldset>
     {% endif %}
-    <td class="n"><a href="/admin/keys?user={{ u.id }}" aria-label="{{ u.keys }} keys of {{ u.name }}">{{ u.keys }}</a></td>
-    <td><button form="u{{ u.id }}">Save</button></td>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Add user</button>
+  </form>
+</section>
+
+<h2 id="users-h">All Users</h2>
+<div class="panel scroll">
+<table class="users cards-sm">
+  <thead><tr><th scope="col">Name</th><th scope="col">Team</th>{% if !base.simple %}<th scope="col">Budget</th><th scope="col" class="n">Spend</th><th scope="col" class="n">Used</th><th scope="col">Rate Limits</th>{% endif %}<th scope="col" class="n">Keys</th><th scope="col">Status</th><th scope="col"><span class="vh">Actions</span></th></tr></thead>
+  <tbody>
+  {% for u in users %}
+  <tr id="u{{ u.id }}">
+    <th scope="row"><span class="name">{{ u.name }}</span></th>
+    <td data-label="Team">{{ u.team }}</td>
+    {% if !base.simple %}
+    <td data-label="Budget">{{ u.budget_text }}{% if u.monthly %} <span class="muted">monthly</span>{% endif %}</td>
+    <td data-label="Spend" class="n" title="{{ u.spend.exact }}">{{ u.spend }} <span class="sub">{{ u.period }}</span></td>
+    <td data-label="Used" class="n">{% if u.over %}<span class="tag bad">{{ u.used }}, over Budget</span>{% else %}{{ u.used }}{% endif %}</td>
+    <td data-label="Rate Limits">{{ u.limits }}</td>
+    {% endif %}
+    <td data-label="Keys" class="n"><a href="/admin/keys?user={{ u.id }}" aria-label="{{ u.keys }} active keys of {{ u.name }}">{{ u.keys }}</a></td>
+    <td data-label="Status">{% if u.disabled %}<span class="tag warn">Disabled</span>{% else %}Active{% endif %}</td>
+    <td><div class="actions"><button type="button" class="ghost" data-toggle="edit-u{{ u.id }}" aria-expanded="false" aria-controls="edit-u{{ u.id }}" aria-label="Edit User {{ u.name }}">Edit</button></div></td>
+  </tr>
+  <tr id="edit-u{{ u.id }}" class="edit-row" data-collapse>
+    <td colspan="{% if base.simple %}5{% else %}9{% endif %}"><div class="edit-panel">
+      <form method="post" action="/admin/users/{{ u.id }}" class="stack" aria-label="Edit User {{ u.name }}">
+        <div class="row">
+          <div class="field"><label for="u{{ u.id }}-name">Name</label><input id="u{{ u.id }}-name" name="name" value="{{ u.name }}" required autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="u{{ u.id }}-team">Team</label><select id="u{{ u.id }}-team" name="team_id">{% for o in u.team_opts %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
+          {% if !base.simple %}
+          <div class="field"><label for="u{{ u.id }}-budget">Budget (USD)</label><input id="u{{ u.id }}-budget" name="budget_usd" type="number" min="0" step="0.01" inputmode="decimal" value="{{ u.budget }}" placeholder="No Budget"></div>
+          <label class="check"><input type="checkbox" name="monthly"{% if u.monthly %} checked{% endif %}> Reset monthly</label>
+          {% endif %}
+        </div>
+        {% if !base.simple %}
+        <fieldset>
+          <legend>Rate Limits for {{ u.name }}</legend>
+          <div class="row">
+            <label>RPM <input type="number" min="0" step="1" name="rpm_limit" value="{{ u.rpm_limit }}" placeholder="unlimited" inputmode="numeric"></label>
+            <label>TPM <input type="number" min="0" step="1" name="tpm_limit" value="{{ u.tpm_limit }}" placeholder="unlimited" inputmode="numeric"></label>
+          </div>
+        </fieldset>
+        {% endif %}
+        <label class="check"><input type="checkbox" name="disabled"{% if u.disabled %} checked{% endif %}> Disabled (the Proxy refuses all keys of this User)</label>
+        <div class="form-error" role="alert" tabindex="-1"></div>
+        <div class="row"><button aria-label="Save User {{ u.name }}">Save</button><button type="button" class="ghost" data-toggle="edit-u{{ u.id }}">Cancel</button></div>
+      </form>
+    </div></td>
   </tr>
   {% else %}
-  <tr><td colspan="{% if base.simple %}7{% else %}9{% endif %}" class="muted">No users.</td></tr>
+  <tr><td colspan="{% if base.simple %}5{% else %}9{% endif %}" class="empty">No Users yet. Add one above, then add a Virtual Key for it.</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
-
-<h2>Add user</h2>
-<form class="panel row" method="post" action="/admin/users">
-  <label>Name <input name="name" required style="width:180px"></label>
-  <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
-  {% if !base.simple %}<label>Budget (USD) <input name="budget_usd" placeholder="none"></label>
-  <label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited"></label>
-  <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited"></label>
-  <label class="check"><input type="checkbox" name="monthly"> reset monthly</label>
-  {% endif %}
-  <button>Add user</button>
-</form>
 {% endblock %}

@@ -3,20 +3,46 @@
 {% block nav_teams %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Teams</h1>
-{% if base.simple %}<p class="muted">A Team groups users for token metrics.</p>{% else %}<p class="muted">A Team groups users for billing. Set Team price overrides on the page of each model.</p>{% endif %}
-<div class="panel">
-<table>
-  <tr><th>Name</th><th class="n">Users</th></tr>
+{% if base.simple %}<p class="muted">A Team groups Users for token metrics.</p>{% else %}<p class="muted">A Team groups Users that are billed together. Set a Team price override on the page of a Model.</p>{% endif %}
+
+<section class="panel" aria-labelledby="add-team-h">
+  <h2 id="add-team-h">Add a Team</h2>
+  <form method="post" action="/admin/teams" class="row">
+    <div class="field"><label for="new-team-name">Name</label><input id="new-team-name" name="name" required autocomplete="off" spellcheck="false"></div>
+    <button>Add team</button>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+  </form>
+</section>
+
+<h2 id="teams-h">All Teams</h2>
+<div class="panel scroll">
+<table class="teams cards-sm">
+  <thead><tr><th scope="col">Name</th><th scope="col">Users</th>{% if !base.simple %}<th scope="col">Price overrides</th>{% endif %}<th scope="col"><span class="vh">Actions</span></th></tr></thead>
+  <tbody>
   {% for t in teams %}
-  <tr><td>{{ t.name }}</td><td class="n">{{ t.users }}</td></tr>
+  <tr id="t{{ t.id }}">
+    <th scope="row"><span class="name">{{ t.name }}</span></th>
+    <td data-label="Users" class="wrap">{% if t.users.is_empty() %}<span class="muted">None</span>{% else %}{{ t.users.len() }}: {{ t.users.join(", ") }}{% endif %}</td>
+    {% if !base.simple %}<td data-label="Price overrides" class="wrap">{% for (id, name) in t.overrides %}<a href="/admin/models/{{ id }}">{{ name }}</a>{% if !loop.last %}, {% endif %}{% else %}<span class="muted">None</span>{% endfor %}</td>{% endif %}
+    <td><div class="actions">
+      <button type="button" class="ghost" data-toggle="edit-t{{ t.id }}" aria-expanded="false" aria-controls="edit-t{{ t.id }}" aria-label="Edit Team {{ t.name }}">Edit</button>
+      <form class="inline" method="post" action="/admin/teams/{{ t.id }}/delete" data-confirm="Delete Team {{ t.name }}? This works only for a Team with no Users, overrides or Ledger Entries."><button class="danger" aria-label="Delete Team {{ t.name }}">Delete</button></form>
+    </div></td>
+  </tr>
+  <tr id="edit-t{{ t.id }}" class="edit-row" data-collapse>
+    <td colspan="{% if base.simple %}3{% else %}4{% endif %}"><div class="edit-panel">
+      <form method="post" action="/admin/teams/{{ t.id }}" class="row" aria-label="Edit Team {{ t.name }}">
+        <div class="field"><label for="t{{ t.id }}-name">Name</label><input id="t{{ t.id }}-name" name="name" value="{{ t.name }}" required autocomplete="off" spellcheck="false"></div>
+        <button aria-label="Save Team {{ t.name }}">Save</button><button type="button" class="ghost" data-toggle="edit-t{{ t.id }}">Cancel</button>
+        <div class="form-error" role="alert" tabindex="-1"></div>
+      </form>
+      <p class="hint">To move a User to another Team, edit the User on the <a href="/admin/users">Users</a> page.</p>
+    </div></td>
+  </tr>
   {% else %}
-  <tr><td colspan="2" class="muted">No teams.</td></tr>
+  <tr><td colspan="{% if base.simple %}3{% else %}4{% endif %}" class="empty">No Teams. Teams are optional; add one to group Users.</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
-<h2>Add team</h2>
-<form class="panel row" method="post" action="/admin/teams">
-  <label>Name <input name="name" required style="width:200px"></label>
-  <button>Add team</button>
-</form>
 {% endblock %}
