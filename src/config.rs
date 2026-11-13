@@ -296,13 +296,13 @@ impl PriceCfg {
     pub fn to_spec(&self) -> Result<PriceSpec> {
         let has_rates = self.base.as_ref().is_some_and(|b| !b.is_zero()) || !self.tiers.is_empty();
         match (self.markup_percent, has_rates) {
-            (Some(_), true) => bail!("a price card has markup_percent and rates; set only one"),
+            (Some(_), true) => bail!("A Price Card has markup_percent and rates. Set only one."),
             (Some(p), false) => Ok(PriceSpec::MarkupBp(percent_to_bp(p))),
             (None, true) => Ok(PriceSpec::Rates(CardRates {
                 base: self.base.clone().unwrap_or_default().to_rates(),
                 tiers: tiers(&self.tiers),
             })),
-            (None, false) => bail!("a price card needs markup_percent or rates"),
+            (None, false) => bail!("A Price Card needs markup_percent or rates."),
         }
     }
 }
@@ -319,7 +319,7 @@ impl Config {
 
     pub fn validate(&self) -> Result<()> {
         if !matches!(self.server.mode.as_str(), "full" | "simple") {
-            bail!("mode must be full or simple");
+            bail!("The mode must be full or simple.");
         }
         if self.server.upstream_timeout_secs == 0
             || self.server.session_days <= 0
@@ -328,7 +328,7 @@ impl Config {
             || !self.server.default_markup_percent.is_finite()
         {
             bail!(
-                "timeout and session days must be positive (session days at most 3650), reserved tokens must be non-negative, and markup must be finite"
+                "The timeout and session days must be positive (session days at most 3650). Reserved tokens must be 0 or more, and the Markup must be a number."
             );
         }
         let mut providers = std::collections::HashSet::new();
@@ -347,7 +347,7 @@ impl Config {
                     || !p.api_keys.is_empty()
                     || !p.api_keys_env.is_empty()
                 {
-                    bail!("subscription providers require base URL {base} and no API keys");
+                    bail!("A Subscription Provider needs the base URL {base} and no API keys.");
                 }
             }
             if matches!(
@@ -355,13 +355,20 @@ impl Config {
                 (ProviderAuth::Chatgpt, ProviderKind::Anthropic)
                     | (ProviderAuth::Claude, ProviderKind::Openai)
             ) {
-                bail!("subscription auth does not match provider kind");
+                bail!(
+                    "The authentication of Provider {} does not match its API format.",
+                    p.name
+                );
             }
             if !providers.insert(&p.name) {
-                bail!("duplicate provider {}", p.name);
+                bail!("A Provider named {} already exists.", p.name);
             }
-            let url = reqwest::Url::parse(&p.base_url)
-                .with_context(|| format!("provider {} needs an absolute base URL", p.name))?;
+            let url = reqwest::Url::parse(&p.base_url).with_context(|| {
+                format!(
+                    "Provider {} needs an absolute base URL, for example https://api.openai.com.",
+                    p.name
+                )
+            })?;
             if !matches!(url.scheme(), "http" | "https")
                 || url.host_str().is_none()
                 || !url.username().is_empty()
@@ -370,38 +377,45 @@ impl Config {
                 || url.fragment().is_some()
             {
                 bail!(
-                    "provider {} needs an HTTP(S) base URL without credentials, query or fragment",
+                    "Provider {} needs an HTTP or HTTPS base URL without credentials, query or fragment.",
                     p.name
                 );
             }
         }
         if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
-            bail!("router failure_threshold and max_attempts must be positive");
+            bail!("The failure threshold and the maximum attempts must be positive.");
         }
         let mut names = std::collections::HashSet::new();
         for r in &self.routes {
             validate_name(&r.name)?;
             if !names.insert(&r.name) {
-                bail!("duplicate route {}", r.name);
+                bail!("A Route named {} already exists.", r.name);
             }
             for d in &r.deployments {
                 if d.model.trim().is_empty() {
                     bail!(
-                        "route {} needs an upstream model for each deployment",
+                        "Route {} needs an upstream model for each Deployment.",
                         r.name
                     );
                 }
                 if !self.providers.iter().any(|p| p.name == d.provider) {
-                    bail!("route {} uses unknown provider {}", r.name, d.provider);
+                    bail!(
+                        "Route {} uses an unknown Provider {}. Add the Provider first.",
+                        r.name,
+                        d.provider
+                    );
                 }
                 if d.weight == 0 {
-                    bail!("route {} has zero deployment weight", r.name);
+                    bail!(
+                        "Route {} has a zero deployment weight. Use 1 or more.",
+                        r.name
+                    );
                 }
             }
         }
         for m in &self.models {
             if !self.providers.iter().any(|p| p.name == m.provider) {
-                bail!("model {} uses unknown provider {}", m.name, m.provider);
+                bail!("Model {} uses an unknown Provider {}.", m.name, m.provider);
             }
             if let Some(p) = &m.price {
                 p.to_spec().with_context(|| format!("model {}", m.name))?;
@@ -418,7 +432,7 @@ impl Config {
             if let Some(t) = &u.team
                 && !self.teams.iter().any(|x| &x.name == t)
             {
-                bail!("user {} uses unknown team {}", u.name, t);
+                bail!("User {} uses an unknown Team {}.", u.name, t);
             }
         }
         Ok(())
@@ -446,7 +460,7 @@ pub fn validate_name(name: &str) -> Result<()> {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
     {
-        bail!("names must contain only letters, digits, dot, underscore or hyphen");
+        bail!("Names must contain only letters, digits, dot, underscore or hyphen.");
     }
     Ok(())
 }
@@ -521,7 +535,7 @@ fallbacks = ["loaded-from-db-at-request-time"]
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("duplicate route")
+                .contains("A Route named")
         );
         let mut invalid = cfg.clone();
         invalid.routes[0].deployments[0].provider = "missing".into();
@@ -530,7 +544,7 @@ fallbacks = ["loaded-from-db-at-request-time"]
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("unknown provider")
+                .contains("unknown Provider")
         );
         let mut invalid = cfg;
         invalid.routes[0].deployments[0].weight = 0;

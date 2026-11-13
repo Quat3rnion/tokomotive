@@ -553,7 +553,7 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
                 ("deployment_model", "m"),
                 ("deployment_weight", "1"),
             ],
-            "unknown provider missing",
+            "unknown Provider missing",
         ),
         (
             vec![
