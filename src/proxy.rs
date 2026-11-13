@@ -49,13 +49,19 @@ fn prepare_body(
     let dir = translation(candidate.provider.kind, endpoint);
     let target = dir.map_or(endpoint, |d| Endpoint::from_path(d.upstream_path()));
     let mut prepared = match dir {
-        Some(dir) => Some(translate::translate_request(dir, body.unwrap_or(&Value::Null))?),
+        Some(dir) => Some(translate::translate_request(
+            dir,
+            body.unwrap_or(&Value::Null),
+        )?),
         None => body.cloned(),
     };
-    if candidate.rewrite && let Some(v) = prepared.as_mut() {
+    if candidate.rewrite
+        && let Some(v) = prepared.as_mut()
+    {
         v["model"] = json!(candidate.model);
     }
-    let strip = prepared.as_mut()
+    let strip = prepared
+        .as_mut()
         .is_some_and(|v| candidate.provider.kind.prepare_body(target, v));
     Ok((prepared, target, strip))
 }
@@ -403,7 +409,9 @@ pub async fn handle(
             .iter()
             .filter_map(|c| {
                 let (prepared, target, _) = prepare_body(c, endpoint, json_body.as_ref()).ok()?;
-                let len = prepared.as_ref().map_or(body.len(), |v| v.to_string().len());
+                let len = prepared
+                    .as_ref()
+                    .map_or(body.len(), |v| v.to_string().len());
                 Some(worst_case_price(
                     &catalog,
                     auth.team_id,
@@ -466,13 +474,14 @@ pub async fn handle(
         };
         let provider = &candidate.provider;
         let dir = translation(provider.kind, endpoint);
-        let (prepared, target_endpoint, strip) = match prepare_body(candidate, endpoint, json_body.as_ref()) {
-            Ok(v) => v,
-            Err(e) => {
-                translation_error = Some(e);
-                continue;
-            }
-        };
+        let (prepared, target_endpoint, strip) =
+            match prepare_body(candidate, endpoint, json_body.as_ref()) {
+                Ok(v) => v,
+                Err(e) => {
+                    translation_error = Some(e);
+                    continue;
+                }
+            };
         let upstream_body = match prepared {
             Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
             None => body.clone(),
@@ -534,7 +543,9 @@ pub async fn handle(
         previous_route = Some(candidate.route.clone());
     }
     let Some(upstream) = upstream else {
-        if ctx.attempts == 0 && let Some(e) = translation_error {
+        if ctx.attempts == 0
+            && let Some(e) = translation_error
+        {
             return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message);
         }
         ctx.finish(Outcome::failed(502));

@@ -114,8 +114,10 @@ order. A Route with both Provider kinds can serve both client formats.
 Translation supports text, images and function tools, with and without
 streaming. It has these limits:
 
-- It rejects `n` greater than 1 and JSON-schema response formats with HTTP 400
-  before an upstream call.
+- It skips Deployments that cannot translate `n` greater than 1 or JSON-schema
+  response formats. If no Deployment can send the request, it returns HTTP 400.
+  If an upstream call already failed, it keeps the last upstream outcome and
+  records a Ledger Entry.
 - It drops other unsupported options, cache-control hints, thinking blocks and
   signatures.
 - It translates choice 0 only.
@@ -124,6 +126,11 @@ streaming. It has these limits:
 - Chat `reasoning_effort` (`low`, `medium` or `high`) sets a thinking budget of
   1,024, 4,096 or 16,384 tokens. An explicit output limit must be larger than the
   budget.
+
+A Chat request can set both `max_tokens` and `max_completion_tokens` only if
+their non-null values are equal. Different values return HTTP 400. Budget
+Reservations cover the prepared output limits of all candidate Deployments,
+including translated thinking budgets and defaults.
 
 The Ledger Entry uses the client's endpoint and the upstream Model and usage.
 Cost and Price use upstream Token Classes, before Translation. The Proxy

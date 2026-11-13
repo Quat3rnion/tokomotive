@@ -47,8 +47,11 @@ pub fn validate_chat_limits(body: &Value) -> Result<(), TranslateError> {
     if let (Some(a), Some(b)) = (
         body.get("max_tokens").filter(|v| !v.is_null()),
         body.get("max_completion_tokens").filter(|v| !v.is_null()),
-    ) && a != b {
-        return Err(invalid("max_tokens and max_completion_tokens must not have different values"));
+    ) && a != b
+    {
+        return Err(invalid(
+            "max_tokens and max_completion_tokens must not have different values",
+        ));
     }
     Ok(())
 }
@@ -56,7 +59,8 @@ pub fn validate_chat_limits(body: &Value) -> Result<(), TranslateError> {
 /// The effective explicit output limit, in the order used by Chat translation.
 pub fn output_token_limit(body: &Value) -> Option<&Value> {
     ["max_completion_tokens", "max_tokens", "max_output_tokens"]
-        .iter().find_map(|key| body.get(*key).filter(|v| !v.is_null()))
+        .iter()
+        .find_map(|key| body.get(*key).filter(|v| !v.is_null()))
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -81,12 +85,18 @@ fn copy_fields(from: &Value, to: &mut Value, keys: &[&str]) {
 
 fn chat_parts(content: &Value) -> Result<Vec<Value>, TranslateError> {
     if let Some(s) = content.as_str() {
-        return Ok(if s.is_empty() { vec![] } else { vec![json!({"type":"text","text":s})] });
+        return Ok(if s.is_empty() {
+            vec![]
+        } else {
+            vec![json!({"type":"text","text":s})]
+        });
     }
     let mut out = Vec::new();
     for part in array(content) {
         match text(part, "type") {
-            "text" if !text(part, "text").is_empty() => out.push(json!({"type":"text","text":text(part,"text")})),
+            "text" if !text(part, "text").is_empty() => {
+                out.push(json!({"type":"text","text":text(part,"text")}))
+            }
             "image_url" => {
                 let url = part["image_url"]
                     .as_str()
@@ -311,14 +321,16 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
                         }
                         "tool_result" => {
                             flush_chat_message(&mut translated, role, &mut parts, &mut calls);
-                            let (images, texts): (Vec<_>, Vec<_>) = message_parts(&block["content"])
-                                .into_iter().partition(|p| p["type"] == "image_url");
+                            let (images, texts): (Vec<_>, Vec<_>) =
+                                message_parts(&block["content"])
+                                    .into_iter()
+                                    .partition(|p| p["type"] == "image_url");
                             if !images.is_empty() {
                                 tool_images.push(json!({"type":"text","text":format!("Images from tool result {}:", text(block, "tool_use_id"))}));
                                 tool_images.extend(images);
                             }
                             translated
-                                 .push(json!({"role":"tool","tool_call_id":block["tool_use_id"],
+                                .push(json!({"role":"tool","tool_call_id":block["tool_use_id"],
                                 "content":chat_content(texts)}));
                         }
                         _ => {

@@ -184,7 +184,9 @@ async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
-    if let Err(e) = db::create_session_for_password(&st.db, &token, st.settings().session_days, Some(&pw)).await {
+    if let Err(e) =
+        db::create_session_for_password(&st.db, &token, st.settings().session_days, Some(&pw)).await
+    {
         return internal(e);
     }
     let max_age = st.settings().session_days * 86_400;

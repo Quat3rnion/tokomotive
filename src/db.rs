@@ -983,7 +983,10 @@ pub async fn create_session(db: &Db, token: &str, days: i64) -> Result<()> {
 
 /// Use the exact hash that the login verified, not a fresh password lookup.
 pub async fn create_session_for_password(
-    db: &Db, token: &str, days: i64, password_hash: Option<&str>,
+    db: &Db,
+    token: &str,
+    days: i64,
+    password_hash: Option<&str>,
 ) -> Result<()> {
     sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
         .bind(now_s())

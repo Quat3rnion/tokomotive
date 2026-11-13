@@ -408,22 +408,38 @@ mod tests {
         let st = crate::init(&cfg, None).await.unwrap();
         let candidate = Candidate {
             provider: Provider::new("test", ProviderKind::Openai, "http://localhost", vec![]),
-            model: Some("test".into()), rewrite: true, route: "test".into(),
+            model: Some("test".into()),
+            rewrite: true,
+            route: "test".into(),
         };
-        let settings = RouterSettings { failure_threshold: 1, cooldown_secs: 30, max_attempts: 8 };
+        let settings = RouterSettings {
+            failure_threshold: 1,
+            cooldown_secs: 30,
+            max_attempts: 8,
+        };
         let old = st.acquire_deployment(&candidate, &settings, false).unwrap();
         let failed = st.acquire_deployment(&candidate, &settings, false).unwrap();
         failed.record(false);
         // Advance the circuit's clock without waiting for the cooldown.
-        st.circuits.lock().unwrap().get_mut(&candidate.key()).unwrap().opened =
-            Some(Instant::now() - Duration::from_secs(31));
+        st.circuits
+            .lock()
+            .unwrap()
+            .get_mut(&candidate.key())
+            .unwrap()
+            .opened = Some(Instant::now() - Duration::from_secs(31));
         let probe = st.acquire_deployment(&candidate, &settings, false).unwrap();
         old.record(true);
-        assert!(st.acquire_deployment(&candidate, &settings, false).is_none(),
-            "stale success admitted traffic beside the active probe");
+        assert!(
+            st.acquire_deployment(&candidate, &settings, false)
+                .is_none(),
+            "stale success admitted traffic beside the active probe"
+        );
         probe.record(false);
         old.record(true);
-        assert!(!st.deployment_available(&candidate, &settings), "stale success closed the newer open circuit");
+        assert!(
+            !st.deployment_available(&candidate, &settings),
+            "stale success closed the newer open circuit"
+        );
     }
 
     #[tokio::test]
