@@ -159,9 +159,33 @@ pub struct UserCfg {
     pub budget_usd: Option<f64>,
     #[serde(default)]
     pub budget_monthly: bool,
+    /// User-wide requests per minute. Omitted means unlimited; zero blocks requests.
+    #[serde(default, deserialize_with = "UserCfg::limit")]
+    pub rpm_limit: Option<i64>,
+    /// User-wide completed tokens per minute, across all Token Classes.
+    #[serde(default, deserialize_with = "UserCfg::limit")]
+    pub tpm_limit: Option<i64>,
+    /// Requests per minute for each newly seeded Virtual Key of this User.
+    #[serde(default, deserialize_with = "UserCfg::limit")]
+    pub key_rpm_limit: Option<i64>,
+    /// Completed tokens per minute for each newly seeded Virtual Key.
+    #[serde(default, deserialize_with = "UserCfg::limit")]
+    pub key_tpm_limit: Option<i64>,
     /// Plain Virtual Keys to create for the User. For development only.
     #[serde(default)]
     pub keys: Vec<String>,
+}
+
+impl UserCfg {
+    fn limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+        let limit = Option::<i64>::deserialize(d)?;
+        if limit.is_some_and(|v| v < 0) {
+            return Err(serde::de::Error::custom(
+                "a rate limit must be non-negative",
+            ));
+        }
+        Ok(limit)
+    }
 }
 
 pub fn usd_to_micros(v: f64) -> i64 {

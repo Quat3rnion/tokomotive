@@ -159,6 +159,7 @@ names of the Models in your dashboard.
 | `/admin/users/{id}`                     | POST     | Changes the Team, the Budget and the status of a User.            |
 | `/admin/teams`                          | GET, POST | Teams page. POST adds a Team.                                    |
 | `/admin/keys`                           | GET, POST | Keys page. POST creates a Virtual Key.                           |
+| `/admin/keys/{id}/limits`               | POST     | Changes the Rate Limits of a Virtual Key.                        |
 | `/admin/keys/{id}/revoke`               | POST     | Revokes a Virtual Key.                                            |
 | `/admin/models`                         | GET, POST | Models page. POST adds a Model.                                  |
 | `/admin/models/{id}`                    | GET, POST | Page of one Model. POST changes the Provider and the aliases.    |
@@ -223,12 +224,15 @@ The **Users** page lists the Users. Each row has these fields:
 - **Spend this period** and **Used**: the Price so far in the current period and
   its share of the Budget.
 - **Keys**: the number of Virtual Keys that are not revoked.
+- **RPM** and **TPM**: requests and completed tokens per minute across all keys
+  of the User. Leave a field blank for unlimited use. Zero blocks requests.
 
 Tasks:
 
 - To add a User, fill in **Add user** (a name is required) and select **Add
   user**.
 - To change a Team, a Budget or a status, edit the row and select **Save**.
+- To change Rate Limits, edit **RPM** or **TPM** and select **Save**.
 - The page has no function to delete a User. Select **disabled** to stop a User.
 
 When a User reaches the Budget, the Proxy rejects new requests with HTTP 402.
@@ -244,6 +248,10 @@ same Price Card overrides. You set the overrides on the page of each Model.
 
 The **Keys** page lists the Virtual Keys. It shows the User, the first characters
 of the key, the label, the allowed Models, the creation time and the last use.
+Set **RPM** and **TPM** when you create a key, or edit them in its row and select
+**Save**. Both the key limits and the User limits apply. Leave a field blank for
+unlimited use. Zero blocks requests. The window is the last 60 seconds. TPM
+counts all Token Classes after a request finishes.
 
 To create a Virtual Key:
 

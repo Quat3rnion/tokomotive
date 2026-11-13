@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::config::percent_to_bp;
 use crate::db::{self, LedgerFilter};
 use crate::pricing::{CardRates, ContextTier, PriceSpec, Rates, parse_usd};
+use crate::ratelimit::Limits;
 use crate::state::AppState;
 use views::*;
 
@@ -34,6 +35,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/users/{id}", post(update_user))
         .route("/admin/teams", get(teams).post(create_team))
         .route("/admin/keys", get(keys).post(create_key))
+        .route("/admin/keys/{id}/limits", post(update_key_limits))
         .route("/admin/keys/{id}/revoke", post(revoke_key))
         .route("/admin/models", get(models).post(create_model))
         .route("/admin/models/{id}", get(model_detail).post(update_model))
@@ -229,6 +231,36 @@ fn csv(s: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Deserialize, Default)]
+struct LimitsForm {
+    #[serde(default)]
+    rpm_limit: String,
+    #[serde(default)]
+    tpm_limit: String,
+}
+
+impl LimitsForm {
+    fn parse(&self) -> Result<Limits, Response> {
+        let limit = |s: &str| {
+            let s = s.trim();
+            if s.is_empty() {
+                return Ok(None);
+            }
+            s.parse::<i64>()
+                .ok()
+                .filter(|&n| n >= 0)
+                .map(Some)
+                .ok_or_else(|| {
+                    bad("Rate Limits must be non-negative integers, or blank for unlimited.")
+                })
+        };
+        Ok(Limits {
+            rpm: limit(&self.rpm_limit)?,
+            tpm: limit(&self.tpm_limit)?,
+        })
+    }
+}
+
 // --------------------------------------------------------------- overview
 
 #[derive(Deserialize, Default)]
@@ -268,6 +300,8 @@ struct UserForm {
     budget_usd: String,
     monthly: Option<String>,
     disabled: Option<String>,
+    #[serde(flatten)]
+    limits: LimitsForm,
 }
 
 fn team_id(s: &str) -> Option<i64> {
@@ -283,12 +317,17 @@ async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserFor
         Ok(b) => b,
         Err(r) => return r,
     };
-    if let Err(e) = db::create_user(
+    let limits = match f.limits.parse() {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    if let Err(e) = db::create_user_with_limits(
         &st.db,
         name,
         team_id(&f.team_id),
         budget,
         f.monthly.is_some(),
+        limits,
     )
     .await
     {
@@ -307,14 +346,19 @@ async fn update_user(
         Ok(b) => b,
         Err(r) => return r,
     };
+    let limits = match f.limits.parse() {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
     tryr!(
-        db::update_user(
+        db::update_user_with_limits(
             &st.db,
             id,
             team_id(&f.team_id),
             budget,
             f.monthly.is_some(),
-            f.disabled.is_some()
+            f.disabled.is_some(),
+            limits
         )
         .await
     );
@@ -363,17 +407,38 @@ struct KeyForm {
     label: String,
     #[serde(default)]
     allowed_models: String,
+    #[serde(flatten)]
+    limits: LimitsForm,
 }
 
 async fn create_key(_: Admin, State(st): State<AppState>, Form(f): Form<KeyForm>) -> Response {
+    let limits = match f.limits.parse() {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
     let allowed = csv(&f.allowed_models);
     let allowed = if allowed.is_empty() {
         None
     } else {
         Some(allowed)
     };
-    let (_, key) = tryr!(db::create_key(&st.db, f.user_id, f.label.trim(), allowed).await);
+    let (_, key) =
+        tryr!(db::create_key_with_limits(&st.db, f.user_id, f.label.trim(), allowed, limits).await);
     keys_page(&st, Some(key)).await
+}
+
+async fn update_key_limits(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Form(f): Form<LimitsForm>,
+) -> Response {
+    let limits = match f.parse() {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    tryr!(db::update_key_limits(&st.db, id, limits).await);
+    Redirect::to("/admin/keys").into_response()
 }
 
 async fn revoke_key(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {

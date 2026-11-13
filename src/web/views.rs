@@ -392,6 +392,8 @@ pub struct UserView {
     pub used: String,
     pub over: bool,
     pub keys: i64,
+    pub rpm_limit: String,
+    pub tpm_limit: String,
 }
 
 #[derive(Template)]
@@ -422,6 +424,8 @@ impl UsersPage {
                 },
                 over: u.budget_micros.is_some_and(|b| u.period_spend >= b),
                 keys: u.keys,
+                rpm_limit: u.rpm_limit.map(|v| v.to_string()).unwrap_or_default(),
+                tpm_limit: u.tpm_limit.map(|v| v.to_string()).unwrap_or_default(),
             })
             .collect();
         UsersPage {
@@ -448,6 +452,8 @@ pub struct KeyView {
     pub created: String,
     pub last_used: String,
     pub revoked: bool,
+    pub rpm_limit: String,
+    pub tpm_limit: String,
 }
 
 #[derive(Template)]
@@ -477,6 +483,8 @@ impl KeysPage {
                     created: date(k.created_at),
                     last_used: opt_date(k.last_used_at),
                     revoked: k.revoked_at.is_some(),
+                    rpm_limit: k.rpm_limit.map(|v| v.to_string()).unwrap_or_default(),
+                    tpm_limit: k.tpm_limit.map(|v| v.to_string()).unwrap_or_default(),
                 })
                 .collect(),
             users: users

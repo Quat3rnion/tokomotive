@@ -250,7 +250,16 @@ and skips the override.
 | `team`           | string           | none    | The `name` of a `[[teams]]` item. Without it, the User has no Team.                                  |
 | `budget_usd`     | float            | none    | The Budget in USD. Without it, the User has no Budget.                                               |
 | `budget_monthly` | boolean          | `false` | If `true`, the Budget starts again on the first day of each month (UTC). If `false`, it is for all time. |
+| `rpm_limit`      | integer          | none    | Requests per minute across all Virtual Keys of the User. |
+| `tpm_limit`      | integer          | none    | Completed tokens per minute across all Virtual Keys of the User. |
+| `key_rpm_limit`  | integer          | none    | Requests per minute for each new Virtual Key in `keys`. |
+| `key_tpm_limit`  | integer          | none    | Completed tokens per minute for each new Virtual Key in `keys`. |
 | `keys`           | array of strings | `[]`    | Virtual Keys to create at start. For development only. See below.                                    |
+
+Rate Limits must be non-negative integers. Omit a limit for unlimited use. Zero
+blocks requests. Both the User and Virtual Key limits apply. TPM counts all
+Token Classes after a request finishes. The window is the last 60 seconds.
+Seeding does not change the limits of an existing User or Virtual Key.
 
 A key in `keys` is stored with the label `config`. The key is in plain text in the
 file. Do not use this setting for production Users. Create Virtual Keys on the

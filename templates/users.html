@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Users</h1>
 <p class="muted">The Budget is a limit on Price (what the user owes). When the user reaches it, the proxy rejects requests with HTTP 402.</p>
+<p class="muted">Rate Limits apply across all keys of the User. RPM = requests per minute; TPM = completed tokens per minute. Blank = unlimited; 0 blocks requests.</p>
 <div class="panel scroll">
 <table>
   <tr><th>Name</th><th colspan="4">Team, Budget (USD), options</th><th class="n">Spend this period</th><th class="n">Used</th><th class="n">Keys</th><th></th></tr>
@@ -13,6 +14,8 @@
       <form class="inline" method="post" action="/admin/users/{{ u.id }}" id="u{{ u.id }}">
         <select name="team_id">{% for o in u.team_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
         <input name="budget_usd" value="{{ u.budget }}" placeholder="none" size="8">
+        <label>RPM <input type="number" min="0" step="1" name="rpm_limit" value="{{ u.rpm_limit }}" placeholder="unlimited" style="width:110px"></label>
+        <label>TPM <input type="number" min="0" step="1" name="tpm_limit" value="{{ u.tpm_limit }}" placeholder="unlimited" style="width:130px"></label>
         <label><input type="checkbox" name="monthly" {% if u.monthly %}checked{% endif %}> monthly</label>
         <label><input type="checkbox" name="disabled" {% if u.disabled %}checked{% endif %}> disabled</label>
       </form>
@@ -33,6 +36,8 @@
   <label>Name <input name="name" required style="width:180px"></label>
   <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
   <label>Budget (USD) <input name="budget_usd" placeholder="none"></label>
+  <label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited"></label>
+  <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited"></label>
   <label class="check"><input type="checkbox" name="monthly"> reset monthly</label>
   <button>Add user</button>
 </form>

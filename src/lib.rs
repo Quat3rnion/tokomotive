@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod pricing;
 pub mod provider;
 pub mod proxy;
+pub mod ratelimit;
 pub mod state;
 pub mod translate;
 pub mod usage;

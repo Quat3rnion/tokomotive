@@ -2,6 +2,7 @@
 {% block nav_keys %}class="on"{% endblock %}
 {% block content %}
 <h1>Virtual Keys</h1>
+<p class="muted">RPM = requests per minute; TPM = completed tokens per minute. Blank = unlimited; 0 blocks requests. The User Rate Limits also apply.</p>
 {% if let Some(k) = new_key %}
 <div class="panel">
   <p><b>New key.</b> Copy it now. The proxy keeps only a hash, so you cannot see this key again.</p>
@@ -10,17 +11,22 @@
 {% endif %}
 <div class="panel scroll">
 <table>
-  <tr><th>User</th><th>Key</th><th>Label</th><th>Models</th><th>Created</th><th>Last used</th><th></th></tr>
+  <tr><th>User</th><th>Key</th><th>Label</th><th>Models</th><th>Rate Limits</th><th>Created</th><th>Last used</th><th></th></tr>
   {% for k in keys %}
   <tr>
     <td>{{ k.user }}</td><td><code>{{ k.prefix }}…</code></td><td>{{ k.label }}</td><td>{{ k.models }}</td>
+    <td><form class="inline" method="post" action="/admin/keys/{{ k.id }}/limits">
+      <label>RPM <input type="number" min="0" step="1" name="rpm_limit" value="{{ k.rpm_limit }}" placeholder="unlimited" style="width:110px"></label>
+      <label>TPM <input type="number" min="0" step="1" name="tpm_limit" value="{{ k.tpm_limit }}" placeholder="unlimited" style="width:130px"></label>
+      <button>Save</button>
+    </form></td>
     <td>{{ k.created }}</td><td>{{ k.last_used }}</td>
     <td>{% if k.revoked %}<span class="tag bad">revoked</span>{% else %}
       <form class="inline" method="post" action="/admin/keys/{{ k.id }}/revoke" onsubmit="return confirm('Revoke this key?')"><button class="danger">Revoke</button></form>
     {% endif %}</td>
   </tr>
   {% else %}
-  <tr><td colspan="7" class="muted">No keys.</td></tr>
+  <tr><td colspan="8" class="muted">No keys.</td></tr>
   {% endfor %}
 </table>
 </div>
@@ -29,6 +35,8 @@
   <label>User <select name="user_id" required>{% for u in users %}<option value="{{ u.value }}">{{ u.label }}</option>{% endfor %}</select></label>
   <label>Label <input name="label" style="width:160px"></label>
   <label>Allowed models (comma list, empty = all) <input name="allowed_models" style="width:320px" placeholder="gpt-4o, claude-sonnet-4-5"></label>
+  <label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited"></label>
+  <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited"></label>
   <button>Create key</button>
 </form>
 {% endblock %}
