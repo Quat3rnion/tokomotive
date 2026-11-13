@@ -2,70 +2,184 @@
 {% import "rates_fields.html" as f %}
 {% block title %}{{ name }} - Models - Tokomotive{% endblock %}
 {% block nav_models %}aria-current="page"{% endblock %}
+
+{% macro rates_list(r) %}
+<dl class="kv rates">{% for (label, value) in r.pairs() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+{% endmacro %}
+
 {% block content %}
+<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/admin/models">Models</a></li><li><span aria-current="page">{{ name }}</span></li></ol></nav>
 <h1>{{ name }}</h1>
-{% if base.simple %}<p class="muted">Pricing is off in simple mode.</p>{% else %}<p class="muted">A change to a card makes a new Card Version. Old Ledger Entries keep the amounts they had.</p>{% endif %}
+{% if base.simple %}<p class="muted">Pricing is off in Simple Mode.</p>{% else %}<p class="muted">Rates are dollars per million tokens. A change to a card adds a new Card Version. Old Ledger Entries keep the amounts they had.</p>{% endif %}
 
-<h2>Model</h2>
-<form class="panel row" method="post" action="/admin/models/{{ id }}">
-  <label>Provider <select name="provider">{% for o in provider_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
-  <label>Aliases (comma list) <input name="aliases" value="{{ aliases }}" style="width:320px"></label>
-  <button>Save</button>
-</form>
+<section class="panel" aria-labelledby="model-h">
+  <h2 id="model-h">Model</h2>
+  <form method="post" action="/admin/models/{{ id }}" class="row">
+    <div class="field"><label for="m-provider">Provider</label><select id="m-provider" name="provider">{% for o in provider_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
+    <div class="field grow"><label for="m-aliases">Aliases</label><input id="m-aliases" name="aliases" value="{{ aliases }}" autocomplete="off" spellcheck="false" aria-describedby="m-aliases-help"><p class="hint" id="m-aliases-help">Comma-separated other names for this Model.</p></div>
+    <button>Save Model</button>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+  </form>
+</section>
 
-{% if !base.simple %}<h2>Cost Card (what the provider charges you)</h2>
-<form class="panel" method="post" action="/admin/models/{{ id }}/cost">
-  {% call f::rates_fields(cost) %}
-  <p><button>Save new Cost Card version</button></p>
-</form>
+{% if !base.simple %}
+<section class="panel" id="cost" aria-labelledby="cost-h" tabindex="-1">
+  <h2 id="cost-h">Cost Card{% if !has_cost %} <span class="tag warn">Unpriced</span>{% endif %}</h2>
+  <p class="muted">What the Provider charges you.{% if !has_cost %} This Model has no Cost Card, so its requests are Unpriced and have no Price. Enter the rates to price new requests.{% endif %}</p>
+  <form method="post" action="/admin/models/{{ id }}/cost" class="stack" id="cost-form">
+    {% call f::rates_fields(cost, "cost", "Cost Card") %}
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Save Cost Card</button>
+  </form>
+</section>
 
-<h2>Price Card (what users pay)</h2>
-<form class="panel" method="post" action="/admin/models/{{ id }}/price">
-  <p>Current: <b>{{ price_desc }}</b></p>
-  <div class="row" style="margin-bottom:10px">
-    <label class="check"><input type="radio" name="mode" value="default" {% if price_mode == "default" %}checked{% endif %}> Default markup ({{ default_markup }}%)</label>
-    <label class="check"><input type="radio" name="mode" value="markup" {% if price_mode == "markup" %}checked{% endif %}> Markup</label>
-    <label>Markup % <input name="markup_percent" value="{{ price_markup }}"></label>
-    <label class="check"><input type="radio" name="mode" value="rates" {% if price_mode == "rates" %}checked{% endif %}> Explicit rates (below)</label>
+<section class="panel" id="price" aria-labelledby="price-h" tabindex="-1">
+  <h2 id="price-h">Price Card</h2>
+  <p class="muted">What Users pay. Now: <strong>{{ price_desc }}</strong>.
+  {% if let Some(p) = price_now %}Users pay {{ p }} per million tokens.{% else %}There is no Price until the Model has a Cost Card.{% endif %}</p>
+  <form method="post" action="/admin/models/{{ id }}/price" class="stack" data-modes>
+    <fieldset class="choices">
+      <legend>How to set the Price</legend>
+      <div class="opt">
+        <label class="check"><input type="radio" name="mode" value="default" aria-describedby="p-default-help" {% if price_mode == "default" %}checked{% endif %}> Default Markup ({{ default_markup }}%)</label>
+        <p class="hint" id="p-default-help">Cost Card rates plus the <a href="/admin/models#markup">Default Markup</a>. It follows changes to the Default Markup.</p>
+      </div>
+      <div class="opt" data-mode="markup">
+        <label class="check"><input type="radio" name="mode" value="markup" {% if price_mode == "markup" %}checked{% endif %}> Markup for this Model</label>
+        <div class="row">
+          <div class="field"><label for="p-markup">Markup (%)</label><input id="p-markup" name="markup_percent" value="{{ price_markup }}" type="number" step="any" min="-100" inputmode="decimal" placeholder="25" aria-describedby="p-markup-preview" data-preview="p-markup-preview"></div>
+          <p class="hint" id="p-markup-preview" aria-live="polite" data-in="{{ cost_in }}" data-out="{{ cost_out }}">Cost Card rates plus this percentage.</p>
+        </div>
+      </div>
+      <div class="opt" data-mode="rates">
+        <label class="check"><input type="radio" name="mode" value="rates" {% if price_mode == "rates" %}checked{% endif %}> Explicit rates</label>
+        <p class="hint">Fixed rates that do not follow the Cost Card.{% if has_cost %} Start from the Cost Card with the button, then raise the rates.{% endif %}</p>
+        {% if has_cost %}<p><button type="button" class="ghost" data-copy-cost hidden>Copy Cost Card rates</button></p>{% endif %}
+        {% call f::rates_fields(price_rates, "price", "Price") %}
+      </div>
+    </fieldset>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Save Price Card</button>
+  </form>
+</section>
+
+<section class="panel" id="team-prices" aria-labelledby="team-h" tabindex="-1">
+  <h2 id="team-h">Team Price overrides</h2>
+  <p class="muted">A Team override replaces the Price Card for the Users of one Team.</p>
+  <div class="scroll">
+  <table class="cards-sm">
+    <thead><tr><th scope="col">Team</th><th scope="col">Price</th><th scope="col"><span class="vh">Actions</span></th></tr></thead>
+    <tbody>
+    {% for o in overrides %}
+    <tr><th scope="row">{{ o.team }}</th><td data-label="Price">{{ o.desc }}</td><td><div class="actions">
+      <form class="inline" method="post" action="/admin/models/{{ id }}/team-price" data-confirm="Remove the override for Team {{ o.team }}? Its Users then pay the Model Price.">
+        <input type="hidden" name="team_id" value="{{ o.team_id }}"><input type="hidden" name="mode" value="default">
+        <button class="danger" aria-label="Remove the override for Team {{ o.team }}">Remove</button>
+      </form></div></td></tr>
+    {% else %}
+    <tr><td colspan="3" class="empty">No overrides. All Teams pay the Model Price.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
   </div>
-  {% call f::rates_fields(price_rates) %}
-  <p><button>Save new Price Card version</button></p>
-</form>
-
-<h2>Team price overrides</h2>
-<div class="panel">
-<table>
-  <tr><th>Team</th><th>Price</th><th></th></tr>
-  {% for o in overrides %}
-  <tr><td>{{ o.team }}</td><td>{{ o.desc }}</td><td>
-    <form class="inline" method="post" action="/admin/models/{{ id }}/team-price" data-confirm="Remove the override for Team {{ o.team }}? Its Users then pay the Model Price.">
-      <input type="hidden" name="team_id" value="{{ o.team_id }}"><input type="hidden" name="mode" value="default">
-      <button class="danger">Remove</button>
-    </form></td></tr>
+  <h3 id="team-add-h">Add or change an override</h3>
+  {% if team_opts.is_empty() %}
+  <p class="empty">No Teams yet. <a href="/admin/teams">Add a Team</a> to give it its own Price.</p>
   {% else %}
-  <tr><td colspan="3" class="muted">No overrides.</td></tr>
-  {% endfor %}
-</table>
-</div>
-<form class="panel" method="post" action="/admin/models/{{ id }}/team-price">
-  <div class="row" style="margin-bottom:10px">
-    <label>Team <select name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
-    <label class="check"><input type="radio" name="mode" value="markup" checked> Markup</label>
-    <label>Markup % <input name="markup_percent"></label>
-    <label class="check"><input type="radio" name="mode" value="rates"> Explicit rates (below)</label>
-  </div>
-  {% call f::rates_fields(price_rates) %}
-  <p><button>Set Team override</button></p>
-</form>
+  <form method="post" action="/admin/models/{{ id }}/team-price" class="stack" data-modes aria-labelledby="team-add-h">
+    <div class="field"><label for="t-team">Team</label><select id="t-team" name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></div>
+    <fieldset class="choices">
+      <legend>How to set the Team Price</legend>
+      <div class="opt" data-mode="markup">
+        <label class="check"><input type="radio" name="mode" value="markup" checked> Markup</label>
+        <div class="row">
+          <div class="field"><label for="t-markup">Markup (%)</label><input id="t-markup" name="markup_percent" type="number" step="any" min="-100" inputmode="decimal" placeholder="10" aria-describedby="t-markup-preview" data-preview="t-markup-preview"></div>
+          <p class="hint" id="t-markup-preview" aria-live="polite" data-in="{{ cost_in }}" data-out="{{ cost_out }}">Cost Card rates plus this percentage.</p>
+        </div>
+      </div>
+      <div class="opt" data-mode="rates">
+        <label class="check"><input type="radio" name="mode" value="rates"> Explicit rates</label>
+        {% if has_cost %}<p><button type="button" class="ghost" data-copy-cost hidden>Copy Cost Card rates</button></p>{% endif %}
+        {% call f::rates_fields(blank, "team", "Team Price") %}
+      </div>
+    </fieldset>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Save Team override</button>
+  </form>
+  {% endif %}
+</section>
 
-<h2>Card history</h2>
+<h2 id="history-h">Card history</h2>
 <div class="panel scroll">
-<table>
-  <tr><th>Version</th><th>Scope</th><th>Kind</th><th>Rates</th><th>Created</th></tr>
+<table class="cards-sm history">
+  <thead><tr><th scope="col">Version</th><th scope="col">Card</th><th scope="col">Applies to</th><th scope="col">Rates or Markup</th><th scope="col">Added (UTC)</th></tr></thead>
+  <tbody>
   {% for h in history %}
-  <tr><td>#{{ h.id }}</td><td>{{ h.scope }}</td><td>{{ h.kind }}</td><td>{{ h.desc }}</td><td><time datetime="{{ h.created.iso }}">{{ h.created }}</time></td></tr>
+  <tr><th scope="row">#{{ h.id }}</th><td data-label="Card">{{ h.kind }}</td><td data-label="Applies to">{{ h.scope }}</td>
+    <td data-label="Rates or Markup">{% if let Some(r) = h.rates %}{% call rates_list(r) %}{% else %}{{ h.desc }}{% endif %}</td>
+    <td data-label="Added (UTC)"><time datetime="{{ h.created.iso }}">{{ h.created.short }}</time></td></tr>
+  {% else %}
+  <tr><td colspan="5" class="empty">No cards yet.</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if !base.simple %}
+<script>
+(() => {
+  // MD-02: a mode option and its inputs belong together. Typing in an
+  // option selects it; the Markup field is required when Markup is chosen.
+  const sync = form => {
+    form.querySelectorAll('.opt').forEach(o => {
+      const r = o.querySelector('input[type=radio]');
+      const on = !!(r && r.checked);
+      o.classList.toggle('on', on);
+      o.querySelectorAll('input[name=markup_percent]').forEach(i => { i.required = on; });
+    });
+  };
+  const preview = input => {
+    const out = document.getElementById(input.dataset.preview);
+    if (!out) { return; }
+    const ci = parseFloat(out.dataset.in), co = parseFloat(out.dataset.out), m = parseFloat(input.value);
+    if (isNaN(ci)) { out.textContent = 'This Model has no Cost Card, so a Markup gives no Price yet.'; return; }
+    if (isNaN(m)) { out.textContent = 'Cost Card rates plus this percentage.'; return; }
+    const f = v => '$' + (Math.round(v * (1 + m / 100) * 1e6) / 1e6).toFixed(2).replace(/(\.\d\d\d*?)0+$/, '$1');
+    out.textContent = `Users pay Input ${f(ci)}, Output ${f(co)} per million tokens.`;
+  };
+  document.querySelectorAll('form[data-modes]').forEach(form => {
+    form.addEventListener('change', () => sync(form));
+    form.addEventListener('input', e => {
+      const o = e.target.closest('.opt');
+      const r = o && o.querySelector('input[type=radio]');
+      if (r && e.target !== r && !r.checked) { r.checked = true; sync(form); }
+      if (e.target.dataset.preview) { preview(e.target); }
+    });
+    form.querySelectorAll('[data-preview]').forEach(preview);
+    sync(form);
+  });
+  // MD-01: copy the saved Cost Card into explicit rates only on request.
+  const cost = document.getElementById('cost-form');
+  document.querySelectorAll('[data-copy-cost]').forEach(b => {
+    b.hidden = false;
+    b.addEventListener('click', () => {
+      const opt = b.closest('.opt');
+      cost.querySelectorAll('input[name], textarea[name]').forEach(src => {
+        if (src.type === 'checkbox') { return; }
+        const dst = opt.querySelector(`[name="${src.name}"]`);
+        if (dst) { dst.value = src.defaultValue; }
+      });
+      const r = opt.querySelector('input[type=radio]');
+      r.checked = true;
+      sync(b.closest('form'));
+      toko.say('Cost Card rates copied. Change them before you save, or the Price equals the Cost.');
+      opt.querySelector('input[name=input]').focus();
+    });
+  });
+})();
+</script>
 {% endif %}
 {% endblock %}

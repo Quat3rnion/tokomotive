@@ -435,25 +435,45 @@ instead.
 ### Models
 
 The **Models** page lists each Model with its Provider, aliases, Cost Card
-rates, the number of Context Tiers, the Price Card and the number of Team
-overrides. All rates are USD per million tokens. A Model with no Cost Card shows
-the tag **no cost card**.
+rates, the number of Context Tiers, the Price and the number of Team overrides.
+All rates are dollars per million tokens. A Model with no Cost Card shows the
+tag **Unpriced: no Cost Card** and a link to add one. The Price column shows a
+short tag: for example **+20% default** (the Default Markup), **+25%** (a Markup
+for this Model) or **Explicit rates**.
 
 Tasks on the list page:
 
-- **Default markup**: enter the Markup in percent for Models that have no Price
-  Card and select **Save**. The change applies to new requests only.
-- **Add model**: enter the name, the Provider, the aliases (comma list), the Cost
-  Card rates and the Context Tiers. Then select **Add model**. The Provider list
-   holds the Providers saved in the dashboard.
+- **Default Markup**: enter the Markup in percent for Models that have no Price
+  Card and select **Save Default Markup**. The change applies to new requests
+  only. This is the only place where you can change the Default Markup. The
+  Settings page shows the value and links here.
+- **Add a Model**: enter the name, the Provider and the aliases
+  (comma-separated). In Full Mode, you can also enter the Cost Card rates and the
+  Context Tiers. Then select **Add Model**. The Provider list holds the
+  Providers saved in the dashboard. If there are no Providers, the page shows a
+  link to the Providers page instead of the form.
 
-Select a Model name to open its page. The page has these parts:
+Rules for the Cost Card when you add a Model:
+
+- If you leave all rates and the Context Tiers blank, the Proxy does not add a
+  Cost Card. The Model stays Unpriced, and its requests are Unpriced Entries
+  until you add a Cost Card.
+- If you enter a rate, the Proxy adds a Cost Card. A blank rate is 0.
+- If the Input and Output rates are both 0, the Proxy refuses the form. Select
+  **Input and Output are $0 on purpose** to save a $0 card, for example for a
+  free local model. The same rule applies to the Cost Card and to explicit Price
+  rates on the Model page.
+- A name or an alias that another Model already uses is refused with a message
+  next to the form. Your input stays in the form.
+
+Select a Model name to open its page. The breadcrumb **Models** goes back to
+the list. The page has these parts:
 
 - **Model**: change the Provider and the aliases.
-- **Cost Card**: change the rates and Context Tiers. Select **Save new Cost Card
-  version**.
-- **Price Card**: select a mode and select **Save new Price Card version**.
-- **Team price overrides**: set or remove a Price Card for one Team.
+- **Cost Card**: change the rates and Context Tiers. Select **Save Cost Card**.
+- **Price Card**: select a mode and select **Save Price Card**. The text above
+  the form shows what Users pay now.
+- **Team Price overrides**: set or remove a Price Card for one Team.
 - **Card history**: all Card Versions of this Model.
 
 Each save of a card makes a new Card Version. The old Card Versions stay. Old
@@ -463,19 +483,29 @@ Price Card modes:
 
 | Mode                    | Result                                                           |
 | ----------------------- | ---------------------------------------------------------------- |
-| Default markup          | The Model has no Price Card. The default Markup applies.         |
-| Markup                  | Price Card = Cost Card + the Markup that you enter.              |
+| Default Markup          | The Model has no Price Card. The Default Markup applies.         |
+| Markup for this Model   | Price Card = Cost Card + the Markup that you enter.              |
 | Explicit rates          | The rates in the fields are the Price Card.                      |
+
+The **Explicit rates** fields start empty, or with the saved explicit Price
+Card. They never contain the Cost Card rates, so a save cannot set the Price
+equal to the Cost by accident. To start from the Cost Card, select **Copy Cost
+Card rates**, then change the rates before you save. If the Price is equal to or
+lower than the Cost, the success message tells you.
+
+When you type in the fields of a mode, the dashboard selects that mode. The
+Markup field shows the resulting Input and Output Price.
 
 Team overrides:
 
 1. Select the Team.
-2. Select **Markup** and enter a percentage, or select **Explicit rates**.
-3. Select **Set Team override**.
+2. Select **Markup** and enter a percentage, or select **Explicit rates** and
+   enter the rates. The fields start empty.
+3. Select **Save Team override**.
 
 An override replaces the Model Price Card for the Users of that Team. To remove
-an override, select **Remove** in its row. A new save for the same Team makes a
-new Card Version.
+an override, select **Remove** in its row and confirm. A new save for the same
+Team makes a new Card Version.
 
 Context Tier line format. Enter one tier on each line in the **Context Tiers**
 field. Separate the values with spaces:
@@ -484,7 +514,7 @@ field. Separate the values with spaces:
 above_input_tokens input output cache_read cache_write_5m cache_write_1h [image_input image_output]
 ```
 
-Example, with the rates in USD per million tokens:
+Example, with the rates in dollars per million tokens:
 
 ```
 200000 6 22.5 0.6 7.5 12
@@ -492,17 +522,17 @@ Example, with the rates in USD per million tokens:
 
 Rules for tiers:
 
-- The first value is the number of input tokens. The tier applies when the input
-  is more than this number.
+- The first value is a whole number of input tokens. The tier applies when the
+  input is more than this number.
 - The input tokens include cache tokens and image input tokens.
-- A missing value counts as 0. A tier replaces all base rates, so repeat each
+- Each line has 6 or 8 numbers. A tier replaces all base rates, so repeat each
   rate that the tier needs.
-- A rate is a number of dollars with up to 6 decimal places. A leading `$` is
-  allowed. An empty field counts as 0.
+- A rate is a number of dollars, 0 or more, with up to 6 decimal places. A
+  leading `$` is allowed. An empty rate field counts as 0.
 
-The **Card history** table shows the version number (`#id`), the scope (`model`
-or the name of a Team), the kind (`cost` or `price`), the rates and the creation
-time.
+The **Card history** table shows the version number (`#id`), the card (**Cost
+Card** or **Price Card**), what it applies to (**Model** or **Team:** and the
+Team name), the rates or the Markup, and the time it was added (UTC).
 
 ### Ledger
 

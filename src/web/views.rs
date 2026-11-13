@@ -963,6 +963,9 @@ impl KeysPage {
 
 // ------------------------------------------------------------------ models
 
+/// The display text of one set of rates. `RatesView::default()` is an empty
+/// form: no value in any field.
+#[derive(Clone, Default)]
 pub struct RatesView {
     pub input: String,
     pub output: String,
@@ -1021,26 +1024,50 @@ impl RatesView {
         }
     }
 
-    pub fn summary(&self) -> String {
-        let mut s = format!(
-            "in {} / out {} / cache r {} w5m {} w1h {}",
-            self.input, self.output, self.cache_read, self.cache_write_5m, self.cache_write_1h
-        );
-        if self.has_image {
-            s += &format!(" / image in {} out {}", self.image_input, self.image_output);
+    /// Label and value pairs for a compact rates list: Input and Output
+    /// always, the other Token Classes when they are not zero.
+    pub fn pairs(&self) -> Vec<(&'static str, String)> {
+        let mut v = vec![
+            ("Input", self.input.clone()),
+            ("Output", self.output.clone()),
+        ];
+        for (label, value) in [
+            ("Cache read", &self.cache_read),
+            ("Cache write 5m", &self.cache_write_5m),
+            ("Cache write 1h", &self.cache_write_1h),
+        ] {
+            if value != "0.00" {
+                v.push((label, value.clone()));
+            }
         }
-        s
+        if self.has_image {
+            v.push(("Image input", self.image_input.clone()));
+            v.push(("Image output", self.image_output.clone()));
+        }
+        if self.tier_count > 0 {
+            v.push(("Context Tiers", self.tier_count.to_string()));
+        }
+        v
     }
+}
+
+/// A percentage with its sign, for example "+20%" or "-5%".
+fn signed_percent(bp: i64) -> String {
+    let sign = if bp < 0 { "-" } else { "+" };
+    format!("{sign}{}%", bp_percent(bp.abs()))
 }
 
 fn describe_price(spec: Option<&PriceSpec>, default_bp: i64) -> String {
     match spec {
-        None => format!("default markup {}%", bp_percent(default_bp)),
-        Some(PriceSpec::MarkupBp(bp)) => format!("markup {}%", bp_percent(*bp)),
-        Some(PriceSpec::Rates(r)) => {
-            format!("explicit: {}", RatesView::new(r).summary())
-        }
+        None => format!("Default Markup ({})", signed_percent(default_bp)),
+        Some(PriceSpec::MarkupBp(bp)) => format!("Markup {}", signed_percent(*bp)),
+        Some(PriceSpec::Rates(_)) => "Explicit rates".into(),
     }
+}
+
+/// "Input 0.12, Output 0.60" for the base rates.
+fn rates_line(r: &Rates) -> String {
+    format!("Input {}, Output {}", fmt_rate(r.input), fmt_rate(r.output))
 }
 
 pub struct ModelView {
@@ -1049,7 +1076,10 @@ pub struct ModelView {
     pub provider: String,
     pub aliases: String,
     pub cost: Option<RatesView>,
-    pub price: String,
+    /// A short tag: "+20% default", "+25%" or "Explicit rates".
+    pub price_tag: String,
+    /// The full Price description, for the tag's `title`.
+    pub price_title: String,
     pub overrides: usize,
 }
 
@@ -1060,6 +1090,8 @@ pub struct ModelsPage {
     pub models: Vec<ModelView>,
     pub providers: Vec<String>,
     pub default_markup: String,
+    /// An empty rates form for "Add model".
+    pub blank: RatesView,
 }
 
 impl ModelsPage {
@@ -1069,18 +1101,32 @@ impl ModelsPage {
             models: cat
                 .models
                 .iter()
-                .map(|m| ModelView {
-                    id: m.id,
-                    name: m.name.clone(),
-                    provider: m.provider.clone(),
-                    aliases: m.aliases.join(", "),
-                    cost: m.cost.as_ref().map(|(_, c)| RatesView::new(c)),
-                    price: describe_price(m.price.as_ref().map(|(_, p)| p), cat.default_markup_bp),
-                    overrides: m.team_price.len(),
+                .map(|m| {
+                    let price = m.price.as_ref().map(|(_, p)| p);
+                    ModelView {
+                        id: m.id,
+                        name: m.name.clone(),
+                        provider: m.provider.clone(),
+                        aliases: m.aliases.join(", "),
+                        cost: m.cost.as_ref().map(|(_, c)| RatesView::new(c)),
+                        price_tag: match price {
+                            None => format!("{} default", signed_percent(cat.default_markup_bp)),
+                            Some(PriceSpec::MarkupBp(bp)) => signed_percent(*bp),
+                            Some(PriceSpec::Rates(_)) => "Explicit rates".into(),
+                        },
+                        price_title: match price {
+                            Some(PriceSpec::Rates(r)) => {
+                                format!("Explicit rates: {}", rates_line(&r.base))
+                            }
+                            _ => describe_price(price, cat.default_markup_bp),
+                        },
+                        overrides: m.team_price.len(),
+                    }
                 })
                 .collect(),
             providers,
             default_markup: bp_percent(cat.default_markup_bp),
+            blank: RatesView::default(),
         }
     }
 }
@@ -1093,8 +1139,13 @@ pub struct OverrideView {
 
 pub struct HistView {
     pub id: i64,
-    pub scope: String,
+    /// "Cost Card" or "Price Card".
     pub kind: String,
+    /// "Model" or "Team: research".
+    pub scope: String,
+    /// The rates of a Cost Card or an explicit Price Card.
+    pub rates: Option<RatesView>,
+    /// The text for a Markup or a removed card.
     pub desc: String,
     pub created: Stamp,
 }
@@ -1107,12 +1158,24 @@ pub struct ModelPage {
     pub name: String,
     pub provider_opts: Vec<Opt>,
     pub aliases: String,
+    /// The current Cost Card, or an empty form when there is none.
     pub cost: RatesView,
+    pub has_cost: bool,
     pub price_mode: &'static str,
     pub price_markup: String,
+    /// The explicit Price Card rates, only when the Price Card has rates.
+    /// Never the Cost Card: a copy must be an explicit action.
     pub price_rates: RatesView,
     pub price_desc: String,
+    /// What Users pay now (base rates), when the Model has a Cost Card.
+    pub price_now: Option<String>,
     pub default_markup: String,
+    /// The Cost Card input and output rates in dollars, for the Markup
+    /// preview script.
+    pub cost_in: String,
+    pub cost_out: String,
+    /// An empty rates form for the Team override.
+    pub blank: RatesView,
     pub overrides: Vec<OverrideView>,
     pub team_opts: Vec<Opt>,
     pub history: Vec<HistView>,
@@ -1127,13 +1190,20 @@ impl ModelPage {
         teams: &[TeamRow],
         providers: Vec<String>,
     ) -> ModelPage {
-        let cost = m.cost.as_ref().map(|(_, c)| c.clone()).unwrap_or_default();
+        let cost = m.cost.as_ref().map(|(_, c)| c);
         let price = m.price.as_ref().map(|(_, p)| p);
         let (price_mode, price_markup, price_rates) = match price {
-            None => ("default", String::new(), cost.clone()),
-            Some(PriceSpec::MarkupBp(bp)) => ("markup", bp_percent(*bp), cost.clone()),
-            Some(PriceSpec::Rates(r)) => ("rates", String::new(), r.clone()),
+            None => ("default", String::new(), RatesView::default()),
+            Some(PriceSpec::MarkupBp(bp)) => ("markup", bp_percent(*bp), RatesView::default()),
+            Some(PriceSpec::Rates(r)) => ("rates", String::new(), RatesView::new(r)),
         };
+        let price_now = cost.map(|c| {
+            let now = match price {
+                Some(p) => p.resolve(c),
+                None => c.marked_up(default_bp),
+            };
+            rates_line(&now.base)
+        });
         let mut overrides: Vec<OverrideView> = m
             .team_price
             .iter()
@@ -1144,33 +1214,51 @@ impl ModelPage {
                     .find(|t| t.id == *tid)
                     .map(|t| t.name.clone())
                     .unwrap_or_else(|| format!("team {tid}")),
-                desc: describe_price(Some(spec), default_bp),
+                desc: match spec {
+                    PriceSpec::Rates(r) => format!("Explicit rates: {}", rates_line(&r.base)),
+                    _ => describe_price(Some(spec), default_bp),
+                },
             })
             .collect();
         overrides.sort_by(|a, b| a.team.cmp(&b.team));
         let history = history
             .iter()
-            .map(|h| HistView {
-                id: h.id,
-                scope: h.team.clone().unwrap_or_else(|| "model".into()),
-                kind: h.kind.clone(),
-                desc: if h.kind == "cost" {
-                    serde_json::from_str::<CardRates>(&h.spec)
-                        .map(|c| {
-                            let v = RatesView::new(&c);
-                            format!("{}; {} tier(s)", v.summary(), v.tier_count)
-                        })
-                        .unwrap_or_else(|_| h.spec.clone())
+            .map(|h| {
+                let (rates, desc) = if h.kind == "cost" {
+                    match serde_json::from_str::<CardRates>(&h.spec) {
+                        Ok(c) => (Some(RatesView::new(&c)), String::new()),
+                        Err(_) => (None, h.spec.clone()),
+                    }
                 } else {
                     match serde_json::from_str::<Option<PriceSpec>>(&h.spec) {
-                        Ok(None) => "removed".into(),
-                        Ok(Some(p)) => describe_price(Some(&p), default_bp),
-                        Err(_) => h.spec.clone(),
+                        Ok(None) if h.team.is_some() => {
+                            (None, "Removed: the Team pays the Model Price".into())
+                        }
+                        Ok(None) => (None, "Removed: Default Markup".into()),
+                        Ok(Some(PriceSpec::Rates(r))) => (Some(RatesView::new(&r)), String::new()),
+                        Ok(Some(p)) => (None, describe_price(Some(&p), default_bp)),
+                        Err(_) => (None, h.spec.clone()),
                     }
-                },
-                created: date(h.created_at),
+                };
+                HistView {
+                    id: h.id,
+                    kind: if h.kind == "cost" {
+                        "Cost Card".into()
+                    } else {
+                        "Price Card".into()
+                    },
+                    scope: h
+                        .team
+                        .as_ref()
+                        .map(|t| format!("Team: {t}"))
+                        .unwrap_or_else(|| "Model".into()),
+                    rates,
+                    desc,
+                    created: date(h.created_at),
+                }
             })
             .collect();
+        let dollars = |micros: i64| format!("{}", micros as f64 / 1e6);
         ModelPage {
             base,
             id: m.id,
@@ -1184,12 +1272,17 @@ impl ModelPage {
                 })
                 .collect(),
             aliases: m.aliases.join(", "),
-            cost: RatesView::new(&cost),
+            cost: cost.map(RatesView::new).unwrap_or_default(),
+            has_cost: cost.is_some(),
             price_mode,
             price_markup,
-            price_rates: RatesView::new(&price_rates),
+            price_rates,
             price_desc: describe_price(price, default_bp),
+            price_now,
             default_markup: bp_percent(default_bp),
+            cost_in: cost.map(|c| dollars(c.base.input)).unwrap_or_default(),
+            cost_out: cost.map(|c| dollars(c.base.output)).unwrap_or_default(),
+            blank: RatesView::default(),
             overrides,
             team_opts: teams
                 .iter()

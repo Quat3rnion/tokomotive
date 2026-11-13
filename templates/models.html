@@ -1,59 +1,85 @@
 {% extends "base.html" %}
+{% import "rates_fields.html" as f %}
 {% block title %}Models - Tokomotive{% endblock %}
 {% block nav_models %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Models</h1>
-{% if base.simple %}<p class="muted">Pricing is off in simple mode.</p>{% else %}<p class="muted">Rates are USD per million tokens. A Model also matches dated names that start with <code>name-</code>.</p>{% endif %}
+{% if base.simple %}
+<p class="muted">A Model sends a model name to one Provider. Pricing is off in Simple Mode. A Model also matches dated names that start with <code>name-</code>.</p>
+{% else %}
+<p class="muted">A Model sends a model name to one Provider and holds its Cost Card (what the Provider charges you) and Price Card (what Users pay). A Model also matches dated names that start with <code>name-</code>. Requests for a Model with no Cost Card are Unpriced.</p>
+{% endif %}
+
+<h2 id="models-h">All Models</h2>
 <div class="panel scroll">
-<table>
-  <tr><th>Model</th><th>Provider</th><th>Aliases</th>{% if !base.simple %}<th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th>
-      <th class="n">Write 5m</th><th class="n">Write 1h</th><th class="n">Image in</th><th class="n">Image out</th><th class="n">Tiers</th><th>Price</th><th class="n">Team overrides</th>{% endif %}</tr>
+<table class="cards-sm models">
+  <thead>
+  {% if !base.simple %}
+  <tr><td colspan="3"></td><th scope="colgroup" colspan="8" class="group">Cost Card ($ per million tokens)</th><td colspan="2"></td></tr>
+  {% endif %}
+  <tr><th scope="col">Model</th><th scope="col">Provider</th><th scope="col">Aliases</th>{% if !base.simple %}<th scope="col" class="n">Input</th><th scope="col" class="n">Output</th><th scope="col" class="n">Cache read</th>
+      <th scope="col" class="n">Cache write 5m</th><th scope="col" class="n">Cache write 1h</th><th scope="col" class="n">Image input</th><th scope="col" class="n">Image output</th><th scope="col" class="n">Context Tiers</th><th scope="col">Price</th><th scope="col" class="n">Team overrides</th>{% endif %}</tr>
+  </thead>
+  <tbody>
   {% for m in models %}
   <tr>
-    <td><a href="/admin/models/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.provider }}</td><td class="muted">{{ m.aliases }}</td>
+    <th scope="row"><a href="/admin/models/{{ m.id }}">{{ m.name }}</a></th>
+    <td data-label="Provider">{{ m.provider }}</td>
+    <td data-label="Aliases" class="muted">{% if m.aliases.is_empty() %}<span class="vh">none</span>{% else %}{{ m.aliases }}{% endif %}</td>
     {% if !base.simple %}{% if let Some(c) = m.cost %}
-    <td class="n">{{ c.input }}</td><td class="n">{{ c.output }}</td><td class="n">{{ c.cache_read }}</td>
-    <td class="n">{{ c.cache_write_5m }}</td><td class="n">{{ c.cache_write_1h }}</td>
-    <td class="n">{{ c.image_input }}</td><td class="n">{{ c.image_output }}</td><td class="n">{{ c.tier_count }}</td>
+    <td class="n" data-label="Input ($/M)">{{ c.input }}</td><td class="n" data-label="Output ($/M)">{{ c.output }}</td><td class="n" data-label="Cache read ($/M)">{{ c.cache_read }}</td>
+    <td class="n" data-label="Cache write 5m ($/M)">{{ c.cache_write_5m }}</td><td class="n" data-label="Cache write 1h ($/M)">{{ c.cache_write_1h }}</td>
+    <td class="n" data-label="Image input ($/M)">{{ c.image_input }}</td><td class="n" data-label="Image output ($/M)">{{ c.image_output }}</td><td class="n" data-label="Context Tiers">{{ c.tier_count }}</td>
     {% else %}
-    <td colspan="8"><span class="tag warn">no cost card</span></td>
+    <td colspan="8" data-label="Cost Card"><span class="tag warn">Unpriced: no Cost Card</span> <a href="/admin/models/{{ m.id }}#cost">Add a Cost Card<span class="vh"> for {{ m.name }}</span></a></td>
     {% endif %}
-    <td>{{ m.price }}</td><td class="n">{{ m.overrides }}</td>
+    <td data-label="Price"><span class="tag{% if m.price_tag == "Explicit rates" %} info{% endif %}" title="{{ m.price_title }}">{{ m.price_tag }}</span></td>
+    <td class="n" data-label="Team overrides">{{ m.overrides }}</td>
     {% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="{% if base.simple %}3{% else %}13{% endif %}" class="muted">No models.</td></tr>
+  <tr><td colspan="{% if base.simple %}3{% else %}13{% endif %}" class="empty">No Models yet.{% if !base.simple %} Requests are Unpriced until their model has a Model with a Cost Card.{% endif %}{% if !providers.is_empty() %} Add one below.{% endif %}</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
 
-{% if !base.simple %}<h2>Default markup</h2>
-<form class="panel row" method="post" action="/admin/settings/markup">
-  <label>Markup for models with no Price Card (%) <input name="default_markup_percent" value="{{ default_markup }}"></label>
-  <button>Save</button>
-</form>
+{% if !base.simple %}
+<section class="panel" id="markup" aria-labelledby="markup-h" tabindex="-1">
+  <h2 id="markup-h">Default Markup</h2>
+  <form method="post" action="/admin/settings/markup" class="row">
+    <div class="field">
+      <label for="markup-pct">Default Markup (%)</label>
+      <input id="markup-pct" name="default_markup_percent" value="{{ default_markup }}" type="number" step="any" min="-100" inputmode="decimal" required aria-describedby="markup-help">
+    </div>
+    <button>Save Default Markup</button>
+    <p class="hint" id="markup-help">Users pay the Cost Card rates plus this percentage for each Model that has no Price Card. 0 means Price equals Cost.</p>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+  </form>
+</section>
 {% endif %}
 
-<h2>Add model</h2>
-<form class="panel" method="post" action="/admin/models">
-  <div class="row" style="margin-bottom:10px">
-    <label>Name <input name="name" required style="width:220px"></label>
-    <label>Provider <select name="provider">{% for p in providers %}<option>{{ p }}</option>{% endfor %}</select></label>
-    <label>Aliases (comma list) <input name="aliases" style="width:260px"></label>
-  </div>
-  {% if !base.simple %}<p class="muted" style="margin:0 0 4px">Cost Card (what the provider charges you):</p>
-  <div class="row">
-    <label>Input <input name="input" value="0"></label>
-    <label>Output <input name="output" value="0"></label>
-    <label>Cache read <input name="cache_read" value="0"></label>
-    <label>Cache write 5m <input name="cache_write_5m" value="0"></label>
-    <label>Cache write 1h <input name="cache_write_1h" value="0"></label>
-    <label>Image input <input name="image_input" value="0"></label>
-    <label>Image output <input name="image_output" value="0"></label>
-  </div>
-  <p class="muted" style="margin:10px 0 4px">Context Tiers, one per line: <code>above_input_tokens input output cache_read cache_write_5m cache_write_1h [image_input image_output]</code></p>
-  <textarea name="tiers" rows="2"></textarea>
+<section class="panel" aria-labelledby="add-model-h">
+  <h2 id="add-model-h">Add a Model</h2>
+  {% if providers.is_empty() %}
+  <p class="empty">Add a Provider before you add a Model. <a href="/admin/providers">Go to Providers</a></p>
+  {% else %}
+  <form method="post" action="/admin/models" class="stack">
+    <div class="row">
+      <div class="field"><label for="new-name">Name</label><input id="new-name" name="name" required placeholder="gpt-4o" autocomplete="off" spellcheck="false" aria-describedby="new-name-help"><p class="hint" id="new-name-help">The model name that clients send.</p></div>
+      <div class="field"><label for="new-provider">Provider</label><select id="new-provider" name="provider" required>{% for p in providers %}<option>{{ p }}</option>{% endfor %}</select></div>
+      <div class="field grow"><label for="new-aliases">Aliases</label><input id="new-aliases" name="aliases" placeholder="4o, gpt-4o-latest" autocomplete="off" spellcheck="false" aria-describedby="new-aliases-help"><p class="hint" id="new-aliases-help">Optional. Comma-separated other names for this Model.</p></div>
+    </div>
+    {% if !base.simple %}
+    <fieldset aria-describedby="new-cost-help">
+      <legend>Cost Card (what the Provider charges you)</legend>
+      <p class="hint" id="new-cost-help">Leave all rates blank to keep the Model Unpriced: its requests are flagged until you add a Cost Card.</p>
+      {% call f::rates_fields(blank, "new", "Cost Card") %}
+    </fieldset>
+    {% endif %}
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Add Model</button>
+  </form>
   {% endif %}
-  <p><button>Add model</button></p>
-</form>
+</section>
 {% endblock %}

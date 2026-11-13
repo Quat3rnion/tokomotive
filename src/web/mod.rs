@@ -555,14 +555,6 @@ fn opt_usd(s: &str) -> Result<Option<i64>, Response> {
     })
 }
 
-fn usd(s: &str) -> Result<i64, Response> {
-    parse_usd(s).ok_or_else(|| {
-        bad(format!(
-            "{s} is not a dollar amount. Use digits and a dot, for example 12.50."
-        ))
-    })
-}
-
 fn percent(s: &str) -> Result<i64, Response> {
     s.trim().parse::<f64>().map(percent_to_bp).map_err(|_| {
         bad(format!(
@@ -1120,55 +1112,181 @@ struct RatesForm {
     image_output: String,
     #[serde(default)]
     tiers: String,
+    /// The check box "Input and Output are $0 on purpose".
+    #[serde(default)]
+    allow_zero: String,
+}
+
+/// What a set of rates is for. It selects the error messages.
+#[derive(Clone, Copy)]
+enum CardUse {
+    NewModel,
+    Cost,
+    Price,
+}
+
+const RATE_LABELS: [&str; 7] = [
+    "Input",
+    "Output",
+    "Cache read",
+    "Cache write 5m",
+    "Cache write 1h",
+    "Image input",
+    "Image output",
+];
+
+/// One rate in dollars per million tokens. Blank is 0; negative is refused.
+fn rate(label: &str, s: &str) -> Result<i64, Response> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Ok(0);
+    }
+    match parse_usd(t) {
+        Some(v) if v >= 0 => Ok(v),
+        Some(_) => Err(bad(format!("The {label} rate must be 0 or more."))),
+        None => Err(bad(format!(
+            "The {label} rate \"{t}\" is not a dollar amount. Use digits and a dot, for example 2.50."
+        ))),
+    }
+}
+
+fn rates_of(v: [i64; 7]) -> Rates {
+    Rates {
+        input: v[0],
+        output: v[1],
+        cache_read: v[2],
+        cache_write_5m: v[3],
+        cache_write_1h: v[4],
+        image_input: v[5],
+        image_output: v[6],
+    }
 }
 
 impl RatesForm {
-    fn parse(&self) -> Result<CardRates, Response> {
-        Ok(CardRates {
-            base: Rates {
-                input: usd(&self.input)?,
-                output: usd(&self.output)?,
-                cache_read: usd(&self.cache_read)?,
-                cache_write_5m: usd(&self.cache_write_5m)?,
-                cache_write_1h: usd(&self.cache_write_1h)?,
-                image_input: usd(&self.image_input)?,
-                image_output: usd(&self.image_output)?,
-            },
-            tiers: parse_tiers(&self.tiers)?,
-        })
+    fn fields(&self) -> [&str; 7] {
+        [
+            &self.input,
+            &self.output,
+            &self.cache_read,
+            &self.cache_write_5m,
+            &self.cache_write_1h,
+            &self.image_input,
+            &self.image_output,
+        ]
+    }
+
+    /// The card in the form. All fields blank gives `None`: the caller
+    /// decides what no card means, and never saves a $0 card for it. A card
+    /// with Input and Output both 0 needs the `allow_zero` check box.
+    fn card(&self, card: CardUse) -> Result<Option<CardRates>, Response> {
+        if self.fields().iter().all(|s| s.trim().is_empty()) && self.tiers.trim().is_empty() {
+            return Ok(None);
+        }
+        let mut v = [0; 7];
+        for (i, s) in self.fields().iter().enumerate() {
+            v[i] = rate(RATE_LABELS[i], s)?;
+        }
+        let base = rates_of(v);
+        let tiers = parse_tiers(&self.tiers)?;
+        if base.input == 0 && base.output == 0 && self.allow_zero.is_empty() {
+            return Err(bad(match card {
+                CardUse::NewModel => {
+                    "The Input and Output rates are 0, so the requests of this Model would have no Cost and would not be flagged as Unpriced. Select \"Input and Output are $0 on purpose\" to save a $0 Cost Card, or leave all rates blank to keep the Model Unpriced."
+                }
+                CardUse::Cost => {
+                    "The Input and Output rates are 0, so the requests of this Model would have no Cost. Select \"Input and Output are $0 on purpose\" to save a $0 Cost Card."
+                }
+                CardUse::Price => {
+                    "The Input and Output rates are 0, so Users would pay nothing for this Model. Select \"Input and Output are $0 on purpose\" to save a $0 Price."
+                }
+            }));
+        }
+        Ok(Some(CardRates { base, tiers }))
     }
 }
 
 /// One tier per line: `above_input_tokens input output cache_read
 /// cache_write_5m cache_write_1h [image_input image_output]`.
 fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
+    const HELP: &str = "Write 6 or 8 numbers: the input tokens above which the tier applies, then the Input, Output, Cache read, Cache write 5m and Cache write 1h rates, and optionally the Image input and Image output rates.";
     let mut out = vec![];
-    for line in s.lines().map(str::trim).filter(|l| !l.is_empty()) {
+    for (n, line) in s.lines().map(str::trim).enumerate() {
+        let n = n + 1;
+        if line.is_empty() {
+            continue;
+        }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let above: i64 = parts[0].parse().map_err(|_| {
+        if parts.len() != 6 && parts.len() != 8 {
+            return Err(bad(format!(
+                "Context Tier line {n} has {} numbers. {HELP}",
+                parts.len()
+            )));
+        }
+        let above: i64 = parts[0].parse().ok().filter(|v| *v >= 0).ok_or_else(|| {
             bad(format!(
-                "Each Context Tier line must start with a token count: {line}"
+                "Context Tier line {n} must start with a whole number of input tokens, for example 200000. \"{}\" is not one.",
+                parts[0]
             ))
         })?;
-        let r = |i: usize| parts.get(i).map(|p| usd(p)).unwrap_or(Ok(0));
+        let mut v = [0; 7];
+        for (i, p) in parts[1..].iter().enumerate() {
+            v[i] = rate(&format!("Context Tier line {n} {}", RATE_LABELS[i]), p)?;
+        }
         out.push(ContextTier {
             above_input_tokens: above,
-            rates: Rates {
-                input: r(1)?,
-                output: r(2)?,
-                cache_read: r(3)?,
-                cache_write_5m: r(4)?,
-                cache_write_1h: r(5)?,
-                image_input: r(6)?,
-                image_output: r(7)?,
-            },
+            rates: rates_of(v),
         });
     }
     Ok(out)
 }
 
+/// A note for the success message when Input or Output is 0 but not both.
+fn zero_note(r: &Rates) -> &'static str {
+    match (r.input == 0, r.output == 0) {
+        (true, false) => " The Input rate is 0, so input tokens are free.",
+        (false, true) => " The Output rate is 0, so output tokens are free.",
+        _ => "",
+    }
+}
+
+/// Model names and aliases must not overlap, so that each model string
+/// resolves to one Model. `own` is the Model that is being changed.
+fn check_names(
+    st: &AppState,
+    own: Option<i64>,
+    name: &str,
+    aliases: &[String],
+) -> Result<(), Response> {
+    let cat = st.catalog();
+    let others: Vec<_> = cat.models.iter().filter(|m| Some(m.id) != own).collect();
+    if let Some(m) = others.iter().find(|m| m.aliases.iter().any(|a| a == name)) {
+        return Err(bad(format!(
+            "{name} is already an alias of Model {}. Choose another name, or remove the alias from that Model first.",
+            m.name
+        )));
+    }
+    for a in aliases {
+        if a == name {
+            return Err(bad(format!(
+                "The alias {a} is the same as the Model name. Remove it from the aliases."
+            )));
+        }
+        if let Some(m) = others
+            .iter()
+            .find(|m| &m.name == a || m.aliases.contains(a))
+        {
+            return Err(bad(format!(
+                "The alias {a} is already used by Model {}. Choose another alias.",
+                m.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct NewModelForm {
+    #[serde(default)]
     name: String,
     #[serde(default)]
     provider: String,
@@ -1186,7 +1304,7 @@ async fn create_model(
     let _guard = st.settings_write.lock().await;
     let name = f.name.trim();
     if name.is_empty() {
-        return bad("A Model needs a name.");
+        return bad("Enter a name for the Model, for example gpt-4o.");
     }
     if f.provider.is_empty() {
         return bad("Add a Provider first. A Model needs a Provider.");
@@ -1199,29 +1317,42 @@ async fn create_model(
     {
         return bad("Unknown Provider. Reload the page and choose a Provider from the list.");
     }
-    let rates = if st.settings().mode == "simple" {
+    let aliases = csv(&f.aliases);
+    if let Err(r) = check_names(&st, None, name, &aliases) {
+        return r;
+    }
+    let simple = st.settings().mode == "simple";
+    // Simple Mode has no cards. In Full Mode, blank rates give no Cost Card:
+    // the Model stays Unpriced and its requests are flagged.
+    let rates = if simple {
         None
     } else {
-        match f.rates.parse() {
-            Ok(r) => Some(r),
+        match f.rates.card(CardUse::NewModel) {
+            Ok(r) => r,
             Err(r) => return r,
         }
     };
-    let id = match db::create_model(&st.db, name, &f.provider, &csv(&f.aliases)).await {
+    let id = match db::create_model(&st.db, name, &f.provider, &aliases).await {
         Ok(id) => id,
         Err(e) if is_unique_violation(&e) => {
-            return bad(format!("A Model named {name} already exists."));
+            return bad(format!(
+                "A Model named {name} already exists. Choose another name, or open that Model to change it."
+            ));
         }
         Err(e) => return internal(e),
     };
-    if let Some(rates) = rates {
-        tryr!(db::add_cost_card(&st.db, id, &rates).await);
+    if let Some(rates) = &rates {
+        tryr!(db::add_cost_card(&st.db, id, rates).await);
     }
     tryr!(st.reload_catalog().await);
-    saved(
-        &format!("/admin/models/{id}"),
-        &format!("Model {name} added."),
-    )
+    let message = match &rates {
+        Some(r) => format!("Model {name} added.{}", zero_note(&r.base)),
+        None if !simple => format!(
+            "Model {name} added with no Cost Card. Its requests are Unpriced until you add a Cost Card."
+        ),
+        None => format!("Model {name} added."),
+    };
+    saved(&format!("/admin/models/{id}"), &message)
 }
 
 async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
@@ -1254,6 +1385,7 @@ async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
 
 #[derive(Deserialize)]
 struct ModelForm {
+    #[serde(default)]
     provider: String,
     #[serde(default)]
     aliases: String,
@@ -1274,9 +1406,25 @@ async fn update_model(
     {
         return bad("Unknown Provider. Reload the page and choose a Provider from the list.");
     }
-    tryr!(db::update_model(&st.db, id, &f.provider, &csv(&f.aliases)).await);
+    let Some(name) = st
+        .catalog()
+        .models
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.name.clone())
+    else {
+        return bad("This Model does not exist any more. Go to Models and reload the page.");
+    };
+    let aliases = csv(&f.aliases);
+    if let Err(r) = check_names(&st, Some(id), &name, &aliases) {
+        return r;
+    }
+    tryr!(db::update_model(&st.db, id, &f.provider, &aliases).await);
     tryr!(st.reload_catalog().await);
-    saved(&format!("/admin/models/{id}"), "Model saved.")
+    saved(
+        &format!("/admin/models/{id}"),
+        &format!("Model {name} saved."),
+    )
 }
 
 async fn set_cost(
@@ -1285,15 +1433,23 @@ async fn set_cost(
     Path(id): Path<i64>,
     Form(f): Form<RatesForm>,
 ) -> Response {
-    let rates = match f.parse() {
-        Ok(r) => r,
+    let rates = match f.card(CardUse::Cost) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return bad(
+                "Enter the rates. A Cost Card needs at least the Input and Output rates, in $ per million tokens.",
+            );
+        }
         Err(r) => return r,
     };
     tryr!(db::add_cost_card(&st.db, id, &rates).await);
     tryr!(st.reload_catalog().await);
     saved(
-        &format!("/admin/models/{id}"),
-        "Cost Card saved as a new Card Version.",
+        &format!("/admin/models/{id}#cost"),
+        &format!(
+            "Cost Card saved as a new Card Version.{}",
+            zero_note(&rates.base)
+        ),
     )
 }
 
@@ -1313,10 +1469,54 @@ impl PriceForm {
     fn spec(&self) -> Result<Option<PriceSpec>, Response> {
         match self.mode.as_str() {
             "default" => Ok(None),
-            "markup" => Ok(Some(PriceSpec::MarkupBp(percent(&self.markup_percent)?))),
-            "rates" => Ok(Some(PriceSpec::Rates(self.rates.parse()?))),
+            "markup" => {
+                let t = self.markup_percent.trim();
+                if t.is_empty() {
+                    return Err(bad(
+                        "Enter the Markup in percent, for example 25. Or choose another option.",
+                    ));
+                }
+                let bp = percent(t)?;
+                if bp < -10_000 {
+                    return Err(bad(
+                        "A Markup below -100% gives a negative Price. Enter -100 or more.",
+                    ));
+                }
+                Ok(Some(PriceSpec::MarkupBp(bp)))
+            }
+            "rates" => match self.rates.card(CardUse::Price)? {
+                Some(r) => Ok(Some(PriceSpec::Rates(r))),
+                None => Err(bad(
+                    "Enter the Price rates: at least Input and Output, in $ per million tokens. Or choose another option.",
+                )),
+            },
             _ => Err(bad("Choose how to set the Price.")),
         }
+    }
+}
+
+/// A note for the success message when explicit Price rates are not more
+/// than the Cost Card rates.
+fn margin_note(st: &AppState, id: i64, spec: Option<&PriceSpec>) -> &'static str {
+    let Some(PriceSpec::Rates(p)) = spec else {
+        return "";
+    };
+    let cat = st.catalog();
+    let Some((_, c)) = cat
+        .models
+        .iter()
+        .find(|m| m.id == id)
+        .and_then(|m| m.cost.as_ref())
+    else {
+        return "";
+    };
+    let (p, c) = (&p.base, &c.base);
+    if p.input < c.input || p.output < c.output {
+        " The Price is lower than the Cost for Input or Output."
+    } else if p.input == c.input && p.output == c.output {
+        " The Price is the same as the Cost, so there is no margin."
+    } else {
+        ""
     }
 }
 
@@ -1330,14 +1530,17 @@ async fn set_price(
         Ok(s) => s,
         Err(r) => return r,
     };
-    match spec {
-        Some(s) => tryr!(db::add_price_card(&st.db, id, None, &s).await),
+    match &spec {
+        Some(s) => tryr!(db::add_price_card(&st.db, id, None, s).await),
         None => tryr!(db::add_null_price_card(&st.db, id, None).await),
     };
     tryr!(st.reload_catalog().await);
     saved(
-        &format!("/admin/models/{id}"),
-        "Price Card saved as a new Card Version.",
+        &format!("/admin/models/{id}#price"),
+        &format!(
+            "Price Card saved as a new Card Version.{}",
+            margin_note(&st, id, spec.as_ref())
+        ),
     )
 }
 
@@ -1354,40 +1557,58 @@ async fn set_team_price(
         Ok(s) => s,
         Err(r) => return r,
     };
-    match spec {
-        Some(s) => tryr!(db::add_price_card(&st.db, id, Some(team), &s).await),
-        None => tryr!(db::add_null_price_card(&st.db, id, Some(team)).await),
+    let message = match &spec {
+        Some(s) => {
+            tryr!(db::add_price_card(&st.db, id, Some(team), s).await);
+            "Team override saved."
+        }
+        None => {
+            tryr!(db::add_null_price_card(&st.db, id, Some(team)).await);
+            "Team override removed. The Team pays the Model Price."
+        }
     };
     tryr!(st.reload_catalog().await);
-    saved(&format!("/admin/models/{id}"), "Team override saved.")
+    saved(
+        &format!("/admin/models/{id}#team-prices"),
+        &format!("{message}{}", margin_note(&st, id, spec.as_ref())),
+    )
 }
 
 #[derive(Deserialize)]
 struct SettingsForm {
+    #[serde(default)]
     default_markup_percent: String,
 }
 
+/// The one editor of the Default Markup (on the Models page).
 async fn set_settings(
     _: Admin,
     State(st): State<AppState>,
     Form(f): Form<SettingsForm>,
 ) -> Response {
     let _guard = st.settings_write.lock().await;
+    let value = f.default_markup_percent.trim();
+    if value.is_empty() {
+        return bad("Enter the Default Markup in percent, for example 20.");
+    }
     let mut cfg = tryr!(crate::settings::load(&st.db, &st.secret_key).await).0;
-    cfg.server.default_markup_percent = match f.default_markup_percent.trim().parse() {
+    cfg.server.default_markup_percent = match value.parse() {
         Ok(v) => v,
-        Err(_) => return bad("Enter the Markup as a number, for example 20."),
+        Err(_) => return bad("Enter the Default Markup as a number, for example 20."),
     };
     if let Err(e) = cfg.validate() {
         return bad(e.to_string());
     }
-    let bp = match percent(&f.default_markup_percent) {
+    let bp = match percent(value) {
         Ok(b) => b,
         Err(r) => return r,
     };
+    if bp < -10_000 {
+        return bad("A Markup below -100% gives a negative Price. Enter -100 or more.");
+    }
     tryr!(db::set_default_markup_bp(&st.db, bp).await);
     tryr!(st.reload_catalog().await);
-    saved("/admin/models", "Default Markup saved.")
+    saved("/admin/models#markup", "Default Markup saved.")
 }
 
 // ----------------------------------------------------------------- ledger
