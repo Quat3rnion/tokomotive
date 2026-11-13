@@ -68,7 +68,12 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
         let mut tx = db.begin().await?;
         for p in &cfg.providers {
             let mut keys = Vec::new();
-            if let Some(env) = &p.api_key_env {
+            if let (Some(env), Some(fallback)) = (&p.api_key_env, &p.api_key) {
+                // Resolve the legacy single-key pair once, with env precedence.
+                let value = std::env::var(env).ok().filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| fallback.clone());
+                keys.push(key.encrypt(&value)?);
+            } else if let Some(env) = &p.api_key_env {
                 keys.push(format!("env:{env}"));
             } else if let Some(v) = &p.api_key {
                 keys.push(key.encrypt(v)?);
@@ -193,7 +198,9 @@ impl SecretKey {
     }
 
     pub fn load(database: &str) -> Result<Self> {
-        if let Ok(value) = std::env::var("LLM_ACCOUNTING_SECRET_KEY") {
+        if let Ok(value) = std::env::var("LLM_ACCOUNTING_SECRET_KEY")
+            && !value.trim().is_empty()
+        {
             let bytes = if value.len() == 64 {
                 hex::decode(&value)?
             } else {

@@ -182,7 +182,7 @@ The table below lists the keys of the seed file. The dashboard has the fields
 | `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the usage format and the authentication headers.        |
 | `base_url`     | string           | none    | Required. The URL of the Provider API, without a path such as `/v1`. The Proxy adds the path and query of the client request. |
 | `api_key`      | string           | none    | One Provider Key, in the file. The Proxy encrypts it when it seeds. Do not use it in a repository that you commit. |
-| `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. When set, `api_key` is ignored.                                |
+| `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. A non-empty variable takes precedence over `api_key`.         |
 | `api_keys`     | array of strings | `[]`    | More Provider Keys, in the file. The Proxy encrypts them when it seeds.                                          |
 | `api_keys_env` | array of strings | `[]`    | Names of variables. Each variable holds one Provider Key.                                                        |
 
@@ -194,8 +194,10 @@ removes duplicate keys.
 
 A seed file fills the Key Pool in this order:
 
-1. The single key. If `api_key_env` is set, the Proxy stores a reference to that
-   variable and ignores `api_key`. Otherwise it stores `api_key`, encrypted.
+1. The single key. With only `api_key_env`, the Proxy stores a variable reference.
+   With both keys, it resolves the variable at seed time and uses `api_key` if
+   the variable is unset or empty. It stores that resolved key encrypted.
+   With only `api_key`, it stores that key encrypted.
 2. The keys in `api_keys`, encrypted.
 3. The variables in `api_keys_env`, as references.
 

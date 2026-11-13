@@ -12,6 +12,55 @@ impl Drop for Env {
     fn drop(&mut self) { for task in &self.tasks { task.abort(); } }
 }
 
+#[tokio::test]
+async fn seeded_provider_keeps_env_first_literal_fallback() {
+    if std::env::var_os("LLMA_REVIEW_SEED_CHILD").is_none() {
+        for value in [None, Some(""), Some("environment-key")] {
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+            cmd.args(["--exact", "seeded_provider_keeps_env_first_literal_fallback", "--nocapture"])
+                .env("LLMA_REVIEW_SEED_CHILD", "1").env_remove("LLMA_REVIEW_PROVIDER_KEY");
+            if let Some(value) = value { cmd.env("LLMA_REVIEW_PROVIDER_KEY", value); }
+            let out = cmd.output().unwrap();
+            assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        return;
+    }
+    let cfg: Config = toml::from_str(r#"
+[server]
+database = "sqlite::memory:"
+[[providers]]
+name = "test"
+kind = "openai"
+base_url = "http://localhost"
+api_key_env = "LLMA_REVIEW_PROVIDER_KEY"
+api_key = "literal-key"
+"#).unwrap();
+    let expected = cfg.providers[0].keys();
+    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    assert_eq!(*st.router_table().providers[0].keys, expected, "seed dropped the env-first literal fallback");
+}
+
+#[test]
+fn blank_secret_key_uses_the_persistent_generated_key() {
+    if std::env::var_os("LLMA_REVIEW_SECRET_CHILD").is_none() {
+        for value in ["", "  \t\n"] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "blank_secret_key_uses_the_persistent_generated_key", "--nocapture"])
+                .env("LLMA_REVIEW_SECRET_CHILD", "1").env("LLM_ACCOUNTING_SECRET_KEY", value)
+                .output().unwrap();
+            assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        return;
+    }
+    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let database = format!("sqlite://{}/db.sqlite", dir.path().display());
+    let key = llm_accounting::settings::SecretKey::load(&database)
+        .expect("blank secret key must use generated key instead of failing startup");
+    let encrypted = key.encrypt("provider-key").unwrap();
+    assert_eq!(llm_accounting::settings::SecretKey::load(&database).unwrap().decrypt(&encrypted).unwrap(), "provider-key");
+    assert!(dir.path().join("secret.key").exists());
+}
+
 async fn env(routes: &str) -> Env {
     let upstream = axum::Router::new()
         .route("/v1/chat/completions", axum::routing::post(|| async {
