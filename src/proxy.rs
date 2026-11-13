@@ -41,6 +41,25 @@ fn translation(kind: ProviderKind, endpoint: Endpoint) -> Option<Direction> {
     }
 }
 
+fn prepare_body(
+    candidate: &crate::routing::Candidate,
+    endpoint: Endpoint,
+    body: Option<&Value>,
+) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    let dir = translation(candidate.provider.kind, endpoint);
+    let target = dir.map_or(endpoint, |d| Endpoint::from_path(d.upstream_path()));
+    let mut prepared = match dir {
+        Some(dir) => Some(translate::translate_request(dir, body.unwrap_or(&Value::Null))?),
+        None => body.cloned(),
+    };
+    if candidate.rewrite && let Some(v) = prepared.as_mut() {
+        v["model"] = json!(candidate.model);
+    }
+    let strip = prepared.as_mut()
+        .is_some_and(|v| candidate.provider.kind.prepare_body(target, v));
+    Ok((prepared, target, strip))
+}
+
 fn bearer(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers
         .get(header::AUTHORIZATION)
@@ -260,11 +279,8 @@ fn worst_case_price(
     default_output: i64,
 ) -> i64 {
     let max_out = body
-        .and_then(|b| {
-            ["max_tokens", "max_completion_tokens", "max_output_tokens"]
-                .iter()
-                .find_map(|k| b.get(*k).and_then(Value::as_i64))
-        })
+        .and_then(translate::output_token_limit)
+        .and_then(Value::as_i64)
         .unwrap_or(default_output)
         .max(0);
     let mut usage = Usage {
@@ -303,6 +319,12 @@ pub async fn handle(
         serde_json::from_slice(&body).ok()
     };
     let requested_model = json_body.as_ref().and_then(model_of);
+    if endpoint == Endpoint::ChatCompletions
+        && let Some(body) = &json_body
+        && let Err(e) = translate::validate_chat_limits(body)
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message);
+    }
     let catalog = st.catalog();
     let table = st.router_table();
     let settings = st.settings();
@@ -379,16 +401,18 @@ pub async fn handle(
         };
         let worst = candidates
             .iter()
-            .map(|c| {
-                worst_case_price(
+            .filter_map(|c| {
+                let (prepared, target, _) = prepare_body(c, endpoint, json_body.as_ref()).ok()?;
+                let len = prepared.as_ref().map_or(body.len(), |v| v.to_string().len());
+                Some(worst_case_price(
                     &catalog,
                     auth.team_id,
-                    endpoint,
+                    target,
                     c.model.as_deref(),
-                    json_body.as_ref(),
-                    body.len(),
+                    prepared.as_ref(),
+                    len,
                     settings.reserve_output_tokens,
-                )
+                ))
             })
             .max()
             .unwrap_or(0);
@@ -441,25 +465,10 @@ pub async fn handle(
         };
         let provider = &candidate.provider;
         let dir = translation(provider.kind, endpoint);
-        let target_endpoint = dir.map_or(endpoint, |d| Endpoint::from_path(d.upstream_path()));
-        let mut prepared = if let Some(dir) = dir {
-            match translate::translate_request(dir, json_body.as_ref().unwrap_or(&Value::Null)) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message);
-                }
-            }
-        } else {
-            json_body.clone()
+        let (prepared, target_endpoint, strip) = match prepare_body(candidate, endpoint, json_body.as_ref()) {
+            Ok(v) => v,
+            Err(e) => return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message),
         };
-        if candidate.rewrite
-            && let Some(v) = prepared.as_mut()
-        {
-            v["model"] = json!(candidate.model);
-        }
-        let strip = prepared
-            .as_mut()
-            .is_some_and(|v| provider.kind.prepare_body(target_endpoint, v));
         let upstream_body = match prepared {
             Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
             None => body.clone(),

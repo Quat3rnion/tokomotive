@@ -782,7 +782,7 @@ For `/v1/messages`, the body also has the top-level field `"type": "error"`.
 | 401         | `authentication_error` | `invalid API key`                                               | The key is unknown or revoked, or the User is disabled.        |
 | 403         | `permission_error`     | `this API key may not use this model`                           | The key has an allowed-Models list and the Model is not in it. |
 | 402         | `budget_exceeded`      | `the budget for this user does not cover this request`          | The Budget check failed. See "Budgets and Reservations".       |
-| 400         | `invalid_request_error` | Details of the unsupported request.                          | Translation could not convert the request.                    |
+| 400         | `invalid_request_error` | Details of the unsupported request.                          | Translation could not convert the request, or the Chat output limits conflict. |
 | 404         | `not_found_error`      | `model not found`                                               | `GET /v1/models/{id}` names a Model or Route that the key cannot see. |
 | 429         | `rate_limit_error`     | The key or User request or token limit was exceeded.           | A Rate Limit check failed. The response has `Retry-After`.     |
 | 502         | `api_error`            | `no provider is configured for this request`                    | The configuration has no Provider.                             |

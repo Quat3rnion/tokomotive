@@ -43,6 +43,22 @@ fn invalid(message: &str) -> TranslateError {
     }
 }
 
+pub fn validate_chat_limits(body: &Value) -> Result<(), TranslateError> {
+    if let (Some(a), Some(b)) = (
+        body.get("max_tokens").filter(|v| !v.is_null()),
+        body.get("max_completion_tokens").filter(|v| !v.is_null()),
+    ) && a != b {
+        return Err(invalid("max_tokens and max_completion_tokens must not have different values"));
+    }
+    Ok(())
+}
+
+/// The effective explicit output limit, in the order used by Chat translation.
+pub fn output_token_limit(body: &Value) -> Option<&Value> {
+    ["max_completion_tokens", "max_tokens", "max_output_tokens"]
+        .iter().find_map(|key| body.get(*key).filter(|v| !v.is_null()))
+}
+
 fn text<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
@@ -195,6 +211,7 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
     let mut translated = Vec::new();
     match dir {
         Direction::ChatToMessages => {
+            validate_chat_limits(body)?;
             if number(body, "n") > 1 {
                 return Err(invalid("cross-format translation supports only n = 1"));
             }
@@ -228,10 +245,7 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
             if !system.is_empty() {
                 out["system"] = json!(system);
             }
-            let limit = body
-                .get("max_completion_tokens")
-                .filter(|v| !v.is_null())
-                .or_else(|| body.get("max_tokens").filter(|v| !v.is_null()));
+            let limit = output_token_limit(body);
             out["max_tokens"] = limit.cloned().unwrap_or(json!(4096));
             let budget = match text(body, "reasoning_effort") {
                 "low" => 1024,

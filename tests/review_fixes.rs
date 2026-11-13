@@ -1,5 +1,87 @@
 use llm_accounting::translate::{Direction, translate_request};
 use serde_json::json;
+use llm_accounting::{config::Config, state::AppState};
+
+struct Env {
+    _dir: tempfile::TempDir,
+    st: AppState,
+    url: String,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+impl Drop for Env {
+    fn drop(&mut self) { for task in &self.tasks { task.abort(); } }
+}
+
+async fn env(routes: &str) -> Env {
+    let upstream = axum::Router::new()
+        .route("/v1/chat/completions", axum::routing::post(|| async {
+            (axum::http::StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({"error":{"message":"rate limited"}})))
+        }))
+        .route("/v1/messages", axum::routing::post(|| async {
+            axum::Json(json!({"type":"message","model":"claude","content":[],"usage":{"input_tokens":0,"output_tokens":1}}))
+        }));
+    let ul = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_url = format!("http://{}", ul.local_addr().unwrap());
+    let ut = tokio::spawn(async move { axum::serve(ul, upstream).await.unwrap() });
+    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let cfg: Config = toml::from_str(&format!(r#"
+[server]
+database = "sqlite://{}/db.sqlite"
+admin_password = "long-password"
+admin_password_env = "LLMA_REVIEW_UNSET_ADMIN"
+default_markup_percent = 0
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+base_url = "{upstream_url}"
+[[providers]]
+name = "openai"
+kind = "openai"
+base_url = "{upstream_url}"
+[[models]]
+name = "claude"
+provider = "anthropic"
+cost = {{ output = 1 }}
+[[models]]
+name = "gpt"
+provider = "openai"
+cost = {{ output = 1 }}
+[[users]]
+name = "budgeted"
+budget_usd = 0.005
+keys = ["sk-review"]
+{routes}
+"#, dir.path().display())).unwrap();
+    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let pl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", pl.local_addr().unwrap());
+    let app = llm_accounting::router(st.clone());
+    let pt = tokio::spawn(async move { axum::serve(pl, app).await.unwrap() });
+    Env { _dir: dir, st, url, tasks: vec![ut, pt] }
+}
+
+#[tokio::test]
+async fn conflicting_chat_limits_are_rejected_before_reservation() {
+    let e = env("").await;
+    let response = reqwest::Client::new().post(format!("{}/v1/chat/completions", e.url))
+        .bearer_auth("sk-review").json(&json!({"model":"claude","messages":[],
+            "max_tokens":1,"max_completion_tokens":10000})).send().await.unwrap();
+    assert_eq!(response.status(), 400, "conflicting output limits must not bypass the budget");
+    assert_eq!(response.json::<serde_json::Value>().await.unwrap()["error"]["type"], "invalid_request_error");
+}
+
+#[tokio::test]
+async fn reasoning_budget_reserves_translated_output_limit() {
+    let e = env(r#"
+[[routes]]
+name = "mixed"
+deployments = [{ provider = "openai", model = "gpt" }, { provider = "anthropic", model = "claude" }]
+"#).await;
+    let response = reqwest::Client::new().post(format!("{}/v1/chat/completions", e.url))
+        .bearer_auth("sk-review").json(&json!({"model":"mixed","messages":[],
+            "reasoning_effort":"high"})).send().await.unwrap();
+    assert_eq!(response.status(), 402, "budget only covers the untranslated 4096 token default");
+}
 
 #[test]
 fn tool_result_images_follow_all_consecutive_tool_replies() {
