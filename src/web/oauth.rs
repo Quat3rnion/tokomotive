@@ -22,14 +22,16 @@ fn flow(st: &AppState, name: &str) -> Option<Flow> {
         .and_then(|p| Flow::from_auth(p.auth))
 }
 #[derive(Template)]
-#[template(
-    source = "<section class=\"panel\"><h2>Sign in</h2><p>Open the link in a new tab. Complete sign-in. Paste the final redirect URL (ChatGPT or Codex) or code#state (Claude). The attempt expires in 10 minutes.</p><a href=\"{{ url }}\" target=\"_blank\" rel=\"noopener noreferrer\">Open sign-in page</a><form method=\"post\" action=\"/admin/providers/{{ name }}/{{ path }}/finish\"><label>Redirect URL or code#state <input name=\"callback\" type=\"password\" required autocomplete=\"off\" style=\"width:400px\"></label><button>Connect</button></form></section>",
-    ext = "html"
-)]
+#[template(path = "signin.html")]
 struct AttemptPage {
     name: String,
     path: &'static str,
     url: String,
+    /// "ChatGPT subscription", "Claude Pro/Max" or "Codex plan usage".
+    label: &'static str,
+    /// Claude shows a code; the other flows redirect to a local address.
+    claude: bool,
+    callback: &'static str,
 }
 async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Response {
     match st.oauth.start(&name, flow).await {
@@ -37,6 +39,13 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
             name,
             path,
             url: a.authorize_url,
+            label: match flow {
+                Flow::Chatgpt => "ChatGPT subscription",
+                Flow::Claude => "Claude Pro/Max",
+                Flow::Codex => "Codex plan usage",
+            },
+            claude: flow == Flow::Claude,
+            callback: flow.redirect(),
         }),
         Err(_) => bad("Cannot start sign-in for this Provider. Reload the page and try again."),
     }

@@ -3,40 +3,95 @@
 {% block nav_settings %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Settings</h1>
-<div id="errors"></div>
-<section class="panel">
-<h2>Server and router</h2>
-<p class="muted">Changes apply without a restart. Listen address and database path are process options.</p>
-<form method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="#errors">
-<div class="row">
-  {% if !base.simple %}<label>Default markup (%) <input name="default_markup_percent" value="{{ markup }}" required></label>{% endif %}
-  <label>Upstream timeout (seconds) <input type="number" min="1" name="upstream_timeout_secs" value="{{ settings.upstream_timeout_secs }}" required></label>
-  {% if !base.simple %}<label>Reserve output tokens <input type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required></label>{% endif %}
-  <label>Session days <input type="number" min="1" max="3650" name="session_days" value="{{ settings.session_days }}" required></label>
-  <label>Mode <select name="mode"><option value="full" {% if settings.mode == "full" %}selected{% endif %}>Full</option><option value="simple" {% if settings.mode == "simple" %}selected{% endif %}>Simple</option></select></label>
-</div>
-<p class="muted">Simple mode routes requests and keeps token metrics. Full mode also applies pricing and usage limits.</p>
-<div class="row">
-  <label>Failure threshold <input type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required></label>
-  <label>Cooldown (seconds) <input type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required></label>
-  <label>Maximum attempts <input type="number" min="1" name="max_attempts" value="{{ settings.router.max_attempts }}" required></label>
-</div>
-<h2>Metrics token</h2>
-<p class="muted">{% if metrics_set %}A token is set.{% else %}No token is set. Metrics are public.{% endif %} Leave the field blank to keep the current token.</p>
-<div class="row">
-  <label>New metrics token <input type="password" name="metrics_token" autocomplete="off" style="width:300px"></label>
-  <label class="check"><input type="checkbox" name="clear_metrics_token">Remove token</label>
+
+<section class="panel" aria-labelledby="proxy-h">
+  <h2 id="proxy-h">Proxy address</h2>
+  <p>Clients send requests to this base URL with a Virtual Key:</p>
+  <div class="copy-row"><code class="url">{{ base.proxy_url }}</code><button type="button" class="ghost" data-copy="{{ base.proxy_url }}" aria-label="Copy the Proxy base URL">Copy</button></div>
+  <p class="hint">The address comes from this browser request. Behind a reverse proxy, it uses X-Forwarded-Host and X-Forwarded-Proto.</p>
+</section>
+
+<section class="panel" aria-labelledby="mode-h">
+  <h2 id="mode-h">Mode</h2>
+  <p>Current mode: <strong>{% if base.simple %}Simple Mode{% else %}Full Mode{% endif %}</strong>.</p>
+  {% if base.simple %}
+  <p class="muted">Simple Mode routes requests and records token usage. It does not apply pricing or usage limits, and the dashboard hides all money values.</p>
+  <form method="post" action="/admin/settings/mode" data-confirm="Switch to Full Mode? The Proxy starts to apply the saved spending and request limits at once. Requests over a limit are refused. New Ledger Entries get amounts from the cards.">
+    <input type="hidden" name="mode" value="full">
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Switch to Full Mode</button>
+  </form>
+  {% else %}
+  <p class="muted">Full Mode applies Prices, Budgets and Rate Limits, and shows Cost, Price and Profit. Simple Mode only routes requests and records token usage.</p>
+  <form method="post" action="/admin/settings/mode" data-confirm="Switch to Simple Mode? The Proxy stops applying Budgets and Rate Limits at once, and the dashboard hides Prices, Costs and Budgets. Saved cards and limits are kept.">
+    <input type="hidden" name="mode" value="simple">
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button class="ghost">Switch to Simple Mode</button>
+  </form>
+  {% endif %}
+</section>
+
+{% if !base.simple %}
+<section class="panel" aria-labelledby="markup-h">
+  <h2 id="markup-h">Pricing</h2>
+  <p>Default Markup: {{ markup }}% <a class="pad" href="/admin/models#markup">Change on Models</a></p>
+</section>
+{% endif %}
+
+<section class="panel" aria-labelledby="server-h">
+<h2 id="server-h">Server and router</h2>
+<p class="muted">Changes apply at once, without a restart. The listen address and the database path are process options.</p>
+<form method="post" action="/admin/settings" class="stack" aria-labelledby="server-h">
+  <fieldset>
+    <legend>Requests</legend>
+    <div class="row">
+      <div class="field"><label for="s-timeout">Upstream timeout (seconds)</label><input id="s-timeout" type="number" min="1" name="upstream_timeout_secs" value="{{ settings.upstream_timeout_secs }}" required inputmode="numeric" aria-describedby="s-timeout-help"><p class="hint" id="s-timeout-help">The longest time for one request to a Provider, including the response body.</p></div>
+      {% if !base.simple %}<div class="field"><label for="s-reserve">Reserved output tokens</label><input id="s-reserve" type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required inputmode="numeric" aria-describedby="s-reserve-help"><p class="hint" id="s-reserve-help">For a request with no output maximum, the Reservation assumes this many output tokens. It counts against the Budget until the Ledger Entry is written.</p></div>{% endif %}
+      <div class="field"><label for="s-days">Session days</label><input id="s-days" type="number" min="1" max="3650" name="session_days" value="{{ settings.session_days }}" required inputmode="numeric" aria-describedby="s-days-help"><p class="hint" id="s-days-help">How long a dashboard login stays valid. Applies to new logins.</p></div>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Circuit Breaker and retries</legend>
+    <div class="row">
+      <div class="field"><label for="s-threshold">Failure threshold</label><input id="s-threshold" type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required inputmode="numeric" aria-describedby="s-threshold-help"><p class="hint" id="s-threshold-help">Failures in a row (connection errors, 429 or 5xx) before the Proxy stops using a Provider and model for a cooldown.</p></div>
+      <div class="field"><label for="s-cooldown">Cooldown (seconds)</label><input id="s-cooldown" type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required inputmode="numeric" aria-describedby="s-cooldown-help"><p class="hint" id="s-cooldown-help">After the cooldown, one probe request tests whether the Provider works again.</p></div>
+      <div class="field"><label for="s-attempts">Maximum attempts</label><input id="s-attempts" type="number" min="1" name="max_attempts" value="{{ settings.router.max_attempts }}" required inputmode="numeric" aria-describedby="s-attempts-help"><p class="hint" id="s-attempts-help">The most upstream tries for one request. Each Deployment, Fallback and Provider Key try counts.</p></div>
+    </div>
+  </fieldset>
+  <fieldset aria-describedby="s-token-help">
+    <legend>Metrics token</legend>
+    <p class="hint" id="s-token-help">{% if metrics_set %}A token is set. /metrics needs it as a bearer token. Leave the field blank to keep it.{% else %}No token is set, so /metrics is public. Enter a token to protect it.{% endif %}</p>
+    <div class="row">
+      <div class="field grow"><label for="s-token">New metrics token</label><input id="s-token" type="password" name="metrics_token" autocomplete="new-password" spellcheck="false"></div>
+      {% if metrics_set %}<label class="check"><input type="checkbox" name="clear_metrics_token" id="s-clear" data-clears="s-token"> Remove the token</label>{% endif %}
+    </div>
+  </fieldset>
+  <div class="form-error" role="alert" tabindex="-1"></div>
   <button>Save settings</button>
-</div>
 </form>
 </section>
-<section class="panel">
-<h2>Change password</h2>
-<p class="muted">All sessions end when you change the password. An environment password overrides this password at the next start.</p>
-<form method="post" action="/admin/settings/password" hx-post="/admin/settings/password" hx-target="#errors" class="row">
-  <label>Current password <input type="password" name="current_password" autocomplete="current-password" required style="width:220px"></label>
-  <label>New password <input type="password" name="password" minlength="8" autocomplete="new-password" required style="width:220px"></label>
+
+<section class="panel" aria-labelledby="password-h">
+<h2 id="password-h">Change password</h2>
+<p class="muted">All sessions end when you change the password, and you log in again. An environment password replaces this password at the next start.</p>
+<form method="post" action="/admin/settings/password" class="row" aria-labelledby="password-h">
+  <div class="field"><label for="s-current">Current password</label><input id="s-current" type="password" name="current_password" autocomplete="current-password" required></div>
+  <div class="field"><label for="s-new">New password</label><input id="s-new" type="password" name="password" minlength="8" autocomplete="new-password" required aria-describedby="s-new-help"><p class="hint" id="s-new-help">At least 8 characters.</p></div>
   <button>Change password</button>
+  <div class="form-error" role="alert" tabindex="-1"></div>
 </form>
 </section>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  // "Remove the token" and a new token conflict: disable the field.
+  document.querySelectorAll('[data-clears]').forEach(box => {
+    const field = document.getElementById(box.dataset.clears);
+    const sync = () => { field.disabled = box.checked; if (box.checked) { field.value = ''; } };
+    box.addEventListener('change', sync);
+    sync();
+  });
+})();
+</script>
 {% endblock %}

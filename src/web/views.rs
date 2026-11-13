@@ -118,14 +118,6 @@ fn stamp(ts_s: i64) -> Stamp {
         .unwrap_or_default()
 }
 
-/// The one date format of the dashboard: `YYYY-MM-DD HH:MM UTC`.
-pub fn utc_ms(ms: i64) -> String {
-    Utc.timestamp_millis_opt(ms)
-        .single()
-        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-        .unwrap_or_default()
-}
-
 fn date(ts_s: i64) -> Stamp {
     stamp(ts_s)
 }
@@ -1299,15 +1291,23 @@ impl ModelPage {
 
 // ------------------------------------------------------------------ ledger
 
+/// A point in time from Unix seconds, or None when out of range.
+pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
+    Some(stamp(ts_s)).filter(|s| !s.iso.is_empty())
+}
+
 pub struct LedgerView {
     pub id: i64,
-    pub time: String,
+    pub time: Stamp,
     pub user: String,
     pub provider: String,
     pub endpoint: String,
     pub model: String,
     pub status: i64,
     pub streamed: bool,
+    /// "input / output", with the full breakdown in `tokens_title`.
+    pub tokens: String,
+    pub tokens_title: String,
     pub input: String,
     pub output: String,
     pub cache_read: String,
@@ -1317,13 +1317,26 @@ pub struct LedgerView {
     pub image_output: String,
     pub attempts: i64,
     pub key: String,
-    pub cost: String,
-    pub price: String,
+    pub cost: Money,
+    pub price: Money,
     pub unpriced: bool,
     pub estimated: bool,
     pub aborted: bool,
     pub latency: String,
     pub ttft: String,
+}
+
+/// The values of the Ledger filter bar.
+#[derive(Default)]
+pub struct LedgerFilterView {
+    pub users: Vec<Opt>,
+    pub providers: Vec<Opt>,
+    pub models: Vec<String>,
+    pub model: String,
+    pub from: String,
+    pub to: String,
+    /// True when a filter other than the tab is active.
+    pub active: bool,
 }
 
 #[derive(Template)]
@@ -1332,65 +1345,103 @@ pub struct LedgerPage {
     pub base: Base,
     pub rows: Vec<LedgerView>,
     pub filter: &'static str,
-    pub notice: Option<String>,
+    pub filters: LedgerFilterView,
+    /// Links for the tabs: the current filters with another tab.
+    pub tab_all: String,
+    pub tab_unpriced: String,
+    pub tab_estimated: String,
+    pub tab_errors: String,
+    /// A message about the filter values, for example a bad date.
+    pub error: Option<String>,
+    pub older: Option<String>,
+    pub newest: Option<String>,
+    pub page_size: i64,
+    pub unpriced_models: Vec<String>,
+}
+
+fn endpoint_label(e: &str) -> String {
+    match e {
+        "chat_completions" => "Chat Completions".into(),
+        "messages" => "Messages".into(),
+        "embeddings" => "Embeddings".into(),
+        "responses" => "Responses".into(),
+        "completions" => "Completions".into(),
+        "other" => "Other".into(),
+        e => e.replace('_', " "),
+    }
+}
+
+impl LedgerView {
+    pub fn build(r: &LedgerRow, key_label: &dyn Fn(&str, i64) -> Option<String>) -> LedgerView {
+        let time = Utc
+            .timestamp_millis_opt(r.ts_ms)
+            .single()
+            .map(|t| Stamp {
+                text: t.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                short: t.format("%Y-%m-%d %H:%M:%S").to_string(),
+                iso: t.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            })
+            .unwrap_or_default();
+        LedgerView {
+            id: r.id,
+            time,
+            user: r.user.clone(),
+            provider: r.provider.clone(),
+            endpoint: endpoint_label(&r.endpoint),
+            model: r
+                .model
+                .clone()
+                .or_else(|| r.requested_model.clone())
+                .unwrap_or_else(|| "-".into()),
+            status: r.status,
+            streamed: r.streamed,
+            tokens: format!("{} / {}", int(r.input), int(r.output)),
+            tokens_title: format!(
+                "Input {}, output {}, cache read {}, cache write 5m {}, cache write 1h {}, image input {}, image output {}",
+                int(r.input),
+                int(r.output),
+                int(r.cache_read),
+                int(r.cache_write_5m),
+                int(r.cache_write_1h),
+                int(r.image_input),
+                int(r.image_output)
+            ),
+            input: int(r.input),
+            output: int(r.output),
+            cache_read: int(r.cache_read),
+            cache_write_5m: int(r.cache_write_5m),
+            cache_write_1h: int(r.cache_write_1h),
+            image_input: int(r.image_input),
+            image_output: int(r.image_output),
+            attempts: r.attempts,
+            key: r
+                .provider_key
+                .map(|k| key_label(&r.provider, k).unwrap_or_else(|| format!("Key {}", k + 1)))
+                .unwrap_or_else(|| "-".into()),
+            cost: Money {
+                text: money_row(r.cost_micros),
+                exact: money_exact(r.cost_micros),
+            },
+            price: Money {
+                text: money_row(r.price_micros),
+                exact: money_exact(r.price_micros),
+            },
+            unpriced: r.unpriced,
+            estimated: r.estimated,
+            aborted: r.client_aborted,
+            latency: format!("{} ms", int(r.latency_ms)),
+            ttft: r
+                .ttft_ms
+                .map(|t| format!("{} ms", int(t)))
+                .unwrap_or_else(|| "-".into()),
+        }
+    }
 }
 
 impl LedgerPage {
-    pub fn build(
-        base: Base,
-        rows: &[LedgerRow],
-        filter: &'static str,
-        notice: Option<String>,
-    ) -> LedgerPage {
-        LedgerPage {
-            base,
-            rows: rows
-                .iter()
-                .map(|r| LedgerView {
-                    id: r.id,
-                    time: Utc
-                        .timestamp_millis_opt(r.ts_ms)
-                        .single()
-                        .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_default(),
-                    user: r.user.clone(),
-                    provider: r.provider.clone(),
-                    endpoint: r.endpoint.clone(),
-                    model: r
-                        .model
-                        .clone()
-                        .or_else(|| r.requested_model.clone())
-                        .unwrap_or_else(|| "-".into()),
-                    status: r.status,
-                    streamed: r.streamed,
-                    input: int(r.input),
-                    output: int(r.output),
-                    cache_read: int(r.cache_read),
-                    cache_write_5m: int(r.cache_write_5m),
-                    cache_write_1h: int(r.cache_write_1h),
-                    image_input: int(r.image_input),
-                    image_output: int(r.image_output),
-                    attempts: r.attempts,
-                    key: match (r.provider_key, r.attempts) {
-                        (None, _) => "-".into(),
-                        (Some(k), a) if a > 1 => format!("#{k} ({a} tries)"),
-                        (Some(k), _) => format!("#{k}"),
-                    },
-                    cost: money_row(r.cost_micros),
-                    price: money_row(r.price_micros),
-                    unpriced: r.unpriced,
-                    estimated: r.estimated,
-                    aborted: r.client_aborted,
-                    latency: format!("{} ms", int(r.latency_ms)),
-                    ttft: r
-                        .ttft_ms
-                        .map(|t| format!("{} ms", int(t)))
-                        .unwrap_or_else(|| "-".into()),
-                })
-                .collect(),
-            filter,
-            notice,
-        }
+    /// Column count of the table, for the `colspan` of full-width rows.
+    pub fn columns(&self) -> usize {
+        if self.base.simple { 8 } else { 10 }
     }
 }
 
@@ -1411,7 +1462,7 @@ mod tests {
         assert_eq!(money_row(30), "<$0.0001");
         assert_eq!(money_row(-30), "-<$0.0001");
         assert_eq!(money_exact(1_234_567), "$1.234567");
-        assert_eq!(utc_ms(0), "1970-01-01 00:00 UTC");
+        assert_eq!(stamp(0).text, "1970-01-01 00:00 UTC");
         assert_eq!(bp_percent(2_500), "25");
         assert_eq!(bp_percent(1_250), "12.5");
     }

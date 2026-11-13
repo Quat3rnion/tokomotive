@@ -445,9 +445,9 @@ async fn destructive_actions_ask_for_confirmation() {
             }
         }
     }
-    // Remove key, Delete provider x2, Disconnect x2, Delete route, Remove
-    // override, Revoke.
-    assert!(destructive >= 8, "{destructive}");
+    // Delete key, Delete provider x2, Delete route, Remove override, Revoke.
+    // Disconnect shows only for a connected subscription (P-05).
+    assert!(destructive >= 6, "{destructive}");
 }
 
 fn step(html: &str, name: &str) -> Option<bool> {

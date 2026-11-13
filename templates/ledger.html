@@ -2,41 +2,86 @@
 {% block title %}Ledger - Tokomotive{% endblock %}
 {% block nav_ledger %}aria-current="page"{% endblock %}
 {% block content %}
-<div class="row" style="justify-content:space-between;margin-bottom:12px">
-  <h1 style="margin:0">Ledger</h1>
-  <nav class="tabs" aria-label="Filter">
-    <a href="/admin/ledger" {% if filter == "all" %}aria-current="page"{% endif %}>All</a>
+<div class="toolbar">
+  <h1>Ledger</h1>
+  <nav class="tabs" aria-label="Ledger filter">
+    <a href="{{ tab_all }}" {% if filter == "all" %}aria-current="page"{% endif %}>All</a>
     {% if !base.simple %}
-    <a href="/admin/ledger?filter=unpriced" {% if filter == "unpriced" %}aria-current="page"{% endif %}>Unpriced</a>
-    <a href="/admin/ledger?filter=estimated" {% if filter == "estimated" %}aria-current="page"{% endif %}>Estimated</a>
+    <a href="{{ tab_unpriced }}" {% if filter == "unpriced" %}aria-current="page"{% endif %}>Unpriced</a>
+    <a href="{{ tab_estimated }}" {% if filter == "estimated" %}aria-current="page"{% endif %}>Estimated</a>
     {% endif %}
-    <a href="/admin/ledger?filter=errors" {% if filter == "errors" %}aria-current="page"{% endif %}>Errors</a>
+    <a href="{{ tab_errors }}" {% if filter == "errors" %}aria-current="page"{% endif %}>Errors</a>
   </nav>
 </div>
-{% if let Some(n) = notice %}<div class="notice">{{ n }}</div>{% endif %}
+<p class="muted">Each Ledger Entry is one request. Newest first, {{ page_size }} per page. Times are UTC.</p>
+
 {% if !base.simple && filter == "unpriced" %}
-<form class="panel row" method="post" action="/admin/reprice">
-  <span class="muted">After you add a card for the model, price these entries with the current cards.</span>
-  <button>Price unpriced entries</button>
-</form>
+<section class="panel" aria-labelledby="reprice-h">
+  <h2 id="reprice-h">Price Unpriced Entries</h2>
+  {% if !unpriced_models.is_empty() %}<p>Models with no Cost Card: {{ unpriced_models.join(", ") }}.</p>{% endif %}
+  <p class="muted">Add each Model with a Cost Card on the <a href="/admin/models">Models</a> page. Then price these entries with the current cards.</p>
+  <form method="post" action="/admin/reprice"><button>Price Unpriced Entries</button></form>
+</section>
 {% endif %}
-<p class="muted">The 200 newest entries. Times are UTC.</p>
-<div class="panel scroll">
-<table>
-  <tr><th>#</th><th>Time</th><th>User</th><th>Provider</th><th>Endpoint</th><th>Model</th><th class="n">Status</th>
-      <th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th><th class="n">Cache write 5m</th><th class="n">Cache write 1h</th><th class="n">Image input</th><th class="n">Image output</th>
-      {% if !base.simple %}<th class="n">Price</th><th class="n">Cost</th>{% endif %}<th class="n">Latency</th><th class="n">TTFT</th><th>Provider key</th><th class="n">Attempts</th><th>Flags</th></tr>
+
+<form method="get" action="/admin/ledger" class="panel ledger-filters" aria-label="Filter the Ledger">
+  {% if filter != "all" %}<input type="hidden" name="filter" value="{{ filter }}">{% endif %}
+  <datalist id="ledger-models">{% for m in filters.models %}<option value="{{ m }}">{% endfor %}</datalist>
+  <div class="row">
+    <div class="field"><label for="lf-user">User</label><select id="lf-user" name="user">{% for o in filters.users %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="lf-provider">Provider</label><select id="lf-provider" name="provider">{% for o in filters.providers %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="lf-model">Model</label><input id="lf-model" name="model" value="{{ filters.model }}" list="ledger-models" autocomplete="off" spellcheck="false" placeholder="Any Model"></div>
+    <div class="field"><label for="lf-from">From (UTC)</label><input id="lf-from" name="from" type="date" value="{{ filters.from }}"></div>
+    <div class="field"><label for="lf-to">To (UTC)</label><input id="lf-to" name="to" type="date" value="{{ filters.to }}"></div>
+    <div class="row"><button>Apply filters</button>{% if filters.active %}<a class="pad" href="{% if filter == "all" %}/admin/ledger{% else %}/admin/ledger?filter={{ filter }}{% endif %}">Clear filters</a>{% endif %}</div>
+  </div>
+  {% if let Some(e) = error %}<div class="form-error" role="alert"><p>{{ e }}</p></div>{% endif %}
+</form>
+
+<div class="panel scroll" aria-label="Ledger Entries">
+<table class="ledger cards-sm">
+  <thead><tr><th scope="col">Time (UTC)</th><th scope="col">User</th><th scope="col">Model <span class="vh">and Provider</span></th><th scope="col" class="n">Status</th><th scope="col">Flags</th><th scope="col" class="n">Tokens in / out</th>{% if !base.simple %}<th scope="col" class="n">Price</th><th scope="col" class="n">Cost</th>{% endif %}<th scope="col" class="n">Latency</th><th scope="col"><span class="vh">Details</span></th></tr></thead>
+  <tbody>
   {% for r in rows %}
-  <tr>
-    <td class="muted">{{ r.id }}</td><td>{{ r.time }}</td><td>{{ r.user }}</td><td>{{ r.provider }}</td><td>{{ r.endpoint }}</td>
-    <td>{{ r.model }}</td><td class="n {% if r.status >= 400 %}bad{% endif %}">{{ r.status }}</td>
-    <td class="n">{{ r.input }}</td><td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write_5m }}</td><td class="n">{{ r.cache_write_1h }}</td><td class="n">{{ r.image_input }}</td><td class="n">{{ r.image_output }}</td>
-    {% if !base.simple %}<td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td>{% endif %}<td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="muted">{{ r.key }}</td><td class="n">{{ r.attempts }}</td>
-    <td>{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
+  <tr id="e{{ r.id }}">
+    <th scope="row"><time datetime="{{ r.time.iso }}">{{ r.time.short }}</time></th>
+    <td data-label="User"><span class="trunc" title="{{ r.user }}">{{ r.user }}</span></td>
+    <td data-label="Model">{{ r.model }}<span class="sub">{{ r.provider }}</span></td>
+    <td data-label="Status" class="n{% if r.status >= 400 %} bad{% endif %}">{{ r.status }}</td>
+    <td data-label="Flags" class="flags">{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
+    <td data-label="Tokens in / out" class="n" title="{{ r.tokens_title }}">{{ r.tokens }}</td>
+    {% if !base.simple %}<td data-label="Price" class="n"><span title="{{ r.price.exact }}">{{ r.price }}</span></td><td data-label="Cost" class="n"><span title="{{ r.cost.exact }}">{{ r.cost }}</span></td>{% endif %}
+    <td data-label="Latency" class="n">{{ r.latency }}</td>
+    <td><div class="actions"><button type="button" class="ghost" data-toggle="d{{ r.id }}" aria-expanded="false" aria-controls="d{{ r.id }}" aria-label="Details of entry {{ r.id }}">Details</button></div></td>
+  </tr>
+  <tr id="d{{ r.id }}" class="edit-row" data-collapse>
+    <td colspan="{{ self.columns() }}"><div class="edit-panel">
+      <dl class="kv">
+        <div><dt>Entry</dt><dd>#{{ r.id }}</dd></div>
+        <div><dt>Endpoint</dt><dd>{{ r.endpoint }}</dd></div>
+        <div><dt>Input</dt><dd>{{ r.input }}</dd></div>
+        <div><dt>Output</dt><dd>{{ r.output }}</dd></div>
+        <div><dt>Cache read</dt><dd>{{ r.cache_read }}</dd></div>
+        <div><dt>Cache write 5m</dt><dd>{{ r.cache_write_5m }}</dd></div>
+        <div><dt>Cache write 1h</dt><dd>{{ r.cache_write_1h }}</dd></div>
+        <div><dt>Image input</dt><dd>{{ r.image_input }}</dd></div>
+        <div><dt>Image output</dt><dd>{{ r.image_output }}</dd></div>
+        <div><dt>Time to first token</dt><dd>{{ r.ttft }}</dd></div>
+        <div><dt>Provider Key</dt><dd>{{ r.key }}</dd></div>
+        <div><dt>Attempts</dt><dd>{{ r.attempts }}</dd></div>
+      </dl>
+    </div></td>
   </tr>
   {% else %}
-  <tr><td colspan="{% if base.simple %}19{% else %}21{% endif %}" class="muted">No entries.</td></tr>
+  <tr><td colspan="{{ self.columns() }}" class="empty">{% if filters.active || filter != "all" %}No entries match these filters. <a href="/admin/ledger">Show all entries</a>{% else %}No Ledger Entries yet. The Proxy adds one for each request that a client sends with a Virtual Key. <a href="/admin/keys">Go to Virtual Keys</a>{% endif %}</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
+{% if older.is_some() || newest.is_some() %}
+<nav class="pager" aria-label="Ledger pages">
+  {% if let Some(n) = newest %}<a href="{{ n }}">Newest entries</a>{% endif %}
+  {% if let Some(o) = older %}<a href="{{ o }}">Older entries</a>{% endif %}
+</nav>
+{% endif %}
 {% endblock %}

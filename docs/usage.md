@@ -248,8 +248,9 @@ Routes in your dashboard, or a `provider/model` name.
 | `/admin/routes/{name}/delete` | POST | Deletes a Route. |
 | `/admin/settings` | GET, POST | Edits server and router settings, the mode and the metrics token. |
 | `/admin/settings/password` | POST | Changes the password and ends all sessions. |
+| `/admin/settings/mode` | POST | Sets the mode. The field `mode` is `full` or `simple`. |
 | `/admin/settings/markup` | POST | Saves the default Markup from the Models page. |
-| `/admin/ledger`                         | GET      | Ledger page. The query `?filter=` is `unpriced`, `estimated` or `errors`. |
+| `/admin/ledger`                         | GET      | Ledger page. See "Ledger" for the query parameters. |
 | `/admin/reprice`                        | POST     | Prices the Unpriced Entries.                                      |
 | `/admin/assets/htmx.min.js`             | GET      | The script file of the dashboard.                                 |
 
@@ -273,35 +274,58 @@ changes without a restart. The settings are in
 
 **Providers**:
 
-1. To add a Provider, enter a name, a kind, a base URL and optionally a first
-   key. Select **Add provider**.
-2. To add a key, enter the key in **New key or env:NAME** and select **Add key**.
-   The Proxy encrypts the key. The page shows only its last 4 characters. Enter
-   `env:NAME` to store a reference to an environment variable instead.
-3. To remove a key, select **Remove key** in its row.
-4. To check a Provider, select **Test**. The page shows the upstream HTTP status.
-5. To remove a Provider, select **Delete provider**. A Route or a Model that uses
-   the Provider blocks this.
+1. To add a Provider, enter a name, select the authentication and the API
+   format, and enter a base URL. For an API-key Provider, you can also enter a
+   first Provider Key. Select **Add provider**. For **ChatGPT subscription** and
+   **Claude Pro/Max**, the page sets the API format and the base URL. The Proxy
+   also accepts these base URLs with `/v1` at the end.
+2. To add a Provider Key, enter the key in **New Provider Key or env:NAME** and
+   select **Add key**. The Proxy encrypts the key. The page shows only its last
+   4 characters. Enter `env:NAME` to store a reference to an environment
+   variable instead. The page shows the reference with the tag **set** or
+   **not set**. It never shows characters of the value. The Proxy skips a
+   variable that is not set.
+3. To remove a Provider Key, select **Delete key** in its row.
+4. To check an API-key Provider, select **Test connection**. The result shows
+   in the Provider section. It tells you whether the Provider accepted the
+   first Provider Key.
+5. To connect a subscription, select **Sign in** in the Provider section and
+   follow the steps in the panel. Then paste the result and select
+   **Connect**. The panel stays in the Provider section. **Disconnect** shows
+   only when the Provider is connected.
+6. To remove a Provider, select **Delete provider**. A Route or a Model that
+   uses the Provider blocks this.
+
+The dashboard asks for confirmation before it deletes or disconnects.
 
 **Routes**:
 
-1. To add a Route, enter a name, select a strategy and enter Fallbacks as a comma
-   list.
-2. Select **Add deployment** for each Deployment. Each row has a Provider
-   (select), a Model and a weight. Select **Remove** to remove a row. Only the `weighted` strategy uses the weight.
-3. Select **Add route** or **Save route**. Select **Delete route** to remove it.
+1. To add a Route, enter a name, select a strategy and enter Fallbacks,
+   comma-separated. Each Fallback must be the name of another Route or of a
+   Model. The Proxy refuses an unknown name and shows the error next to the
+   form.
+2. Select **Add a Deployment** for each Deployment. Each row has a Provider, an
+   upstream model and a weight. The weight shows only for the Weighted
+   strategy. Select **Up** or **Down** to change the order, and **Remove** to
+   remove a row.
+3. Select **Add route** or **Save**. Select **Delete route** to remove it.
 
-**Settings** has the server and router values, the mode, the metrics token and
-the password. To change the password, enter the current password and a new
-password of at least 8 characters. All sessions end. Back up `secret.key` with
-the database. See "Master Key and backups" in
+**Settings** shows the Proxy base URL for clients and the mode. It has the
+server and router values, the metrics token and the password. To change the
+mode, select **Switch to Simple Mode** or **Switch to Full Mode** and confirm.
+**Save settings** does not change the mode. In Full Mode, Settings shows the
+Default Markup. Change it on the **Models** page. To change the password, enter
+the current password and a new password of at least 8 characters. All sessions
+end. Back up `secret.key` with the database. See "Master Key and backups" in
 [configuration.md](configuration.md#master-key-and-backups).
 
 ### Simple mode
 
-Select **Simple** on `/setup` or in **Settings** to use the Proxy as a router
-without prices or limits. The default is **Full**. A change applies to new
-requests without a restart.
+Select **Simple Mode** on `/setup`, or select **Switch to Simple Mode** in
+**Settings**, to use the Proxy as a router without prices or limits. The
+default is Full Mode. The dashboard asks for confirmation before it changes the
+mode. A change applies to new requests without a restart. In Simple Mode, the
+header shows a **Simple Mode** tag that links to **Settings**.
 
 - Virtual Keys, User and Team usage, model allowlists and server-side Provider
   Keys stay active. Routing, Fallbacks, Circuit Breakers, Translation and
@@ -536,8 +560,8 @@ Team name), the rates or the Markup, and the time it was added (UTC).
 
 ### Ledger
 
-The **Ledger** page shows the 200 newest Ledger Entries. Use the tabs to filter
-them:
+The **Ledger** page shows the newest Ledger Entries, 100 on each page. Select
+**Older entries** to see the next page. Use the tabs to filter them:
 
 | Tab           | Shows                                              |
 | ------------- | -------------------------------------------------- |
@@ -546,13 +570,30 @@ them:
 | **Estimated** | Estimated Entries.                                 |
 | **Errors**    | Entries with an HTTP status of 400 or more.        |
 
-The columns are the number, the time, the User, the Provider, the endpoint, the
-Model, the status, the tokens for each Token Class, the Price, the Cost, the
-latency, the time to first token, the Provider Key and the flags.
+Simple Mode has only **All** and **Errors**.
 
-- **Provider key** shows the number of the key in the Key Pool, counted from 0,
-  for example `#1`. After a retry it also shows the attempts, for example
-  `#1 (2 tries)`.
+Use the filter bar to show only the entries of one User, one Provider, one
+Model, or a range of days (UTC). The filters are query parameters, so you can
+save the address:
+
+| Parameter  | Value                                                    |
+| ---------- | -------------------------------------------------------- |
+| `filter`   | `unpriced`, `estimated` or `errors`.                     |
+| `user`     | The id of the User.                                      |
+| `provider` | The name of the Provider.                                |
+| `model`    | The upstream or the requested Model name.                |
+| `from`     | The first day, `YYYY-MM-DD`.                             |
+| `to`       | The last day, `YYYY-MM-DD`. The day is included.         |
+| `before`   | Show only entries with a smaller number (the next page). |
+
+The columns are the time, the User, the Model and Provider, the status, the
+flags, the input and output tokens, the Price, the Cost and the latency.
+Select **Details** in a row to see the entry number, the endpoint, the tokens
+for each Token Class, the time to first token, the Provider Key and the
+attempts.
+
+- **Provider Key** shows the last 4 characters of the key, or its `env:NAME`
+  reference.
 - The flags are **stream**, **unpriced**, **estimated** and **client aborted**.
 
 An Estimated Entry has token counts that are partly estimated. The Proxy makes an
@@ -563,12 +604,13 @@ To price Unpriced Entries:
 
 1. Add a Model with a Cost Card for the name in the entry (see "Models"). An
    alias also works.
-2. Open **Ledger** and select **Unpriced**.
-3. Select **Price unpriced entries**.
+2. Open **Ledger** and select **Unpriced**. The page lists the Models that
+   have no Cost Card.
+3. Select **Price Unpriced Entries**.
 
-The page shows `Priced N entries.` The Proxy prices only the Unpriced Entries
-whose Model now has a Cost Card. It uses the current cards. It does not change
-any other Ledger Entry.
+The page shows how many entries the Proxy priced. The Proxy prices only the
+Unpriced Entries whose Model now has a Cost Card. It uses the current cards. It
+does not change any other Ledger Entry.
 
 ## How the Proxy calculates amounts
 

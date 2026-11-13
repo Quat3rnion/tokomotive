@@ -293,7 +293,12 @@ async fn provider_created_in_dashboard_is_live_and_keys_are_redacted() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert!(r.text().await.unwrap().contains("Upstream status: 200"));
+    assert!(
+        r.text()
+            .await
+            .unwrap()
+            .contains("The Provider answered 200")
+    );
     assert_eq!(
         c.post(format!("{url}/v1/chat/completions"))
             .bearer_auth(&key)
@@ -436,7 +441,13 @@ async fn route_edits_apply_live_and_invalid_changes_are_refused() {
         .await
         .unwrap();
     assert_eq!(in_use.status(), 400);
-    assert!(in_use.text().await.unwrap().contains("used by a route"));
+    assert!(
+        in_use
+            .text()
+            .await
+            .unwrap()
+            .contains("A Route or a Model uses this Provider")
+    );
     assert_eq!(
         request()
             .send()
@@ -577,9 +588,9 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
                 ("deployment_model", ""),
                 ("deployment_weight", "1"),
             ],
-            "Add at least one deployment",
+            "Add at least one Deployment",
         ),
-        (vec![], "Add at least one deployment"),
+        (vec![], "Add at least one Deployment"),
     ] {
         let mut all = vec![("name", "rows"), ("strategy", "priority")];
         all.extend(fields);

@@ -1616,22 +1616,176 @@ async fn set_settings(
 #[derive(Deserialize, Default)]
 struct LedgerQ {
     filter: Option<String>,
+    user: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    before: Option<String>,
+}
+
+/// Ledger Entries per page.
+const LEDGER_PAGE: i64 = 100;
+
+fn some_text(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+impl LedgerQ {
+    /// The Ledger address with these filters, another tab and a page.
+    fn link(&self, filter: &str, before: Option<i64>) -> String {
+        let mut url = reqwest::Url::parse("http://x/admin/ledger").expect("static URL");
+        {
+            let mut q = url.query_pairs_mut();
+            if filter != "all" {
+                q.append_pair("filter", filter);
+            }
+            for (k, v) in [
+                ("user", &self.user),
+                ("provider", &self.provider),
+                ("model", &self.model),
+                ("from", &self.from),
+                ("to", &self.to),
+            ] {
+                if let Some(v) = some_text(v) {
+                    q.append_pair(k, v);
+                }
+            }
+            if let Some(b) = before {
+                q.append_pair("before", &b.to_string());
+            }
+        }
+        match url.query() {
+            Some(q) if !q.is_empty() => format!("/admin/ledger?{q}"),
+            _ => "/admin/ledger".into(),
+        }
+    }
+}
+
+/// A `YYYY-MM-DD` day as Unix milliseconds at 00:00 UTC.
+fn day_ms(s: &str) -> Option<i64> {
+    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis())
 }
 
 async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) -> Response {
     let base = Base::new(&st);
-    let (filter, name) = match q
-        .filter
-        .as_deref()
-        .filter(|f| !base.simple || *f == "errors")
-    {
-        Some("unpriced") => (LedgerFilter::Unpriced, "unpriced"),
-        Some("estimated") => (LedgerFilter::Estimated, "estimated"),
+    let (filter, name) = match some_text(&q.filter) {
+        None | Some("all") => (LedgerFilter::All, "all"),
         Some("errors") => (LedgerFilter::Errors, "errors"),
-        _ => (LedgerFilter::All, "all"),
+        Some("unpriced") if !base.simple => (LedgerFilter::Unpriced, "unpriced"),
+        Some("estimated") if !base.simple => (LedgerFilter::Estimated, "estimated"),
+        // Simple Mode has no money filters; an unknown filter shows all.
+        Some(_) => return Redirect::to(&q.link("all", None)).into_response(),
     };
-    let rows = tryr!(db::recent_ledger(&st.db, filter, 200).await);
-    render(LedgerPage::build(base, &rows, name, None))
+    let mut error = None;
+    let mut date = |v: &Option<String>, next_day: bool| {
+        let v = some_text(v)?;
+        match day_ms(v) {
+            Some(ms) => Some(if next_day { ms + 86_400_000 } else { ms }),
+            None => {
+                error =
+                    Some("Use the date format YYYY-MM-DD. The Ledger ignores this date.".into());
+                None
+            }
+        }
+    };
+    let (from_ms, to_ms) = (date(&q.from, false), date(&q.to, true));
+    let user_id = some_text(&q.user).and_then(|u| u.parse().ok());
+    let query = db::LedgerQuery {
+        filter,
+        user_id,
+        provider: some_text(&q.provider).map(str::to_owned),
+        model: some_text(&q.model).map(str::to_owned),
+        from_ms,
+        to_ms,
+        before_id: some_text(&q.before).and_then(|b| b.parse().ok()),
+        limit: LEDGER_PAGE + 1,
+    };
+    let mut rows = tryr!(db::ledger_page(&st.db, &query).await);
+    let more = rows.len() as i64 > LEDGER_PAGE;
+    rows.truncate(LEDGER_PAGE as usize);
+    let labels = tryr!(settings::key_labels(&st).await);
+    let key_label = |provider: &str, index: i64| {
+        labels
+            .get(provider)
+            .and_then(|keys| keys.get(usize::try_from(index).ok()?))
+            .cloned()
+    };
+    let users = tryr!(db::list_users(&st.db).await);
+    let table = st.router_table();
+    let mut providers: Vec<String> = table.providers.iter().map(|p| p.name.clone()).collect();
+    if let Some(p) = &query.provider
+        && !providers.contains(p)
+    {
+        providers.push(p.clone());
+    }
+    let mut models: Vec<String> = table
+        .routes
+        .iter()
+        .map(|r| r.name.clone())
+        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
+        .collect();
+    models.sort();
+    models.dedup();
+    let opt = |value: String, label: String, selected: bool| Opt {
+        value,
+        label,
+        selected,
+    };
+    let mut user_opts = vec![opt(String::new(), "All Users".into(), user_id.is_none())];
+    user_opts.extend(
+        users
+            .iter()
+            .map(|u| opt(u.id.to_string(), u.name.clone(), Some(u.id) == user_id)),
+    );
+    let mut provider_opts = vec![opt(
+        String::new(),
+        "All Providers".into(),
+        query.provider.is_none(),
+    )];
+    provider_opts.extend(providers.into_iter().map(|p| {
+        let selected = query.provider.as_deref() == Some(p.as_str());
+        opt(p.clone(), p, selected)
+    }));
+    let unpriced_models = if filter == LedgerFilter::Unpriced {
+        tryr!(db::unpriced_models(&st.db).await)
+    } else {
+        vec![]
+    };
+    let filters = LedgerFilterView {
+        users: user_opts,
+        providers: provider_opts,
+        models,
+        model: query.model.clone().unwrap_or_default(),
+        from: some_text(&q.from).unwrap_or_default().to_owned(),
+        to: some_text(&q.to).unwrap_or_default().to_owned(),
+        active: user_id.is_some()
+            || query.provider.is_some()
+            || query.model.is_some()
+            || some_text(&q.from).is_some()
+            || some_text(&q.to).is_some(),
+    };
+    render(LedgerPage {
+        rows: rows
+            .iter()
+            .map(|r| LedgerView::build(r, &key_label))
+            .collect(),
+        filter: name,
+        filters,
+        tab_all: q.link("all", None),
+        tab_unpriced: q.link("unpriced", None),
+        tab_estimated: q.link("estimated", None),
+        tab_errors: q.link("errors", None),
+        error,
+        older: more
+            .then(|| rows.last().map(|r| q.link(name, Some(r.id))))
+            .flatten(),
+        newest: query.before_id.map(|_| q.link(name, None)),
+        page_size: LEDGER_PAGE,
+        unpriced_models,
+        base,
+    })
 }
 
 async fn reprice(_: Admin, State(st): State<AppState>) -> Response {
@@ -1639,11 +1793,10 @@ async fn reprice(_: Admin, State(st): State<AppState>) -> Response {
         return Redirect::to("/admin/ledger").into_response();
     }
     let n = tryr!(db::reprice_unpriced(&st.db, &st.catalog()).await);
-    let rows = tryr!(db::recent_ledger(&st.db, LedgerFilter::Unpriced, 200).await);
-    render(LedgerPage::build(
-        Base::new(&st),
-        &rows,
-        "unpriced",
-        Some(format!("Priced {n} entries.")),
-    ))
+    let message = match n {
+        0 => "No entries were priced. The Models below still have no Cost Card.".to_owned(),
+        1 => "Priced 1 entry.".to_owned(),
+        n => format!("Priced {n} entries."),
+    };
+    saved("/admin/ledger?filter=unpriced", &message)
 }

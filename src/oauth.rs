@@ -43,7 +43,7 @@ impl Flow {
             ProviderAuth::Claude => Some(Self::Claude),
         }
     }
-    fn redirect(self) -> &'static str {
+    pub fn redirect(self) -> &'static str {
         match self {
             Self::Claude => CLAUDE_CALLBACK,
             Self::Chatgpt => "http://localhost:1455/auth/callback",
