@@ -573,3 +573,24 @@ async fn overview_charts_have_text_alternatives_and_refresh_is_opt_in() {
     assert!(html.contains("id=\"auto-refresh\""));
     assert!(!html.contains("id=\"auto-refresh\" checked"));
 }
+
+/// A merge once dropped a closing brace in base.html. Every later rule was
+/// then inside a narrow-screen media query and did not apply on desktops.
+#[test]
+fn dashboard_css_braces_balance() {
+    let html = include_str!("../templates/base.html");
+    let start = html.find("<style>").expect("style start") + "<style>".len();
+    let end = html[start..].find("</style>").expect("style end") + start;
+    let mut depth = 0i32;
+    for (i, c) in html[start..end].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                assert!(depth >= 0, "extra closing brace at byte {}", start + i);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(depth, 0, "unclosed CSS block in templates/base.html");
+}
