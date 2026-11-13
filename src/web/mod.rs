@@ -58,6 +58,27 @@ pub fn router() -> Router<AppState> {
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
         .layer(axum::middleware::from_fn(same_origin))
+        .layer(axum::middleware::from_fn(htmx_redirect))
+}
+
+/// An htmx request follows a 303 inside the XHR and swaps the target page
+/// into `#errors`. For htmx, answer a redirect with 200 and `HX-Redirect`
+/// instead, so that the browser navigates.
+async fn htmx_redirect(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let htmx = req.headers().contains_key("hx-request");
+    let mut resp = next.run(req).await;
+    if htmx
+        && resp.status().is_redirection()
+        && let Some(to) = resp.headers_mut().remove(header::LOCATION)
+    {
+        let mut out = StatusCode::OK.into_response();
+        out.headers_mut().insert("hx-redirect", to);
+        for value in resp.headers().get_all(header::SET_COOKIE) {
+            out.headers_mut().append(header::SET_COOKIE, value.clone());
+        }
+        resp = out;
+    }
+    resp
 }
 
 async fn same_origin(req: axum::extract::Request, next: axum::middleware::Next) -> Response {

@@ -462,7 +462,8 @@ fn form_error(e: impl std::fmt::Display) -> Response {
 }
 
 fn saved(path: &str) -> Response {
-    ([("HX-Redirect", path)], Redirect::to(path)).into_response()
+    // The htmx_redirect layer turns this into HX-Redirect for htmx requests.
+    Redirect::to(path).into_response()
 }
 
 async fn runtime(st: &AppState) -> anyhow::Result<Config> {
