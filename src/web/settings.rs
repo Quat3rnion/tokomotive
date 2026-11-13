@@ -139,7 +139,7 @@ async fn save_settings(
     );
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
-    saved("/admin/settings")
+    saved("/admin/settings", "Settings saved.")
 }
 
 #[derive(Deserialize)]
@@ -170,7 +170,10 @@ async fn change_password(
     );
     tryr!(sqlx::query("DELETE FROM sessions").execute(&mut *tx).await);
     tryr!(tx.commit().await);
-    saved("/admin/login")
+    saved(
+        "/admin/login",
+        "Password changed. Log in with the new password.",
+    )
 }
 
 #[derive(Template)]
@@ -318,6 +321,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         Ok(v) => v,
         Err(_) => return form_error("Choose priority, round_robin or weighted."),
     };
+    let added = old.is_none();
     let route = RouteCfg {
         name: f.name,
         strategy,
@@ -355,11 +359,16 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         .execute(&mut *tx)
         .await
     {
-        return form_error(e);
+        let e = anyhow::Error::from(e);
+        if is_unique_violation(&e) {
+            return form_error(format!("A Route named {} already exists.", route.name));
+        }
+        return internal(e);
     }
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
-    saved("/admin/routes")
+    let verb = if added { "added" } else { "saved" };
+    saved("/admin/routes", &format!("Route {} {verb}.", route.name))
 }
 async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
     let _guard = st.settings_write.lock().await;
@@ -369,12 +378,12 @@ async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<Str
     }
     tryr!(
         sqlx::query("DELETE FROM routes WHERE name=?")
-            .bind(name)
+            .bind(&name)
             .execute(&st.db)
             .await
     );
     tryr!(st.reload_settings().await);
-    saved("/admin/routes")
+    saved("/admin/routes", &format!("Route {name} deleted."))
 }
 
 #[derive(Template)]
@@ -450,8 +459,8 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
                                 w.label,
                                 w.used_percent,
                                 w.resets_at
-                                    .and_then(chrono::DateTime::from_timestamp_millis)
-                                    .map(|d| d.to_rfc3339())
+                                    .map(super::views::utc_ms)
+                                    .filter(|s| !s.is_empty())
                                     .unwrap_or_else(|| "not available".into())
                             )
                         })
@@ -494,29 +503,6 @@ struct ProviderForm {
     api_key: String,
 }
 
-fn form_error(e: impl std::fmt::Display) -> Response {
-    #[derive(Template)]
-    #[template(
-        source = "<p class=\"bad\" role=\"alert\">{{ message }}</p>",
-        ext = "html"
-    )]
-    struct Notice {
-        message: String,
-    }
-    (
-        StatusCode::BAD_REQUEST,
-        render(Notice {
-            message: e.to_string(),
-        }),
-    )
-        .into_response()
-}
-
-fn saved(path: &str) -> Response {
-    // The htmx_redirect layer turns this into HX-Redirect for htmx requests.
-    Redirect::to(path).into_response()
-}
-
 async fn runtime(st: &AppState) -> anyhow::Result<Config> {
     Ok(store::load(&st.db, &st.secret_key).await?.0)
 }
@@ -549,6 +535,7 @@ async fn update_provider(
 }
 async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderForm) -> Response {
     let _guard = st.settings_write.lock().await;
+    let added = old.is_none();
     let mut cfg = tryr!(runtime(&st).await);
     if let Some(name) = &old {
         cfg.providers.retain(|p| &p.name != name);
@@ -636,17 +623,22 @@ async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderF
             .await
     };
     if let Err(e) = result {
-        return form_error(e);
+        let e = anyhow::Error::from(e);
+        if is_unique_violation(&e) {
+            return form_error(format!("A Provider named {} already exists.", f.name));
+        }
+        return internal(e);
     }
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
-    saved("/admin/providers")
+    let verb = if added { "added" } else { "saved" };
+    saved("/admin/providers", &format!("Provider {} {verb}.", f.name))
 }
 
 fn status_text(status: crate::oauth::Status) -> String {
     let date = |ms: Option<i64>| {
-        ms.and_then(chrono::DateTime::from_timestamp_millis)
-            .map(|d| d.to_rfc3339())
+        ms.map(super::views::utc_ms)
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "not available".into())
     };
     format!(
@@ -684,12 +676,12 @@ async fn delete_provider(
     let _oauth_guard = st.oauth.provider_write(&name).await;
     tryr!(
         sqlx::query("DELETE FROM providers WHERE name=?")
-            .bind(name)
+            .bind(&name)
             .execute(&st.db)
             .await
     );
     tryr!(st.reload_settings().await);
-    saved("/admin/providers")
+    saved("/admin/providers", &format!("Provider {name} deleted."))
 }
 
 #[derive(Deserialize)]
@@ -761,7 +753,12 @@ async fn change_keys(
             .await
     );
     tryr!(st.reload_settings().await);
-    saved("/admin/providers")
+    let message = if remove.is_some() {
+        "Provider Key removed."
+    } else {
+        "Provider Key added."
+    };
+    saved("/admin/providers", message)
 }
 
 async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
@@ -799,17 +796,25 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
 #[derive(Template)]
 #[template(path = "setup.html")]
 struct SetupPage {
+    base: Base,
     mode: String,
+}
+
+fn setup_done() -> Response {
+    page_error_with(
+        StatusCode::FORBIDDEN,
+        "Setup is complete",
+        "Setup runs only once. Log in with the dashboard password. To change the password, use Settings after you log in.",
+        ("/admin/login", "Log in"),
+    )
 }
 
 async fn setup_page(State(st): State<AppState>) -> Response {
     if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_some() {
-        return page_error(
-            StatusCode::FORBIDDEN,
-            "Setup is complete. Log in to change the password.",
-        );
+        return setup_done();
     }
     render(SetupPage {
+        base: Base::anonymous(),
         mode: st.settings().mode.clone(),
     })
 }
@@ -817,23 +822,28 @@ async fn setup_page(State(st): State<AppState>) -> Response {
 #[derive(Deserialize)]
 struct SetupForm {
     password: String,
+    /// Optional, so that scripted Setup with one field keeps working.
+    password_confirm: Option<String>,
     mode: Option<String>,
 }
 
 async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response {
     let _guard = st.settings_write.lock().await;
     if tryr!(store::value(&st.db, "admin_password_hash").await).is_some() {
-        return page_error(
-            StatusCode::FORBIDDEN,
-            "Setup is complete. Log in to change the password.",
-        );
+        return setup_done();
     }
     if f.password.chars().count() < 8 {
         return bad("Use at least 8 characters for the password.");
     }
+    if f.password_confirm
+        .as_ref()
+        .is_some_and(|c| c != &f.password)
+    {
+        return bad("The passwords do not match. Type the same password in both fields.");
+    }
     let mode = f.mode.unwrap_or_else(|| st.settings().mode.clone());
     if !matches!(mode.as_str(), "full" | "simple") {
-        return bad("Choose full or simple mode.");
+        return bad("Choose Full Mode or Simple Mode.");
     }
     let mut settings: store::Settings = tryr!(serde_json::from_str(
         &tryr!(store::value(&st.db, "runtime_settings").await).unwrap_or_default()
@@ -843,15 +853,12 @@ async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response
     let mut tx = tryr!(st.db.begin().await);
     let result = tryr!(
         sqlx::query("INSERT OR IGNORE INTO settings(key,value) VALUES('admin_password_hash',?)")
-            .bind(hash)
+            .bind(&hash)
             .execute(&mut *tx)
             .await
     );
     if result.rows_affected() == 0 {
-        return page_error(
-            StatusCode::FORBIDDEN,
-            "Setup is complete. Log in to change the password.",
-        );
+        return setup_done();
     }
     tryr!(
         sqlx::query("UPDATE settings SET value=? WHERE key='runtime_settings'")
@@ -861,5 +868,13 @@ async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response
     );
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
-    Redirect::to("/admin/login").into_response()
+    // Log the Operator in, so the password is not typed twice.
+    let session = tryr!(start_session(&st, &hash).await);
+    let mut r = saved(
+        "/admin",
+        "Setup is complete. Follow the steps below to connect your first client.",
+    );
+    r.headers_mut()
+        .append(header::SET_COOKIE, tryr!(HeaderValue::from_str(&session)));
+    r
 }

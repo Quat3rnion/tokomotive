@@ -1,48 +1,131 @@
 {% extends "base.html" %}
-{% block nav_keys %}class="on"{% endblock %}
+{% block title %}Virtual Keys - Tokomotive{% endblock %}
+{% block nav_keys %}aria-current="page"{% endblock %}
+
+{% macro access_checks(providers) %}
+{% if providers.is_empty() %}
+<p class="empty">No Providers yet. <a href="/admin/providers">Add a Provider</a> so that keys can send requests.</p>
+{% else %}
+<div class="checks">{% for p in providers %}<label class="check"><input type="checkbox" name="allowed_providers" value="{{ p.name }}"{% if p.selected %} checked{% endif %}> {{ p.name }}{% if p.subscription %} <span class="tag info">subscription</span>{% endif %}</label>{% endfor %}</div>
+{% endif %}
+{% endmacro %}
+
 {% block content %}
 <h1>Virtual Keys</h1>
-<p class="muted">Provider Access: no selection allows all API-key Providers, but no Subscription Providers. A selection allows only the selected Providers.</p>
-{% if !base.simple %}<p class="muted">RPM = requests per minute; TPM = completed tokens per minute. Blank = unlimited; 0 blocks requests. The User Rate Limits also apply.</p>{% endif %}
+<p class="muted">A Virtual Key lets one client use the Proxy for one User. Give each client its own key, so that you can revoke it alone.</p>
+
 {% if let Some(k) = new_key %}
-<div class="panel">
-  <p><b>New key.</b> Copy it now. The proxy keeps only a hash, so you cannot see this key again.</p>
-  <div class="secret">{{ k }}</div>
-</div>
+<section class="panel" aria-labelledby="new-key-h" tabindex="-1" data-focus>
+  <h2 id="new-key-h">New Virtual Key</h2>
+  <p>Copy the key now. The Proxy keeps only a hash, so you cannot see this key again.</p>
+  <div class="copy-row"><code class="secret">{{ k }}</code><button type="button" data-copy="{{ k }}">Copy key</button></div>
+  <p>Proxy base URL: <code class="url">{{ base.proxy_url }}</code> <button type="button" class="ghost" data-copy="{{ base.proxy_url }}" aria-label="Copy the Proxy base URL">Copy</button></p>
+  <p class="muted">Example request in the OpenAI format. For the Anthropic format, send to <code>{{ base.proxy_url }}/messages</code> with the <code>x-api-key</code> header. Use a Model name, a Route name or <code>provider/model</code>.</p>
+  <pre class="code"><code>curl {{ base.proxy_url }}/chat/completions \
+  -H "Authorization: Bearer {{ k }}" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "MODEL", "messages": [{"role": "user", "content": "Hello"}]}'</code></pre>
+</section>
 {% endif %}
-<div class="panel scroll">
-<table>
-  <tr><th>User</th><th>Key</th><th>Label</th><th>Models</th>{% if !base.simple %}<th>Rate Limits</th>{% endif %}<th>Created</th><th>Last used</th><th></th></tr>
-  {% for k in keys %}
-  <tr>
-    <td>{{ k.user }}</td><td><code>{{ k.prefix }}…</code></td><td>{{ k.label }}</td><td>{{ k.models }}</td>
-    {% if !base.simple %}<td><form class="inline" method="post" action="/admin/keys/{{ k.id }}/limits">
-      <label>RPM <input type="number" min="0" step="1" name="rpm_limit" value="{{ k.rpm_limit }}" placeholder="unlimited" style="width:110px"></label>
-      <label>TPM <input type="number" min="0" step="1" name="tpm_limit" value="{{ k.tpm_limit }}" placeholder="unlimited" style="width:130px"></label>
-      <button>Save</button>
-    </form></td>{% endif %}
-    <td>{{ k.created }}</td><td>{{ k.last_used }}</td>
-    <td>{% if k.revoked %}<span class="tag bad">revoked</span>{% else %}
-      <form class="inline" method="post" action="/admin/keys/{{ k.id }}/revoke" onsubmit="return confirm('Revoke this key?')"><button class="danger">Revoke</button></form>
-    {% endif %}</td>
-  </tr>
-  <tr><td colspan="9"><form method="post" action="/admin/keys/{{ k.id }}/providers" class="row"><b>Provider Access</b>
-    {% for p in k.providers %}<label><input type="checkbox" name="allowed_providers" value="{{ p.value }}" {% if p.selected %}checked{% endif %}> {{ p.label }}</label>{% endfor %}<button>Save Provider Access</button>
-  </form></td></tr>
+
+<section class="panel" aria-labelledby="add-key-h">
+  <h2 id="add-key-h">Add a Virtual Key</h2>
+  {% if users.is_empty() %}
+  <p class="empty">Add a User before you add a Virtual Key. <a href="/admin/users">Go to Users</a></p>
   {% else %}
-  <tr><td colspan="{% if base.simple %}7{% else %}8{% endif %}" class="muted">No keys.</td></tr>
+  <datalist id="model-names">{% for n in model_names %}<option value="{{ n }}">{% endfor %}</datalist>
+  <form method="post" action="/admin/keys" class="stack">
+    <div class="row">
+      <div class="field"><label for="key-user">User</label><select id="key-user" name="user_id" required>{% for u in users %}<option value="{{ u.value }}"{% if u.selected %} selected{% endif %}>{{ u.label }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="key-label">Label</label><input id="key-label" name="label" placeholder="laptop" aria-describedby="key-label-help"><p class="hint" id="key-label-help">Where the key is used.</p></div>
+      <div class="field grow"><label for="key-models">Allowed models</label><input id="key-models" name="allowed_models" list="model-names" placeholder="gpt-4o, claude-sonnet-5-5" autocomplete="off" spellcheck="false" aria-describedby="key-models-help"><p class="hint" id="key-models-help">Comma-separated Model or Route names, or provider/model. Empty allows all.</p></div>
+    </div>
+    <fieldset aria-describedby="key-access-help">
+      <legend>Provider Access</legend>
+      {% call access_checks(providers.as_slice()) %}
+      <p class="hint" id="key-access-help">No check allows all API-key Providers. A Subscription Provider needs a check. With checks, only the checked Providers are allowed.</p>
+    </fieldset>
+    {% if !base.simple %}
+    <fieldset aria-describedby="key-limits-help">
+      <legend>Rate Limits</legend>
+      <div class="row">
+        <label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited" inputmode="numeric"></label>
+        <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited" inputmode="numeric"></label>
+      </div>
+      <p class="hint" id="key-limits-help">Requests and completed tokens per minute. Blank is unlimited; 0 blocks requests. The Rate Limits of the User also apply.</p>
+    </fieldset>
+    {% endif %}
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Add key</button>
+  </form>
+  {% endif %}
+</section>
+
+<h2 id="keys-h">{% if let Some(u) = filter_user %}Keys of {{ u }}{% else %}Active keys{% endif %}</h2>
+{% if filter_user.is_some() %}<p><a href="/admin/keys">Show the keys of all Users</a></p>{% endif %}
+<div class="panel scroll">
+<table class="keys cards-sm">
+  <thead><tr><th scope="col">Key</th><th scope="col">User</th><th scope="col">Models</th><th scope="col">Provider Access</th>{% if !base.simple %}<th scope="col">Rate Limits</th>{% endif %}<th scope="col">Created (UTC)</th><th scope="col">Last used (UTC)</th><th scope="col"><span class="vh">Actions</span></th></tr></thead>
+  <tbody>
+  {% for k in keys %}
+  <tr id="k{{ k.id }}">
+    <th scope="row"><code>{{ k.prefix }}…</code>{% if !k.label.is_empty() %}<span class="sub">{{ k.label }}</span>{% endif %}</th>
+    <td data-label="User"><span class="trunc" title="{{ k.user }}">{{ k.user }}</span></td>
+    <td data-label="Models">{{ k.models }}</td>
+    <td data-label="Provider Access">{{ k.access }}</td>
+    {% if !base.simple %}<td data-label="Rate Limits">{{ k.limits }}</td>{% endif %}
+    <td data-label="Created (UTC)"><time datetime="{{ k.created.iso }}">{{ k.created.short }}</time></td>
+    <td data-label="Last used (UTC)">{% if k.last_used.iso.is_empty() %}{{ k.last_used.short }}{% else %}<time datetime="{{ k.last_used.iso }}">{{ k.last_used.short }}</time>{% endif %}</td>
+    <td><div class="actions">
+      <button type="button" class="ghost" data-toggle="edit-k{{ k.id }}" aria-expanded="false" aria-controls="edit-k{{ k.id }}" aria-label="Edit key {{ k.prefix }} ({{ k.user }})">Edit</button>
+      <form class="inline" method="post" action="/admin/keys/{{ k.id }}/revoke" data-confirm="Revoke key {{ k.prefix }} of {{ k.user }}? Clients that use it are refused at once. You cannot undo this."><button class="danger" aria-label="Revoke key {{ k.prefix }} ({{ k.user }})">Revoke</button></form>
+    </div></td>
+  </tr>
+  <tr id="edit-k{{ k.id }}" class="edit-row" data-collapse>
+    <td colspan="{% if base.simple %}7{% else %}8{% endif %}"><div class="edit-panel">
+      <form method="post" action="/admin/keys/{{ k.id }}" class="stack" aria-label="Edit key {{ k.prefix }}">
+        <fieldset>
+          <legend>Provider Access for {{ k.prefix }}…</legend>
+          {% call access_checks(k.providers.as_slice()) %}
+          <p class="hint">No check allows all API-key Providers. A Subscription Provider needs a check.</p>
+        </fieldset>
+        {% if !base.simple %}
+        <fieldset>
+          <legend>Rate Limits for {{ k.prefix }}…</legend>
+          <div class="row">
+            <label>RPM <input type="number" min="0" step="1" name="rpm_limit" value="{{ k.rpm_limit }}" placeholder="unlimited" inputmode="numeric"></label>
+            <label>TPM <input type="number" min="0" step="1" name="tpm_limit" value="{{ k.tpm_limit }}" placeholder="unlimited" inputmode="numeric"></label>
+          </div>
+        </fieldset>
+        {% endif %}
+        <div class="form-error" role="alert" tabindex="-1"></div>
+        <div class="row"><button aria-label="Save key {{ k.prefix }}">Save</button><button type="button" class="ghost" data-toggle="edit-k{{ k.id }}">Cancel</button></div>
+      </form>
+    </div></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="{% if base.simple %}7{% else %}8{% endif %}" class="empty">No active keys.{% if !users.is_empty() %} Add one above.{% endif %}</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
-<h2>Create key</h2>
-<form class="panel row" method="post" action="/admin/keys">
-  <label>User <select name="user_id" required>{% for u in users %}<option value="{{ u.value }}">{{ u.label }}</option>{% endfor %}</select></label>
-  <label>Label <input name="label" style="width:160px"></label>
-  <label>Allowed models (comma list, empty = all) <input name="allowed_models" style="width:320px" placeholder="gpt-4o, claude-sonnet-5-5"></label>
-  <fieldset><legend>Provider Access</legend>{% for p in providers %}<label><input type="checkbox" name="allowed_providers" value="{{ p }}"> {{ p }}</label>{% endfor %}</fieldset>
-  {% if !base.simple %}<label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited"></label>
-  <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited"></label>
-  {% endif %}
-  <button>Create key</button>
-</form>
+
+{% if !revoked.is_empty() %}
+<details class="panel" id="revoked-keys">
+  <summary>Revoked keys ({{ revoked.len() }})</summary>
+  <p class="muted">Revoked keys cannot be used or changed. They stay for the Ledger.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Key</th><th scope="col">User</th><th scope="col">Created (UTC)</th><th scope="col">Last used (UTC)</th><th scope="col">Revoked (UTC)</th></tr></thead>
+    <tbody>
+    {% for k in revoked %}
+    <tr class="revoked"><th scope="row"><code>{{ k.prefix }}…</code>{% if !k.label.is_empty() %}<span class="sub">{{ k.label }}</span>{% endif %}</th>
+      <td><span class="trunc" title="{{ k.user }}">{{ k.user }}</span></td>
+      <td><time datetime="{{ k.created.iso }}">{{ k.created.short }}</time></td><td>{{ k.last_used.short }}</td><td><time datetime="{{ k.revoked.iso }}">{{ k.revoked.short }}</time></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+{% endif %}
 {% endblock %}

@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% block nav_ledger %}class="on"{% endblock %}
+{% block title %}Ledger - Tokomotive{% endblock %}
+{% block nav_ledger %}aria-current="page"{% endblock %}
 {% block content %}
 <div class="row" style="justify-content:space-between;margin-bottom:12px">
   <h1 style="margin:0">Ledger</h1>
-  <div class="tabs">
-    <a href="/admin/ledger" {% if filter == "all" %}class="on"{% endif %}>All</a>
+  <nav class="tabs" aria-label="Filter">
+    <a href="/admin/ledger" {% if filter == "all" %}aria-current="page"{% endif %}>All</a>
     {% if !base.simple %}
-    <a href="/admin/ledger?filter=unpriced" {% if filter == "unpriced" %}class="on"{% endif %}>Unpriced</a>
-    <a href="/admin/ledger?filter=estimated" {% if filter == "estimated" %}class="on"{% endif %}>Estimated</a>
+    <a href="/admin/ledger?filter=unpriced" {% if filter == "unpriced" %}aria-current="page"{% endif %}>Unpriced</a>
+    <a href="/admin/ledger?filter=estimated" {% if filter == "estimated" %}aria-current="page"{% endif %}>Estimated</a>
     {% endif %}
-    <a href="/admin/ledger?filter=errors" {% if filter == "errors" %}class="on"{% endif %}>Errors</a>
-  </div>
+    <a href="/admin/ledger?filter=errors" {% if filter == "errors" %}aria-current="page"{% endif %}>Errors</a>
+  </nav>
 </div>
 {% if let Some(n) = notice %}<div class="notice">{{ n }}</div>{% endif %}
 {% if !base.simple && filter == "unpriced" %}

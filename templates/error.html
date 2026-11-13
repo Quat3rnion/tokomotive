@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Error - Tokomotive{% endblock %}
+{% block title %}{{ heading }} - Tokomotive{% endblock %}
 {% block content %}
-<div class="panel">
-  <h1>Error</h1>
-  <p>{{ message }}</p>
-  <p><a href="javascript:history.back()">Go back</a></p>
+<div class="panel narrow">
+  <h1>{{ heading }}</h1>
+  <p role="alert">{{ message }}</p>
+  <p><a href="{{ back_href }}">{{ back_label }}</a></p>
 </div>
 {% endblock %}

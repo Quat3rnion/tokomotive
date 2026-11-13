@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block nav_models %}class="on"{% endblock %}
+{% block title %}Models - Tokomotive{% endblock %}
+{% block nav_models %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Models</h1>
 {% if base.simple %}<p class="muted">Pricing is off in simple mode.</p>{% else %}<p class="muted">Rates are USD per million tokens. A Model also matches dated names that start with <code>name-</code>.</p>{% endif %}

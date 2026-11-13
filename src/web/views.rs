@@ -22,10 +22,28 @@ pub fn int(n: i64) -> String {
     if n < 0 { format!("-{out}") } else { out }
 }
 
-/// Money for display: thousands separators and 4 decimals.
+/// Money for totals and Budgets: 2 decimals from $1, 4 decimals below $1,
+/// and "<$0.0001" for a non-zero amount below the display resolution.
 pub fn money(micros: i64) -> String {
+    if micros == 0 {
+        "$0.00".into()
+    } else if micros.unsigned_abs() >= 1_000_000 {
+        let sign = if micros < 0 { "-" } else { "" };
+        let cents = (micros.unsigned_abs() + 5_000) / 10_000;
+        format!("{sign}${}.{:02}", int((cents / 100) as i64), cents % 100)
+    } else {
+        money_row(micros)
+    }
+}
+
+/// Money for single Ledger Entries: always 4 decimals, and "<$0.0001" for a
+/// non-zero amount below the display resolution.
+pub fn money_row(micros: i64) -> String {
     let sign = if micros < 0 { "-" } else { "" };
     let m = micros.unsigned_abs();
+    if m > 0 && m < 50 {
+        return format!("{sign}<$0.0001");
+    }
     let cents4 = (m + 50) / 100; // 1/10000 dollar
     format!(
         "{sign}${}.{:04}",
@@ -34,20 +52,90 @@ pub fn money(micros: i64) -> String {
     )
 }
 
+/// The full value of an amount, for a `title` attribute.
+pub fn money_exact(micros: i64) -> String {
+    let sign = if micros < 0 { "-" } else { "" };
+    let m = micros.unsigned_abs();
+    format!(
+        "{sign}${}.{:06}",
+        int((m / 1_000_000) as i64),
+        m % 1_000_000
+    )
+}
+
+/// An amount with its display text and its full value. It renders as the
+/// display text; use `{{ x.exact }}` in a `title`.
+#[derive(Clone)]
+pub struct Money {
+    pub text: String,
+    pub exact: String,
+}
+
+impl Money {
+    pub fn total(micros: i64) -> Money {
+        Money {
+            text: money(micros),
+            exact: money_exact(micros),
+        }
+    }
+}
+
+impl std::fmt::Display for Money {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 fn bp_percent(bp: i64) -> String {
     let s = format!("{:.2}", bp as f64 / 100.0);
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-fn date(ts_s: i64) -> String {
+/// A point in time. It renders as `YYYY-MM-DD HH:MM UTC`; use
+/// `<time datetime="{{ t.iso }}">{{ t }}</time>` in templates.
+#[derive(Clone, Default)]
+pub struct Stamp {
+    pub text: String,
+    /// Without the zone, for a column whose header says "(UTC)".
+    pub short: String,
+    pub iso: String,
+}
+
+impl std::fmt::Display for Stamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+fn stamp(ts_s: i64) -> Stamp {
     Utc.timestamp_opt(ts_s, 0)
         .single()
-        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .map(|t| Stamp {
+            text: t.format("%Y-%m-%d %H:%M UTC").to_string(),
+            short: t.format("%Y-%m-%d %H:%M").to_string(),
+            iso: t.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        })
         .unwrap_or_default()
 }
 
-fn opt_date(ts: Option<i64>) -> String {
-    ts.map(date).unwrap_or_else(|| "never".into())
+/// The one date format of the dashboard: `YYYY-MM-DD HH:MM UTC`.
+pub fn utc_ms(ms: i64) -> String {
+    Utc.timestamp_millis_opt(ms)
+        .single()
+        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_default()
+}
+
+fn date(ts_s: i64) -> Stamp {
+    stamp(ts_s)
+}
+
+fn opt_date(ts: Option<i64>) -> Stamp {
+    ts.map(date).unwrap_or_else(|| Stamp {
+        text: "never".into(),
+        short: "never".into(),
+        iso: String::new(),
+    })
 }
 
 #[derive(Clone)]
@@ -73,15 +161,37 @@ fn team_opts(teams: &[TeamRow], selected: Option<i64>) -> Vec<Opt> {
 
 // ------------------------------------------------------------------- pages
 
-#[derive(Clone, Copy, Default)]
+/// Data that `base.html` needs on every page.
+#[derive(Clone, Default)]
 pub struct Base {
     pub simple: bool,
+    /// Show the navigation. False on login, Setup and logged-out errors.
+    pub logged_in: bool,
+    /// One-time success message, shown in a `role="status"` box.
+    pub flash: Option<String>,
+    /// The Proxy base URL, for example `http://localhost:8080/v1`.
+    pub proxy_url: String,
 }
 
 impl Base {
     pub fn new(st: &crate::state::AppState) -> Self {
+        let ctx = super::ctx();
         Self {
             simple: st.settings().mode == "simple",
+            logged_in: true,
+            flash: ctx.flash,
+            proxy_url: ctx.proxy_url,
+        }
+    }
+
+    /// For pages outside a checked session: login, Setup and error pages.
+    pub fn anonymous() -> Self {
+        let ctx = super::ctx();
+        Self {
+            simple: false,
+            logged_in: ctx.session,
+            flash: ctx.flash,
+            proxy_url: ctx.proxy_url,
         }
     }
 }
@@ -89,6 +199,7 @@ impl Base {
 #[derive(Template)]
 #[template(path = "login.html")]
 pub struct LoginPage {
+    pub base: Base,
     pub error: Option<String>,
 }
 
@@ -96,7 +207,10 @@ pub struct LoginPage {
 #[template(path = "error.html")]
 pub struct ErrorPage {
     pub base: Base,
+    pub heading: String,
     pub message: String,
+    pub back_href: String,
+    pub back_label: String,
 }
 
 // ---------------------------------------------------------------- overview
@@ -144,9 +258,29 @@ impl Range {
     }
 }
 
+/// How the range reads in sentences and chart captions.
+impl Range {
+    fn per(self) -> &'static str {
+        match self {
+            Range::Day => "per hour",
+            Range::Week => "per 6 hours",
+            Range::Month => "per day",
+        }
+    }
+    fn words(self) -> &'static str {
+        match self {
+            Range::Day => "the last 24 hours",
+            Range::Week => "the last 7 days",
+            Range::Month => "the last 30 days",
+        }
+    }
+}
+
 pub struct Stat {
     pub label: &'static str,
     pub value: String,
+    /// Full value for a `title`, empty when the value is exact.
+    pub title: String,
     pub sub: String,
 }
 
@@ -154,23 +288,32 @@ pub struct GroupView {
     pub key: String,
     pub requests: String,
     pub errors: String,
+    pub error_rate: String,
     pub input: String,
     pub output: String,
     pub cache_read: String,
-    pub cache_write_5m: String,
-    pub cache_write_1h: String,
+    pub cache_write: String,
+    pub cache_write_title: String,
     pub image_input: String,
     pub image_output: String,
     pub attempts: String,
     pub retried: String,
-    pub error_rate: String,
-    pub cost: String,
-    pub price: String,
-    pub profit: String,
+    pub cost: Money,
+    pub price: Money,
+    pub profit: Money,
     pub margin: String,
     pub latency: String,
     pub ttft: String,
     pub tps: String,
+}
+
+/// One "By ..." table. Image columns show only when a row uses images.
+pub struct GroupTable {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub column: &'static str,
+    pub rows: Vec<GroupView>,
+    pub images: bool,
 }
 
 fn margin(t: &Totals) -> String {
@@ -209,6 +352,16 @@ fn tps(t: &Totals) -> String {
     }
 }
 
+fn all_tokens(t: &Totals) -> i64 {
+    t.input
+        + t.output
+        + t.cache_read
+        + t.cache_write_5m
+        + t.cache_write_1h
+        + t.image_input
+        + t.image_output
+}
+
 impl GroupView {
     fn new(group: &Group) -> GroupView {
         let key = &group.key;
@@ -221,19 +374,23 @@ impl GroupView {
             },
             requests: int(t.requests),
             errors: int(t.errors),
+            error_rate: error_rate(t),
             input: int(t.input),
             output: int(t.output),
             cache_read: int(t.cache_read),
-            cache_write_5m: int(t.cache_write_5m),
-            cache_write_1h: int(t.cache_write_1h),
+            cache_write: int(t.cache_write_5m + t.cache_write_1h),
+            cache_write_title: format!(
+                "Cache write 5m: {}, Cache write 1h: {}",
+                int(t.cache_write_5m),
+                int(t.cache_write_1h)
+            ),
             image_input: int(t.image_input),
             image_output: int(t.image_output),
             attempts: int(group.attempts),
             retried: int(group.retried),
-            error_rate: error_rate(t),
-            cost: money(t.cost_micros),
-            price: money(t.price_micros),
-            profit: money(t.price_micros - t.cost_micros),
+            cost: Money::total(t.cost_micros),
+            price: Money::total(t.price_micros),
+            profit: Money::total(t.price_micros - t.cost_micros),
             margin: margin(t),
             latency: avg_ms(t.latency_ms_sum, t.requests),
             ttft: avg_ms(t.ttft_ms_sum, t.ttft_count),
@@ -242,117 +399,172 @@ impl GroupView {
     }
 }
 
+/// One step of the first-run checklist.
+pub struct Step {
+    pub id: &'static str,
+    pub done: bool,
+    pub title: &'static str,
+    pub text: &'static str,
+    pub links: Vec<(&'static str, &'static str)>,
+}
+
+/// What the first-run checklist needs from the database.
+#[derive(Default, Clone, Copy)]
+pub struct SetupState {
+    pub providers: bool,
+    pub models_or_routes: bool,
+    pub users: bool,
+    pub keys: bool,
+    pub requests: bool,
+}
+
+impl SetupState {
+    fn steps(self, simple: bool) -> Vec<Step> {
+        vec![
+            Step {
+                id: "provider",
+                done: self.providers,
+                title: "Add a Provider",
+                text: "The upstream LLM service, for example OpenAI or Anthropic, with its Provider Key or a subscription.",
+                links: vec![("/admin/providers", "Providers")],
+            },
+            Step {
+                id: "model",
+                done: self.models_or_routes,
+                title: "Add a Model or a Route (optional)",
+                text: if simple {
+                    "A Route gives one model name several Deployments and Fallbacks. Without one, clients send provider/model, for example openai/gpt-4o."
+                } else {
+                    "A Model holds the rates for usage accounting. A Route gives one model name several Deployments. Without either, clients send provider/model, for example openai/gpt-4o."
+                },
+                links: vec![("/admin/models", "Models"), ("/admin/routes", "Routes")],
+            },
+            Step {
+                id: "user",
+                done: self.users,
+                title: "Add a User",
+                text: "A User holds Virtual Keys. Usage is recorded per User.",
+                links: vec![("/admin/users", "Users")],
+            },
+            Step {
+                id: "key",
+                done: self.keys,
+                title: "Add a Virtual Key",
+                text: "Give the key to the client. The dashboard shows it only once.",
+                links: vec![("/admin/keys", "Keys")],
+            },
+            Step {
+                id: "request",
+                done: self.requests,
+                title: "Send a first request",
+                text: "Point the client at the Proxy base URL below and use the Virtual Key as its API key.",
+                links: vec![("/admin/ledger", "Ledger")],
+            },
+        ]
+    }
+
+    fn complete(self) -> bool {
+        self.providers && self.users && self.keys && self.requests
+    }
+}
+
 #[derive(Template)]
 #[template(path = "overview.html")]
 pub struct OverviewPage {
     pub base: Base,
     pub range: &'static str,
+    pub range_words: &'static str,
+    /// Empty when Setup is complete.
+    pub steps: Vec<Step>,
     pub stats: Vec<Stat>,
+    pub more: Vec<(&'static str, String)>,
     pub money_chart: String,
-    pub traffic_chart: String,
-    pub by_model: Vec<GroupView>,
-    pub by_provider: Vec<GroupView>,
-    pub by_user: Vec<GroupView>,
-    pub by_team: Vec<GroupView>,
+    pub requests_chart: String,
+    pub tokens_chart: String,
+    pub groups: Vec<GroupTable>,
     pub unpriced: i64,
     pub estimated: i64,
 }
 
+pub struct OverviewData<'a> {
+    pub totals: &'a Totals,
+    pub series: &'a [Bucket],
+    pub by_model: &'a [Group],
+    pub by_provider: &'a [Group],
+    pub by_user: &'a [Group],
+    pub by_team: &'a [Group],
+    pub unpriced: i64,
+    pub estimated: i64,
+    pub setup: SetupState,
+}
+
 impl OverviewPage {
-    #[allow(clippy::too_many_arguments)]
-    pub fn build(
-        base: Base,
-        range: Range,
-        t: &Totals,
-        series: &[Bucket],
-        by_model: &[Group],
-        by_provider: &[Group],
-        by_user: &[Group],
-        by_team: &[Group],
-        unpriced: i64,
-        estimated: i64,
-    ) -> OverviewPage {
-        let tokens = t.input
-            + t.output
-            + t.cache_read
-            + t.cache_write_5m
-            + t.cache_write_1h
-            + t.image_input
-            + t.image_output;
+    pub fn build(base: Base, range: Range, d: OverviewData) -> OverviewPage {
+        let t = d.totals;
         let hours = range.span() as f64 / 3600.0;
+        let attempts: i64 = d.by_model.iter().map(|g| g.attempts).sum();
+        let retried: i64 = d.by_model.iter().map(|g| g.retried).sum();
         let mut stats = vec![
             Stat {
                 label: "Requests",
                 value: int(t.requests),
-                sub: format!(
-                    "{} errors, {:.1}/h",
-                    int(t.errors),
-                    t.requests as f64 / hours
-                ),
+                title: String::new(),
+                sub: format!("{} errors, error rate {}", int(t.errors), error_rate(t)),
             },
             Stat {
                 label: "Tokens",
-                value: int(tokens),
-                sub: format!(
-                    "in {} / out {} / cache r {} w5m {} w1h {} / image in {} out {}",
-                    int(t.input),
-                    int(t.output),
-                    int(t.cache_read),
-                    int(t.cache_write_5m),
-                    int(t.cache_write_1h),
-                    int(t.image_input),
-                    int(t.image_output)
-                ),
-            },
-            Stat {
-                label: "Price (billed)",
-                value: money(t.price_micros),
-                sub: "what users owe".into(),
-            },
-            Stat {
-                label: "Cost (provider)",
-                value: money(t.cost_micros),
-                sub: "what you owe".into(),
-            },
-            Stat {
-                label: "Profit",
-                value: money(t.price_micros - t.cost_micros),
-                sub: format!("margin {}", margin(t)),
-            },
-            Stat {
-                label: "Latency",
-                value: avg_ms(t.latency_ms_sum, t.requests),
-                sub: format!(
-                    "TTFT {}, {} out tok/s",
-                    avg_ms(t.ttft_ms_sum, t.ttft_count),
-                    tps(t)
-                ),
+                value: int(all_tokens(t)),
+                title: String::new(),
+                sub: format!("input {}, output {}", int(t.input), int(t.output)),
             },
         ];
-        if base.simple {
-            stats.retain(|s| !matches!(s.label, "Price (billed)" | "Cost (provider)" | "Profit"));
+        if !base.simple {
+            stats.push(Stat {
+                label: "Price",
+                value: money(t.price_micros),
+                title: money_exact(t.price_micros),
+                sub: format!(
+                    "Cost {}, Profit {} ({})",
+                    money(t.cost_micros),
+                    money(t.price_micros - t.cost_micros),
+                    margin(t)
+                ),
+            });
         }
         stats.push(Stat {
-            label: "Error rate",
-            value: error_rate(t),
-            sub: format!("{} errors", int(t.errors)),
-        });
-        stats.push(Stat {
-            label: "Attempts",
-            value: int(by_model.iter().map(|g| g.attempts).sum()),
+            label: "Latency",
+            value: avg_ms(t.latency_ms_sum, t.requests),
+            title: String::new(),
             sub: format!(
-                "{} retried requests",
-                int(by_model.iter().map(|g| g.retried).sum())
+                "TTFT {}, {} output tokens/s",
+                avg_ms(t.ttft_ms_sum, t.ttft_count),
+                tps(t)
             ),
         });
+        let mut more = vec![
+            (
+                "Requests per hour",
+                format!("{:.1}", t.requests as f64 / hours),
+            ),
+            ("Attempts", int(attempts)),
+            ("Retried requests", int(retried)),
+            ("Cache read", int(t.cache_read)),
+            ("Cache write 5m", int(t.cache_write_5m)),
+            ("Cache write 1h", int(t.cache_write_1h)),
+        ];
+        if t.image_input != 0 || t.image_output != 0 {
+            more.push(("Image input", int(t.image_input)));
+            more.push(("Image output", int(t.image_output)));
+        }
 
         // Fill empty buckets so the time axis is continuous.
         let b = range.bucket();
         let now = Utc::now().timestamp();
         let mut labels = vec![];
+        let mut axis = vec![];
         let (mut cost, mut price, mut profit, mut reqs, mut toks) =
             (vec![], vec![], vec![], vec![], vec![]);
-        let mut it = series.iter().peekable();
+        let mut it = d.series.iter().peekable();
         let mut at = range.since() / b * b;
         while at <= now {
             let zero = Totals::default();
@@ -360,79 +572,119 @@ impl OverviewPage {
                 Some(x) if x.bucket == at => &it.next().expect("peeked").t,
                 _ => &zero,
             };
-            let fmt = if b >= 86_400 { "%m-%d" } else { "%m-%d %H:%M" };
-            labels.push(
-                Utc.timestamp_opt(at, 0)
-                    .single()
-                    .map(|d| d.format(fmt).to_string())
+            let (fmt, short) = match range {
+                Range::Day => ("%m-%d %H:%M", "%H:%M"),
+                Range::Week => ("%m-%d %H:%M", "%m-%d"),
+                Range::Month => ("%m-%d", "%m-%d"),
+            };
+            let when = Utc.timestamp_opt(at, 0).single();
+            labels.push(when.map(|d| d.format(fmt).to_string()).unwrap_or_default());
+            axis.push(
+                when.map(|d| d.format(short).to_string())
                     .unwrap_or_default(),
             );
             cost.push(tt.cost_micros as f64 / 1e6);
             price.push(tt.price_micros as f64 / 1e6);
             profit.push((tt.price_micros - tt.cost_micros) as f64 / 1e6);
             reqs.push(tt.requests as f64);
-            toks.push(
-                (tt.input
-                    + tt.output
-                    + tt.cache_read
-                    + tt.cache_write_5m
-                    + tt.cache_write_1h
-                    + tt.image_input
-                    + tt.image_output) as f64
-                    / 1000.0,
-            );
+            toks.push(all_tokens(tt) as f64);
             at += b;
         }
+        let per = range.per();
+        let words = range.words();
         let money_chart = chart::line(
+            &chart::Chart {
+                id: "chart-money",
+                title: format!("Price, Cost and Profit {per} (USD)"),
+                range: words,
+                unit: chart::Unit::Money,
+            },
             &labels,
+            &axis,
             &[
                 Series {
                     name: "Price",
-                    color: "#3b82f6",
+                    color: "#60a5fa",
+                    dash: "",
                     values: price,
                 },
                 Series {
                     name: "Cost",
-                    color: "#ef4444",
+                    color: "#f87171",
+                    dash: "6 4",
                     values: cost,
                 },
                 Series {
                     name: "Profit",
-                    color: "#10b981",
+                    color: "#34d399",
+                    dash: "2 3",
                     values: profit,
                 },
             ],
-            &|v| format!("${v:.2}"),
         );
-        let traffic_chart = chart::line(
+        let requests_chart = chart::line(
+            &chart::Chart {
+                id: "chart-requests",
+                title: format!("Requests {per}"),
+                range: words,
+                unit: chart::Unit::Count,
+            },
             &labels,
-            &[
-                Series {
-                    name: "Requests",
-                    color: "#8b5cf6",
-                    values: reqs,
-                },
-                Series {
-                    name: "Tokens (k)",
-                    color: "#f59e0b",
-                    values: toks,
-                },
-            ],
-            &|v| format!("{v:.0}"),
+            &axis,
+            &[Series {
+                name: "Requests",
+                color: "#a78bfa",
+                dash: "",
+                values: reqs,
+            }],
         );
-        let g = |rows: &[Group]| rows.iter().map(GroupView::new).collect();
+        let tokens_chart = chart::line(
+            &chart::Chart {
+                id: "chart-tokens",
+                title: format!("Tokens {per}"),
+                range: words,
+                unit: chart::Unit::Count,
+            },
+            &labels,
+            &axis,
+            &[Series {
+                name: "Tokens",
+                color: "#fbbf24",
+                dash: "",
+                values: toks,
+            }],
+        );
+        let table = |id, title, column, rows: &[Group]| GroupTable {
+            id,
+            title,
+            column,
+            images: rows
+                .iter()
+                .any(|g| g.t.image_input != 0 || g.t.image_output != 0),
+            rows: rows.iter().map(GroupView::new).collect(),
+        };
         OverviewPage {
-            base,
             range: range.name(),
+            range_words: words,
+            steps: if d.setup.complete() {
+                vec![]
+            } else {
+                d.setup.steps(base.simple)
+            },
+            base,
             stats,
+            more,
             money_chart,
-            traffic_chart,
-            by_model: g(by_model),
-            by_provider: g(by_provider),
-            by_user: g(by_user),
-            by_team: g(by_team),
-            unpriced,
-            estimated,
+            requests_chart,
+            tokens_chart,
+            groups: vec![
+                table("by-model", "By Model", "Model", d.by_model),
+                table("by-provider", "By Provider", "Provider", d.by_provider),
+                table("by-user", "By User", "User", d.by_user),
+                table("by-team", "By Team", "Team", d.by_team),
+            ],
+            unpriced: d.unpriced,
+            estimated: d.estimated,
         }
     }
 }
@@ -504,16 +756,28 @@ pub struct TeamsPage {
 
 // -------------------------------------------------------------------- keys
 
+/// A Provider in a Provider Access choice.
+pub struct ProviderOpt {
+    pub name: String,
+    pub subscription: bool,
+    pub selected: bool,
+}
+
 pub struct KeyView {
     pub id: i64,
     pub user: String,
     pub prefix: String,
     pub label: String,
+    /// "All", or the allowed names.
     pub models: String,
-    pub providers: Vec<Opt>,
-    pub created: String,
-    pub last_used: String,
-    pub revoked: bool,
+    /// "All API-key Providers", or the allowed names.
+    pub access: String,
+    pub providers: Vec<ProviderOpt>,
+    /// "RPM 60, TPM unlimited", or "Unlimited".
+    pub limits: String,
+    pub created: Stamp,
+    pub last_used: Stamp,
+    pub revoked: Stamp,
     pub rpm_limit: String,
     pub tpm_limit: String,
 }
@@ -523,66 +787,119 @@ pub struct KeyView {
 pub struct KeysPage {
     pub base: Base,
     pub keys: Vec<KeyView>,
+    pub revoked: Vec<KeyView>,
     pub users: Vec<Opt>,
     pub new_key: Option<String>,
-    pub providers: Vec<String>,
+    pub providers: Vec<ProviderOpt>,
+    /// Model and Route names for the Allowed models suggestions.
+    pub model_names: Vec<String>,
+    /// The User name when the list shows the keys of one User.
+    pub filter_user: Option<String>,
+}
+
+pub struct KeysData<'a> {
+    pub keys: &'a [KeyRow],
+    pub users: &'a [UserRow],
+    pub new_key: Option<String>,
+    /// Provider names, with true for a Subscription Provider.
+    pub providers: &'a [(String, bool)],
+    pub model_names: Vec<String>,
+    pub filter: Option<i64>,
+}
+
+fn limit_text(v: Option<i64>) -> String {
+    v.map(int).unwrap_or_else(|| "unlimited".into())
 }
 
 impl KeysPage {
-    pub fn build(
-        base: Base,
-        keys: &[KeyRow],
-        users: &[UserRow],
-        new_key: Option<String>,
-        providers: &[String],
-    ) -> KeysPage {
+    pub fn build(base: Base, d: KeysData) -> KeysPage {
+        let filter_user = d
+            .filter
+            .and_then(|id| d.users.iter().find(|u| u.id == id))
+            .map(|u| u.name.clone());
+        let (mut keys, mut revoked) = (vec![], vec![]);
+        for k in d
+            .keys
+            .iter()
+            .filter(|k| filter_user.as_ref().is_none_or(|u| &k.user == u))
+        {
+            let selected: Vec<String> = k
+                .allowed_providers
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let view = KeyView {
+                id: k.id,
+                user: k.user.clone(),
+                prefix: k.prefix.clone(),
+                label: k.label.clone(),
+                providers: d
+                    .providers
+                    .iter()
+                    .map(|(name, subscription)| ProviderOpt {
+                        name: name.clone(),
+                        subscription: *subscription,
+                        selected: selected.contains(name),
+                    })
+                    .collect(),
+                access: if selected.is_empty() {
+                    "All API-key Providers".into()
+                } else {
+                    selected.join(", ")
+                },
+                models: k
+                    .allowed_models
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                    .filter(|v| !v.is_empty())
+                    .map(|v| v.join(", "))
+                    .unwrap_or_else(|| "All".into()),
+                limits: if k.rpm_limit.is_none() && k.tpm_limit.is_none() {
+                    "Unlimited".into()
+                } else {
+                    format!(
+                        "RPM {}, TPM {}",
+                        limit_text(k.rpm_limit),
+                        limit_text(k.tpm_limit)
+                    )
+                },
+                created: date(k.created_at),
+                last_used: opt_date(k.last_used_at),
+                revoked: k.revoked_at.map(date).unwrap_or_default(),
+                rpm_limit: k.rpm_limit.map(|v| v.to_string()).unwrap_or_default(),
+                tpm_limit: k.tpm_limit.map(|v| v.to_string()).unwrap_or_default(),
+            };
+            if k.revoked_at.is_some() {
+                revoked.push(view);
+            } else {
+                keys.push(view);
+            }
+        }
         KeysPage {
             base,
-            providers: providers.to_vec(),
-            keys: keys
-                .iter()
-                .map(|k| KeyView {
-                    id: k.id,
-                    user: k.user.clone(),
-                    prefix: k.prefix.clone(),
-                    label: k.label.clone(),
-                    providers: {
-                        let selected: Vec<String> = k
-                            .allowed_providers
-                            .as_deref()
-                            .and_then(|s| serde_json::from_str(s).ok())
-                            .unwrap_or_default();
-                        providers
-                            .iter()
-                            .map(|p| Opt {
-                                value: p.clone(),
-                                label: p.clone(),
-                                selected: selected.contains(p),
-                            })
-                            .collect()
-                    },
-                    models: k
-                        .allowed_models
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-                        .map(|v| v.join(", "))
-                        .unwrap_or_else(|| "all".into()),
-                    created: date(k.created_at),
-                    last_used: opt_date(k.last_used_at),
-                    revoked: k.revoked_at.is_some(),
-                    rpm_limit: k.rpm_limit.map(|v| v.to_string()).unwrap_or_default(),
-                    tpm_limit: k.tpm_limit.map(|v| v.to_string()).unwrap_or_default(),
-                })
-                .collect(),
-            users: users
+            keys,
+            revoked,
+            users: d
+                .users
                 .iter()
                 .map(|u| Opt {
                     value: u.id.to_string(),
                     label: u.name.clone(),
+                    selected: Some(u.id) == d.filter,
+                })
+                .collect(),
+            new_key: d.new_key,
+            providers: d
+                .providers
+                .iter()
+                .map(|(name, subscription)| ProviderOpt {
+                    name: name.clone(),
+                    subscription: *subscription,
                     selected: false,
                 })
                 .collect(),
-            new_key,
+            model_names: d.model_names,
+            filter_user,
         }
     }
 }
@@ -722,7 +1039,7 @@ pub struct HistView {
     pub scope: String,
     pub kind: String,
     pub desc: String,
-    pub created: String,
+    pub created: Stamp,
 }
 
 #[derive(Template)]
@@ -909,8 +1226,8 @@ impl LedgerPage {
                         (Some(k), a) if a > 1 => format!("#{k} ({a} tries)"),
                         (Some(k), _) => format!("#{k}"),
                     },
-                    cost: money(r.cost_micros),
-                    price: money(r.price_micros),
+                    cost: money_row(r.cost_micros),
+                    price: money_row(r.price_micros),
                     unpriced: r.unpriced,
                     estimated: r.estimated,
                     aborted: r.client_aborted,
@@ -935,8 +1252,16 @@ mod tests {
     fn number_formatting() {
         assert_eq!(int(1_234_567), "1,234,567");
         assert_eq!(int(-1000), "-1,000");
-        assert_eq!(money(1_234_567_890), "$1,234.5679");
+        assert_eq!(money(1_234_567_890), "$1,234.57");
+        assert_eq!(money(999_999), "$1.0000");
+        assert_eq!(money(4_500), "$0.0045");
         assert_eq!(money(-50), "-$0.0001");
+        assert_eq!(money(0), "$0.00");
+        assert_eq!(money_row(1_234_567_890), "$1,234.5679");
+        assert_eq!(money_row(30), "<$0.0001");
+        assert_eq!(money_row(-30), "-<$0.0001");
+        assert_eq!(money_exact(1_234_567), "$1.234567");
+        assert_eq!(utc_ms(0), "1970-01-01 00:00 UTC");
         assert_eq!(bp_percent(2_500), "25");
         assert_eq!(bp_percent(1_250), "12.5");
     }

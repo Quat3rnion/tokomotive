@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% import "rates_fields.html" as f %}
-{% block nav_models %}class="on"{% endblock %}
+{% block title %}{{ name }} - Models - Tokomotive{% endblock %}
+{% block nav_models %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>{{ name }}</h1>
 {% if base.simple %}<p class="muted">Pricing is off in simple mode.</p>{% else %}<p class="muted">A change to a card makes a new Card Version. Old Ledger Entries keep the amounts they had.</p>{% endif %}
@@ -37,7 +38,7 @@
   <tr><th>Team</th><th>Price</th><th></th></tr>
   {% for o in overrides %}
   <tr><td>{{ o.team }}</td><td>{{ o.desc }}</td><td>
-    <form class="inline" method="post" action="/admin/models/{{ id }}/team-price">
+    <form class="inline" method="post" action="/admin/models/{{ id }}/team-price" data-confirm="Remove the override for Team {{ o.team }}? Its Users then pay the Model Price.">
       <input type="hidden" name="team_id" value="{{ o.team_id }}"><input type="hidden" name="mode" value="default">
       <button class="danger">Remove</button>
     </form></td></tr>
@@ -62,7 +63,7 @@
 <table>
   <tr><th>Version</th><th>Scope</th><th>Kind</th><th>Rates</th><th>Created</th></tr>
   {% for h in history %}
-  <tr><td>#{{ h.id }}</td><td>{{ h.scope }}</td><td>{{ h.kind }}</td><td>{{ h.desc }}</td><td>{{ h.created }}</td></tr>
+  <tr><td>#{{ h.id }}</td><td>{{ h.scope }}</td><td>{{ h.kind }}</td><td>{{ h.desc }}</td><td><time datetime="{{ h.created.iso }}">{{ h.created }}</time></td></tr>
   {% endfor %}
 </table>
 </div>

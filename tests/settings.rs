@@ -68,7 +68,7 @@ async fn setup_mode_choice_is_clear_validated_and_persists() {
         .await
         .unwrap();
     assert!(html.contains("name=\"mode\""));
-    assert!(html.contains("value=\"full\" selected"));
+    assert!(html.contains("value=\"full\" checked"));
     assert!(html.contains("value=\"simple\""));
     assert_eq!(
         c.post(format!("{url}/setup"))
@@ -770,7 +770,7 @@ async fn setup_password_once_and_login() {
             .text()
             .await
             .unwrap()
-            .contains("Set admin password")
+            .contains("Set up Tokomotive")
     );
     assert_eq!(
         c.post(format!("{url}/setup"))

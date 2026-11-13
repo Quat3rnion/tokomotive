@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block nav_users %}class="on"{% endblock %}
+{% block title %}Users - Tokomotive{% endblock %}
+{% block nav_users %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Users</h1>
 {% if !base.simple %}<p class="muted">The Budget is a limit on Price (what the user owes). When the user reaches it, the proxy rejects requests with HTTP 402.</p>
@@ -25,7 +26,7 @@
     {% if !base.simple %}<td class="n">{{ u.spend }}</td>
     <td class="n {% if u.over %}bad{% endif %}">{{ u.used }}</td>
     {% endif %}
-    <td class="n">{{ u.keys }}</td>
+    <td class="n"><a href="/admin/keys?user={{ u.id }}" aria-label="{{ u.keys }} keys of {{ u.name }}">{{ u.keys }}</a></td>
     <td><button form="u{{ u.id }}">Save</button></td>
   </tr>
   {% else %}

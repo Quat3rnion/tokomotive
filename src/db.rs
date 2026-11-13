@@ -980,6 +980,17 @@ pub async fn count_flags(db: &Db) -> Result<(i64, i64)> {
     Ok((r.get("u"), r.get("e")))
 }
 
+/// Unpriced and Estimated Entries since `since_s` (Unix seconds).
+pub async fn count_flags_since(db: &Db, since_s: i64) -> Result<(i64, i64)> {
+    let r = sqlx::query(
+        "SELECT IFNULL(SUM(unpriced), 0) AS u, IFNULL(SUM(estimated), 0) AS e FROM ledger WHERE ts_ms >= ?",
+    )
+    .bind(since_s * 1000)
+    .fetch_one(db)
+    .await?;
+    Ok((r.get("u"), r.get("e")))
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct CardHistoryRow {
     pub id: i64,

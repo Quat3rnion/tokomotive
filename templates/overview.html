@@ -1,63 +1,107 @@
 {% extends "base.html" %}
-{% block nav_overview %}class="on"{% endblock %}
+{% block title %}Overview - Tokomotive{% endblock %}
+{% block nav_overview %}aria-current="page"{% endblock %}
 
-{% macro group_table(rows, title) %}
-<div class="panel scroll">
+{% macro group_table(g) %}
+<h2 id="{{ g.id }}-h">{{ g.title }}</h2>
+<div class="panel scroll" aria-labelledby="{{ g.id }}-h">
 <table>
-  <tr><th>{{ title }}</th><th class="n">Requests</th><th class="n">Errors</th><th class="n">Input</th><th class="n">Output</th>
-      <th class="n">Cache read</th><th class="n">Cache write 5m</th><th class="n">Cache write 1h</th><th class="n">Image input</th><th class="n">Image output</th>
-      {% if !base.simple %}<th class="n">Price</th><th class="n">Cost</th><th class="n">Profit</th><th class="n">Margin</th>{% endif %}
-      <th class="n">Error rate</th><th class="n">Attempts</th><th class="n">Retried requests</th><th class="n">Latency</th><th class="n">TTFT</th><th class="n">Out tok/s</th></tr>
-  {% for r in rows %}
-  <tr><td>{{ r.key }}</td><td class="n">{{ r.requests }}</td><td class="n">{{ r.errors }}</td><td class="n">{{ r.input }}</td>
-      <td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write_5m }}</td><td class="n">{{ r.cache_write_1h }}</td>
-      <td class="n">{{ r.image_input }}</td><td class="n">{{ r.image_output }}</td>
-      {% if !base.simple %}<td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>{% endif %}
-      <td class="n">{{ r.error_rate }}</td><td class="n">{{ r.attempts }}</td><td class="n">{{ r.retried }}</td>
-      <td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="n">{{ r.tps }}</td></tr>
+  <thead><tr><th scope="col">{{ g.column }}</th><th scope="col" class="n">Requests</th><th scope="col" class="n">Error rate</th><th scope="col" class="n">Input</th><th scope="col" class="n">Output</th>
+      <th scope="col" class="n">Cache read</th><th scope="col" class="n" title="Cache write 5m + Cache write 1h">Cache write</th>
+      {% if g.images %}<th scope="col" class="n">Image input</th><th scope="col" class="n">Image output</th>{% endif %}
+      {% if !base.simple %}<th scope="col" class="n">Price</th><th scope="col" class="n">Cost</th><th scope="col" class="n">Profit</th><th scope="col" class="n">Margin</th>{% endif %}
+      <th scope="col" class="n">Attempts</th><th scope="col" class="n">Latency</th><th scope="col" class="n">TTFT</th><th scope="col" class="n">Output tokens/s</th></tr></thead>
+  <tbody>
+  {% for r in g.rows %}
+  <tr><th scope="row">{{ r.key }}</th><td class="n">{{ r.requests }}</td><td class="n" title="{{ r.errors }} errors">{{ r.error_rate }}</td><td class="n">{{ r.input }}</td>
+      <td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n" title="{{ r.cache_write_title }}">{{ r.cache_write }}</td>
+      {% if g.images %}<td class="n">{{ r.image_input }}</td><td class="n">{{ r.image_output }}</td>{% endif %}
+      {% if !base.simple %}<td class="n" title="{{ r.price.exact }}">{{ r.price }}</td><td class="n" title="{{ r.cost.exact }}">{{ r.cost }}</td><td class="n" title="{{ r.profit.exact }}">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>{% endif %}
+      <td class="n" title="{{ r.retried }} retried requests">{{ r.attempts }}</td><td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="n">{{ r.tps }}</td></tr>
   {% else %}
-  <tr><td colspan="{% if base.simple %}16{% else %}20{% endif %}" class="muted">No requests in this range.</td></tr>
+  <tr><td colspan="{% if base.simple %}11{% else %}15{% endif %}" class="empty">No requests in this range.</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
 {% endmacro %}
 
 {% block content %}
-<div id="live" hx-get="/admin?range={{ range }}" hx-trigger="every 15s" hx-select="#live" hx-swap="outerHTML">
-<div class="row" style="justify-content:space-between;margin-bottom:12px">
-  <h1 style="margin:0">Overview</h1>
-  <div class="tabs">
-    <a href="/admin?range=24h" {% if range == "24h" %}class="on"{% endif %}>24 hours</a>
-    <a href="/admin?range=7d" {% if range == "7d" %}class="on"{% endif %}>7 days</a>
-    <a href="/admin?range=30d" {% if range == "30d" %}class="on"{% endif %}>30 days</a>
+<div class="toolbar">
+  <h1>Overview</h1>
+  <nav class="tabs" aria-label="Time range">
+    <a href="/admin?range=24h" {% if range == "24h" %}aria-current="page"{% endif %}>24 hours</a>
+    <a href="/admin?range=7d" {% if range == "7d" %}aria-current="page"{% endif %}>7 days</a>
+    <a href="/admin?range=30d" {% if range == "30d" %}aria-current="page"{% endif %}>30 days</a>
+  </nav>
+  <div class="end">
+    <button type="button" class="ghost" hx-get="/admin?range={{ range }}" hx-target="#live" hx-select="#live" hx-swap="outerHTML" data-busy="Refreshing..." data-announce="Overview updated.">Refresh</button>
+    <label class="check"><input type="checkbox" id="auto-refresh"> Refresh every 30 seconds</label>
   </div>
 </div>
 
+{% if !steps.is_empty() %}
+<section class="panel checklist" aria-labelledby="start-h">
+  <h2 id="start-h">Get started</h2>
+  <p class="muted">Do these steps in order. Each step is done when the dashboard finds it in the database.</p>
+  <ol>
+    {% for s in steps %}
+    <li data-step="{{ s.id }}" data-done="{{ s.done }}" class="{% if s.done %}done{% endif %}">
+      <span class="mark" aria-hidden="true">{% if s.done %}<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6.5 5 9l5-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>{% else %}{{ loop.index }}{% endif %}</span>
+      <div>
+        <p><b>{{ s.title }}</b> {% if s.done %}<span class="tag good">Done</span>{% else %}<span class="vh">(not done)</span>{% endif %}</p>
+        <p class="muted">{{ s.text }} {% for (href, label) in s.links %}<a href="{{ href }}">{% if s.done %}Open {{ label }}{% else %}Go to {{ label }}{% endif %}</a>{% if !loop.last %} or {% endif %}{% endfor %}</p>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+<section class="panel" aria-labelledby="proxy-h">
+  <h2 id="proxy-h">Proxy base URL</h2>
+  <div class="copy-row"><code class="url">{{ base.proxy_url }}</code><button type="button" class="ghost" data-copy="{{ base.proxy_url }}" aria-label="Copy the Proxy base URL">Copy</button></div>
+  <p class="hint">Set it as the base URL of an OpenAI or Anthropic client, and use a Virtual Key as the API key. Endpoints: <code>/chat/completions</code>, <code>/messages</code>, <code>/embeddings</code>, <code>/models</code>.</p>
+</section>
+
+<div id="live" hx-get="/admin?range={{ range }}" hx-trigger="every 30s [tokoAutoRefresh(this)]" hx-select="#live" hx-swap="outerHTML">
+<p class="muted">Usage in {{ range_words }}. Times are UTC.</p>
 {% if !base.simple && (unpriced > 0 || estimated > 0) %}
 <div class="panel">
-  {% if unpriced > 0 %}<a href="/admin/ledger?filter=unpriced"><span class="tag warn">{{ unpriced }} unpriced</span></a> requests used a model with no card. {% endif %}
-  {% if estimated > 0 %}<a href="/admin/ledger?filter=estimated"><span class="tag info">{{ estimated }} estimated</span></a> requests have incomplete usage from the provider.{% endif %}
+  {% if unpriced > 0 %}<p><a href="/admin/ledger?filter=unpriced">{{ unpriced }} unpriced {% if unpriced == 1 %}request{% else %}requests{% endif %}</a> in this range used a Model with no card. Add a Cost Card for the Model, then price them on the Ledger.</p>{% endif %}
+  {% if estimated > 0 %}<p><a href="/admin/ledger?filter=estimated">{{ estimated }} estimated {% if estimated == 1 %}request{% else %}requests{% endif %}</a> in this range had incomplete usage from the Provider.</p>{% endif %}
 </div>
 {% endif %}
 
 <div class="stats">
   {% for s in stats %}
-  <div class="panel stat"><div class="l">{{ s.label }}</div><div class="v">{{ s.value }}</div><div class="s">{{ s.sub }}</div></div>
+  <div class="panel stat"><div class="l">{{ s.label }}</div><div class="v"{% if !s.title.is_empty() %} title="{{ s.title }}"{% endif %}>{{ s.value }}</div><div class="s">{{ s.sub }}</div></div>
   {% endfor %}
 </div>
+<dl class="kv">
+  {% for (k, v) in more %}<div><dt>{{ k }}</dt><dd>{{ v }}</dd></div>{% endfor %}
+</dl>
 
-<div class="grid2">
-  {% if !base.simple %}<div class="panel"><h2 style="margin-top:0">Money (USD)</h2>{{ money_chart|safe }}</div>{% endif %}
-  <div class="panel"><h2 style="margin-top:0">Traffic</h2>{{ traffic_chart|safe }}</div>
+<div class="charts">
+  {% if !base.simple %}<div class="panel">{{ money_chart|safe }}</div>{% endif %}
+  <div class="panel">{{ requests_chart|safe }}</div>
+  <div class="panel">{{ tokens_chart|safe }}</div>
 </div>
 
-<h2>By model</h2>
-{% call group_table(by_model, "Model") %}
-<h2>By provider</h2>
-{% call group_table(by_provider, "Provider") %}
-<h2>By user</h2>
-{% call group_table(by_user, "User") %}
-<h2>By team</h2>
-{% call group_table(by_team, "Team") %}
+{% for g in groups %}{% call group_table(g) %}{% endfor %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  // Auto-refresh is opt-in (WCAG 2.2.1). It pauses while focus is inside
+  // the data region or the tab is hidden, so keyboard users keep their place.
+  const box = document.getElementById('auto-refresh');
+  const key = 'toko-auto-refresh';
+  box.checked = localStorage.getItem(key) === 'on';
+  box.addEventListener('change', () => localStorage.setItem(key, box.checked ? 'on' : 'off'));
+  window.tokoAutoRefresh = el => box.checked && document.visibilityState === 'visible' && !el.contains(document.activeElement);
+})();
+</script>
 {% endblock %}

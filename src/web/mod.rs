@@ -7,11 +7,13 @@ mod views;
 
 use askama::Template;
 use axum::Router;
-use axum::extract::{Form, FromRequestParts, Path, Query, State};
+use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
+use base64::Engine;
 use rand::RngCore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -24,6 +26,7 @@ use crate::state::AppState;
 use views::*;
 
 const COOKIE: &str = "tokomotive_session";
+const FLASH: &str = "tokomotive_flash";
 
 macro_rules! tryr {
     ($e:expr) => {
@@ -43,10 +46,13 @@ pub fn router() -> Router<AppState> {
         .route("/admin/login", get(login_page).post(login))
         .route("/admin/logout", post(logout))
         .route("/admin/assets/htmx.min.js", get(htmx))
+        .route("/admin/assets/favicon.svg", get(favicon))
+        .route("/favicon.ico", get(favicon))
         .route("/admin/users", get(users).post(create_user))
         .route("/admin/users/{id}", post(update_user))
         .route("/admin/teams", get(teams).post(create_team))
         .route("/admin/keys", get(keys).post(create_key))
+        .route("/admin/keys/{id}", post(update_key))
         .route("/admin/keys/{id}/limits", post(update_key_limits))
         .route("/admin/keys/{id}/providers", post(update_key_providers))
         .route("/admin/keys/{id}/revoke", post(revoke_key))
@@ -60,21 +66,283 @@ pub fn router() -> Router<AppState> {
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
         .merge(oauth::router())
+        .fallback(not_found)
         .layer(axum::middleware::from_fn(same_origin))
         .layer(axum::middleware::from_fn(htmx_redirect))
+        .layer(axum::middleware::from_fn(context))
 }
 
-/// An htmx request follows a 303 inside the XHR and swaps the target page
-/// into `#errors`. For htmx, answer a redirect with 200 and `HX-Redirect`
-/// instead, so that the browser navigates.
-async fn htmx_redirect(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+// ---------------------------------------------------------------- context
+
+/// Facts about the current request that every page needs. The `context`
+/// layer sets them, so handlers keep calling `Base::new(&st)` only.
+#[derive(Clone, Default)]
+pub(crate) struct RequestCtx {
+    /// The one-time success message from the flash cookie.
+    pub flash: Option<String>,
+    /// The Proxy base URL as the browser sees it, for example
+    /// `https://llm.example.com/v1`.
+    pub proxy_url: String,
+    /// True when the request carries a session cookie. Only used to hide the
+    /// navigation on error pages for visitors who are not logged in.
+    pub session: bool,
+}
+
+tokio::task_local! {
+    static CTX: RequestCtx;
+}
+
+pub(crate) fn ctx() -> RequestCtx {
+    CTX.try_with(Clone::clone).unwrap_or_default()
+}
+
+async fn context(req: Request, next: Next) -> Response {
+    let h = req.headers();
+    // Only a full page shows the flash. htmx requests leave it for the
+    // page that HX-Redirect loads next.
+    let page = req.method() == axum::http::Method::GET && !h.contains_key("hx-request");
+    let flash = cookie(h, FLASH)
+        .filter(|_| page)
+        .and_then(|v| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(v)
+                .ok()
+        })
+        .and_then(|v| String::from_utf8(v).ok())
+        .filter(|v| !v.is_empty());
+    let shown = flash.is_some();
+    let ctx = RequestCtx {
+        flash,
+        proxy_url: proxy_url(h),
+        session: cookie(h, COOKIE).is_some(),
+    };
+    let mut resp = CTX.scope(ctx, next.run(req)).await;
+    if shown && resp.status() == StatusCode::OK {
+        resp.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_static(
+                "tokomotive_flash=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0",
+            ),
+        );
+    }
+    resp
+}
+
+/// The Proxy base URL from `X-Forwarded-Proto`, `X-Forwarded-Host` and
+/// `Host`. It is only displayed, so a forged header changes only the text.
+fn proxy_url(h: &HeaderMap) -> String {
+    let first = |name: &str| {
+        h.get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    let scheme = match first("x-forwarded-proto") {
+        Some("https") => "https",
+        _ => "http",
+    };
+    let host = first("x-forwarded-host")
+        .or_else(|| first("host"))
+        .filter(|v| {
+            v.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b".-:[]_".contains(&c))
+        })
+        .unwrap_or("localhost");
+    format!("{scheme}://{host}/v1")
+}
+
+// ------------------------------------------------------- errors and flash
+
+/// A message for the Operator. Handlers return it through [`form_error`],
+/// [`page_error`] or [`internal`]. The `htmx_redirect` layer renders it: as
+/// a small fragment for the form's `.form-error` slot for htmx requests, or
+/// as the full error page for plain requests.
+#[derive(Clone)]
+struct UserError {
+    heading: Option<String>,
+    message: String,
+    back: Option<(String, String)>,
+}
+
+fn user_error(status: StatusCode, message: impl Into<String>) -> Response {
+    let mut r = status.into_response();
+    r.extensions_mut().insert(UserError {
+        heading: None,
+        message: message.into(),
+        back: None,
+    });
+    r
+}
+
+/// The error for a form that the Operator can correct: status 400, shown
+/// next to the submitted form. Write a full sentence that says what to do.
+pub(crate) fn form_error(e: impl std::fmt::Display) -> Response {
+    user_error(StatusCode::BAD_REQUEST, e.to_string())
+}
+
+fn bad(msg: impl Into<String>) -> Response {
+    form_error(msg.into())
+}
+
+fn page_error(status: StatusCode, msg: &str) -> Response {
+    user_error(status, msg)
+}
+
+/// An error page with its own heading and a link to the next step.
+fn page_error_with(status: StatusCode, heading: &str, msg: &str, back: (&str, &str)) -> Response {
+    let mut r = status.into_response();
+    r.extensions_mut().insert(UserError {
+        heading: Some(heading.into()),
+        message: msg.into(),
+        back: Some((back.0.into(), back.1.into())),
+    });
+    r
+}
+
+fn internal(e: anyhow::Error) -> Response {
+    tracing::error!(error = %e, "dashboard error");
+    user_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Something went wrong on the server. Try again. If it happens again, see the server log.",
+    )
+}
+
+/// A unique-constraint violation from SQLite.
+fn is_unique_violation(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<sqlx::Error>()
+            .and_then(|e| e.as_database_error())
+            .is_some_and(|d| d.is_unique_violation())
+    })
+}
+
+/// Redirect after a successful save, with a one-time success message.
+pub(crate) fn saved(path: &str, message: &str) -> Response {
+    let value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message);
+    (
+        [(
+            header::SET_COOKIE,
+            format!("{FLASH}={value}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=60"),
+        )],
+        Redirect::to(path),
+    )
+        .into_response()
+}
+
+/// `axum::Form` with a plain-language rejection. Every dashboard handler
+/// uses it; the internal parser message goes to the log only.
+pub(crate) struct Form<T>(pub T);
+
+impl<T, S> FromRequest<S> for Form<T>
+where
+    axum::Form<T>: FromRequest<S, Rejection = axum::extract::rejection::FormRejection>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, st: &S) -> Result<Self, Self::Rejection> {
+        match axum::Form::<T>::from_request(req, st).await {
+            Ok(axum::Form(v)) => Ok(Form(v)),
+            Err(e) => {
+                tracing::warn!(error = %e, "dashboard form rejected");
+                Err(user_error(
+                    e.status(),
+                    "The form is incomplete. Reload the page and try again.",
+                ))
+            }
+        }
+    }
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The same-origin path of the Referer, for the link back from an error page.
+fn referer_path(h: &HeaderMap) -> Option<String> {
+    let r = h.get(header::REFERER)?.to_str().ok()?;
+    let uri: axum::http::Uri = r.parse().ok()?;
+    let host = h.get(header::HOST)?.to_str().ok()?;
+    if uri.authority().map(|a| a.as_str()) != Some(host) {
+        return None;
+    }
+    let pq = uri.path_and_query()?.as_str();
+    pq.starts_with("/admin").then(|| pq.to_owned())
+}
+
+fn render_user_error(
+    status: StatusCode,
+    err: UserError,
+    htmx: bool,
+    referer: Option<String>,
+) -> Response {
+    if htmx {
+        return (
+            status,
+            [
+                ("hx-retarget", "find .form-error"),
+                ("hx-reswap", "innerHTML"),
+            ],
+            Html(format!("<p>{}</p>", esc(&err.message))),
+        )
+            .into_response();
+    }
+    let base = Base::anonymous();
+    let heading = err.heading.unwrap_or_else(|| {
+        match status {
+            StatusCode::NOT_FOUND => "Page not found",
+            StatusCode::FORBIDDEN => "Not allowed",
+            s if s.is_server_error() => "Something went wrong",
+            _ => "The change was not saved",
+        }
+        .into()
+    });
+    let (back_href, back_label) = err.back.unwrap_or_else(|| match referer {
+        Some(r) if status.is_client_error() && status != StatusCode::NOT_FOUND => {
+            (r, "Go back to the form".into())
+        }
+        _ if base.logged_in => ("/admin".into(), "Go to the Overview".into()),
+        _ => ("/admin/login".into(), "Log in".into()),
+    });
+    let mut r = render(ErrorPage {
+        base,
+        heading,
+        message: err.message,
+        back_href,
+        back_label,
+    });
+    *r.status_mut() = status;
+    r
+}
+
+/// Shapes dashboard responses for htmx and plain requests:
+/// - an htmx request follows a 303 inside the XHR and would swap the target
+///   page into the form. Answer a redirect with 200 and `HX-Redirect`
+///   instead, so that the browser navigates (cookies are kept);
+/// - a [`UserError`] becomes a fragment for the form's `.form-error` slot
+///   (htmx) or the full error page (plain).
+async fn htmx_redirect(req: Request, next: Next) -> Response {
     let htmx = req.headers().contains_key("hx-request");
+    let referer = referer_path(req.headers());
     let mut resp = next.run(req).await;
+    if let Some(err) = resp.extensions_mut().remove::<UserError>() {
+        return render_user_error(resp.status(), err, htmx, referer);
+    }
     if htmx
         && resp.status().is_redirection()
         && let Some(to) = resp.headers_mut().remove(header::LOCATION)
     {
         let mut out = StatusCode::OK.into_response();
+        // A redirect to `#fragment` on the same page changes only the hash,
+        // so the browser would not load the page. Ask htmx to reload it.
+        if to.to_str().is_ok_and(|v| v.contains('#')) {
+            out.headers_mut()
+                .insert("hx-refresh", HeaderValue::from_static("true"));
+        }
         out.headers_mut().insert("hx-redirect", to);
         for value in resp.headers().get_all(header::SET_COOKIE) {
             out.headers_mut().append(header::SET_COOKIE, value.clone());
@@ -84,7 +352,7 @@ async fn htmx_redirect(req: axum::extract::Request, next: axum::middleware::Next
     resp
 }
 
-async fn same_origin(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+async fn same_origin(req: Request, next: Next) -> Response {
     if req.method() == axum::http::Method::POST {
         let h = req.headers();
         let cross_site = h
@@ -105,11 +373,29 @@ async fn same_origin(req: axum::extract::Request, next: axum::middleware::Next) 
         if cross_site || wrong_origin {
             return page_error(
                 StatusCode::FORBIDDEN,
-                "Cross-origin form submission refused.",
+                "Cross-origin form submission refused. Open the dashboard at its own address and try again.",
             );
         }
     }
     next.run(req).await
+}
+
+async fn not_found() -> Response {
+    page_error(
+        StatusCode::NOT_FOUND,
+        "No dashboard page has this address. Check the address, or use the navigation.",
+    )
+}
+
+async fn favicon() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("../../assets/favicon.svg"),
+    )
+        .into_response()
 }
 
 // -------------------------------------------------------------------- auth
@@ -144,12 +430,16 @@ impl FromRequestParts<AppState> for Admin {
 }
 
 fn session_cookie(h: &HeaderMap) -> Option<String> {
+    cookie(h, COOKIE)
+}
+
+fn cookie(h: &HeaderMap, name: &str) -> Option<String> {
     h.get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
         .filter_map(|kv| kv.trim().split_once('='))
-        .find(|(k, _)| *k == COOKIE)
+        .find(|(k, v)| *k == name && !v.is_empty())
         .map(|(_, v)| v.to_owned())
 }
 
@@ -165,7 +455,10 @@ async fn login_page(State(st): State<AppState>) -> Response {
     if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_none() {
         return Redirect::to("/setup").into_response();
     }
-    render(LoginPage { error: None })
+    render(LoginPage {
+        base: Base::anonymous(),
+        error: None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -179,28 +472,27 @@ async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
     };
     if !crate::settings::verify_password(&f.password, &pw) {
         let mut r = render(LoginPage {
-            error: Some("Incorrect password.".into()),
+            base: Base::anonymous(),
+            error: Some("Incorrect password. Try again.".into()),
         });
         *r.status_mut() = StatusCode::UNAUTHORIZED;
         return r;
     }
+    let cookie = tryr!(start_session(&st, &pw).await);
+    ([(header::SET_COOKIE, cookie)], Redirect::to("/admin")).into_response()
+}
+
+/// Creates a session for the password hash `pw` and returns its Set-Cookie
+/// value. Login and Setup use it.
+async fn start_session(st: &AppState, pw: &str) -> anyhow::Result<String> {
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
-    if let Err(e) =
-        db::create_session_for_password(&st.db, &token, st.settings().session_days, Some(&pw)).await
-    {
-        return internal(e);
-    }
+    db::create_session_for_password(&st.db, &token, st.settings().session_days, Some(pw)).await?;
     let max_age = st.settings().session_days * 86_400;
-    (
-        [(
-            header::SET_COOKIE,
-            format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}"),
-        )],
-        Redirect::to("/admin"),
-    )
-        .into_response()
+    Ok(format!(
+        "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}"
+    ))
 }
 
 async fn logout(State(st): State<AppState>, headers: HeaderMap) -> Response {
@@ -242,45 +534,31 @@ fn render<T: Template>(t: T) -> Response {
     }
 }
 
-fn page_error(status: StatusCode, msg: &str) -> Response {
-    let mut r = render(ErrorPage {
-        base: Base::default(),
-        message: msg.to_owned(),
-    });
-    *r.status_mut() = status;
-    r
-}
-
-fn bad(msg: impl Into<String>) -> Response {
-    page_error(StatusCode::BAD_REQUEST, &msg.into())
-}
-
-fn internal(e: anyhow::Error) -> Response {
-    tracing::error!(error = %e, "dashboard error");
-    page_error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Internal error. See the server log.",
-    )
-}
-
 fn opt_usd(s: &str) -> Result<Option<i64>, Response> {
     if s.trim().is_empty() {
         return Ok(None);
     }
-    parse_usd(s)
-        .map(Some)
-        .ok_or_else(|| bad(format!("Not a valid dollar amount: {s}")))
+    parse_usd(s).map(Some).ok_or_else(|| {
+        bad(format!(
+            "{s} is not a dollar amount. Use digits and a dot, for example 12.50."
+        ))
+    })
 }
 
 fn usd(s: &str) -> Result<i64, Response> {
-    parse_usd(s).ok_or_else(|| bad(format!("Not a valid dollar amount: {s}")))
+    parse_usd(s).ok_or_else(|| {
+        bad(format!(
+            "{s} is not a dollar amount. Use digits and a dot, for example 12.50."
+        ))
+    })
 }
 
 fn percent(s: &str) -> Result<i64, Response> {
-    s.trim()
-        .parse::<f64>()
-        .map(percent_to_bp)
-        .map_err(|_| bad(format!("Not a valid percentage: {s}")))
+    s.trim().parse::<f64>().map(percent_to_bp).map_err(|_| {
+        bad(format!(
+            "Enter the percentage as a number, for example 20. \"{s}\" is not a number."
+        ))
+    })
 }
 
 fn csv(s: &str) -> Vec<String> {
@@ -337,18 +615,38 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
     let by_provider = tryr!(db::by_provider(&st.db, since).await);
     let by_user = tryr!(db::by_user(&st.db, since).await);
     let by_team = tryr!(db::by_team(&st.db, since).await);
-    let (unpriced, estimated) = tryr!(db::count_flags(&st.db).await);
+    let (unpriced, estimated) = tryr!(db::count_flags_since(&st.db, since).await);
+    let (users, keys, requests): (bool, bool, bool) = tryr!(
+        sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM users), \
+             EXISTS(SELECT 1 FROM virtual_keys WHERE revoked_at IS NULL), \
+             EXISTS(SELECT 1 FROM ledger)"
+        )
+        .fetch_one(&st.db)
+        .await
+    );
+    let table = st.router_table();
+    let setup = SetupState {
+        providers: !table.providers.is_empty(),
+        models_or_routes: !table.routes.is_empty() || !st.catalog().models.is_empty(),
+        users,
+        keys,
+        requests,
+    };
     render(OverviewPage::build(
         Base::new(&st),
         range,
-        &totals,
-        &series,
-        &by_model,
-        &by_provider,
-        &by_user,
-        &by_team,
-        unpriced,
-        estimated,
+        OverviewData {
+            totals: &totals,
+            series: &series,
+            by_model: &by_model,
+            by_provider: &by_provider,
+            by_user: &by_user,
+            by_team: &by_team,
+            unpriced,
+            estimated,
+            setup,
+        },
     ))
 }
 
@@ -381,7 +679,7 @@ fn team_id(s: &str) -> Option<i64> {
 async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserForm>) -> Response {
     let name = f.name.trim();
     if name.is_empty() {
-        return bad("A user needs a name.");
+        return bad("A User needs a name.");
     }
     let budget = match opt_usd(&f.budget_usd) {
         Ok(b) => b,
@@ -401,9 +699,12 @@ async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserFor
     )
     .await
     {
-        return bad(format!("Cannot create the user: {e}"));
+        if is_unique_violation(&e) {
+            return bad(format!("A User named {name} already exists."));
+        }
+        return internal(e);
     }
-    Redirect::to("/admin/users").into_response()
+    saved("/admin/users", &format!("User {name} added."))
 }
 
 async fn update_user(
@@ -421,7 +722,7 @@ async fn update_user(
                 .execute(&st.db)
                 .await
         );
-        return Redirect::to("/admin/users").into_response();
+        return saved(&format!("/admin/users#u{id}"), "User saved.");
     }
     let budget = match opt_usd(&f.budget_usd) {
         Ok(b) => b,
@@ -443,7 +744,7 @@ async fn update_user(
         )
         .await
     );
-    Redirect::to("/admin/users").into_response()
+    saved(&format!("/admin/users#u{id}"), "User saved.")
 }
 
 // ------------------------------------------------------------------ teams
@@ -464,36 +765,82 @@ struct NameForm {
 async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameForm>) -> Response {
     let name = f.name.trim();
     if name.is_empty() {
-        return bad("A team needs a name.");
+        return bad("A Team needs a name.");
     }
     if let Err(e) = db::create_team(&st.db, name).await {
-        return bad(format!("Cannot create the team: {e}"));
+        if is_unique_violation(&e) {
+            return bad(format!("A Team named {name} already exists."));
+        }
+        return internal(e);
     }
-    Redirect::to("/admin/teams").into_response()
+    saved("/admin/teams", &format!("Team {name} added."))
 }
 
 // ------------------------------------------------------------------- keys
 
-async fn keys_page(st: &AppState, new_key: Option<String>) -> Response {
+async fn keys_page(st: &AppState, new_key: Option<String>, filter: Option<i64>) -> Response {
     let keys = tryr!(db::list_keys(&st.db).await);
     let users = tryr!(db::list_users(&st.db).await);
-    let providers: Vec<String> = st
-        .router_table()
+    let table = st.router_table();
+    let providers: Vec<(String, bool)> = table
         .providers
         .iter()
-        .map(|p| p.name.clone())
+        .map(|p| {
+            (
+                p.name.clone(),
+                p.auth != crate::provider::ProviderAuth::ApiKey,
+            )
+        })
         .collect();
+    let mut model_names: Vec<String> = table
+        .routes
+        .iter()
+        .map(|r| r.name.clone())
+        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
+        .collect();
+    model_names.sort();
+    model_names.dedup();
     render(KeysPage::build(
         Base::new(st),
-        &keys,
-        &users,
-        new_key,
-        &providers,
+        KeysData {
+            keys: &keys,
+            users: &users,
+            new_key,
+            providers: &providers,
+            model_names,
+            filter,
+        },
     ))
 }
 
-async fn keys(_: Admin, State(st): State<AppState>) -> Response {
-    keys_page(&st, None).await
+#[derive(Deserialize, Default)]
+struct KeysQ {
+    user: Option<String>,
+}
+
+async fn keys(_: Admin, State(st): State<AppState>, Query(q): Query<KeysQ>) -> Response {
+    let filter = q.user.as_deref().and_then(|u| u.parse().ok());
+    keys_page(&st, None, filter).await
+}
+
+/// Checks Allowed models: each name must be a Route, a catalog Model (or
+/// alias), or `provider/model` with a known Provider.
+fn validate_allowed_models(st: &AppState, names: &[String]) -> Result<(), Response> {
+    let table = st.router_table();
+    let catalog = st.catalog();
+    for name in names {
+        let known = table.routes.iter().any(|r| &r.name == name)
+            || catalog.resolve(name).is_some()
+            || name
+                .split_once('/')
+                .is_some_and(|(p, m)| !m.is_empty() && table.providers.iter().any(|x| x.name == p));
+        if !known {
+            return Err(bad(format!(
+                "Unknown model: {name}. Use a Model name, a Route name, or provider/model."
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -523,7 +870,7 @@ async fn create_key(
     let fields: std::collections::HashMap<_, _> = pairs.into_iter().collect();
     let user_id = match fields.get("user_id").and_then(|s| s.parse().ok()) {
         Some(id) => id,
-        None => return bad("Choose a User."),
+        None => return bad("Choose a User. Add a User first if the list is empty."),
     };
     let f = KeyForm {
         user_id,
@@ -539,6 +886,9 @@ async fn create_key(
         Err(r) => return r,
     };
     let allowed = csv(&f.allowed_models);
+    if let Err(r) = validate_allowed_models(&st, &allowed) {
+        return r;
+    }
     let allowed = if allowed.is_empty() {
         None
     } else {
@@ -547,7 +897,7 @@ async fn create_key(
     let (id, key) =
         tryr!(db::create_key_with_limits(&st.db, f.user_id, f.label.trim(), allowed, limits).await);
     tryr!(db::update_key_providers(&st.db, id, &access).await);
-    keys_page(&st, Some(key)).await
+    keys_page(&st, Some(key), None).await
 }
 
 fn validate_provider_access(st: &AppState, access: &[String]) -> Result<(), Response> {
@@ -555,10 +905,50 @@ fn validate_provider_access(st: &AppState, access: &[String]) -> Result<(), Resp
         .iter()
         .any(|name| !st.router_table().providers.iter().any(|p| &p.name == name))
     {
-        return Err(bad("Unknown Provider in Provider Access."));
+        return Err(bad(
+            "Unknown Provider in Provider Access. Reload the page and try again.",
+        ));
     }
     Ok(())
 }
+/// The edit form of one key: Provider Access and, in Full Mode, Rate Limits.
+async fn update_key(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let access: Vec<String> = pairs
+        .iter()
+        .filter(|(k, _)| k == "allowed_providers")
+        .map(|(_, v)| v.clone())
+        .collect();
+    if let Err(r) = validate_provider_access(&st, &access) {
+        return r;
+    }
+    let field = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    let limits = LimitsForm {
+        rpm_limit: field("rpm_limit"),
+        tpm_limit: field("tpm_limit"),
+    };
+    // Simple Mode hides Rate Limits; keep the stored values.
+    if st.settings().mode != "simple" {
+        let limits = match limits.parse() {
+            Ok(l) => l,
+            Err(r) => return r,
+        };
+        tryr!(db::update_key_limits(&st.db, id, limits).await);
+    }
+    tryr!(db::update_key_providers(&st.db, id, &access).await);
+    saved(&format!("/admin/keys#k{id}"), "Virtual Key saved.")
+}
+
 async fn update_key_providers(
     _: Admin,
     State(st): State<AppState>,
@@ -574,7 +964,7 @@ async fn update_key_providers(
         return r;
     }
     tryr!(db::update_key_providers(&st.db, id, &access).await);
-    Redirect::to("/admin/keys").into_response()
+    saved("/admin/keys", "Provider Access saved.")
 }
 
 async fn update_key_limits(
@@ -588,12 +978,12 @@ async fn update_key_limits(
         Err(r) => return r,
     };
     tryr!(db::update_key_limits(&st.db, id, limits).await);
-    Redirect::to("/admin/keys").into_response()
+    saved("/admin/keys", "Rate Limits saved.")
 }
 
 async fn revoke_key(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
     tryr!(db::revoke_key(&st.db, id).await);
-    Redirect::to("/admin/keys").into_response()
+    saved("/admin/keys", "Virtual Key revoked.")
 }
 
 // ----------------------------------------------------------------- models
@@ -653,9 +1043,11 @@ fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
     let mut out = vec![];
     for line in s.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let above: i64 = parts[0]
-            .parse()
-            .map_err(|_| bad(format!("Tier line must start with a token count: {line}")))?;
+        let above: i64 = parts[0].parse().map_err(|_| {
+            bad(format!(
+                "Each Context Tier line must start with a token count: {line}"
+            ))
+        })?;
         let r = |i: usize| parts.get(i).map(|p| usd(p)).unwrap_or(Ok(0));
         out.push(ContextTier {
             above_input_tokens: above,
@@ -676,6 +1068,7 @@ fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
 #[derive(Deserialize)]
 struct NewModelForm {
     name: String,
+    #[serde(default)]
     provider: String,
     #[serde(default)]
     aliases: String,
@@ -691,7 +1084,10 @@ async fn create_model(
     let _guard = st.settings_write.lock().await;
     let name = f.name.trim();
     if name.is_empty() {
-        return bad("A model needs a name.");
+        return bad("A Model needs a name.");
+    }
+    if f.provider.is_empty() {
+        return bad("Add a Provider first. A Model needs a Provider.");
     }
     if !st
         .router_table()
@@ -699,7 +1095,7 @@ async fn create_model(
         .iter()
         .any(|p| p.name == f.provider)
     {
-        return bad("Unknown provider.");
+        return bad("Unknown Provider. Reload the page and choose a Provider from the list.");
     }
     let rates = if st.settings().mode == "simple" {
         None
@@ -711,19 +1107,30 @@ async fn create_model(
     };
     let id = match db::create_model(&st.db, name, &f.provider, &csv(&f.aliases)).await {
         Ok(id) => id,
-        Err(e) => return bad(format!("Cannot create the model: {e}")),
+        Err(e) if is_unique_violation(&e) => {
+            return bad(format!("A Model named {name} already exists."));
+        }
+        Err(e) => return internal(e),
     };
     if let Some(rates) = rates {
         tryr!(db::add_cost_card(&st.db, id, &rates).await);
     }
     tryr!(st.reload_catalog().await);
-    Redirect::to(&format!("/admin/models/{id}")).into_response()
+    saved(
+        &format!("/admin/models/{id}"),
+        &format!("Model {name} added."),
+    )
 }
 
 async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
     let cat = st.catalog();
     let Some(m) = cat.models.iter().find(|m| m.id == id) else {
-        return page_error(StatusCode::NOT_FOUND, "No such model.");
+        return page_error_with(
+            StatusCode::NOT_FOUND,
+            "Model not found",
+            "No Model has this ID. It was deleted, or the address is wrong.",
+            ("/admin/models", "Go to Models"),
+        );
     };
     let history = tryr!(db::card_history(&st.db, id).await);
     let teams = tryr!(db::list_teams(&st.db).await);
@@ -763,11 +1170,11 @@ async fn update_model(
         .iter()
         .any(|p| p.name == f.provider)
     {
-        return bad("Unknown provider.");
+        return bad("Unknown Provider. Reload the page and choose a Provider from the list.");
     }
     tryr!(db::update_model(&st.db, id, &f.provider, &csv(&f.aliases)).await);
     tryr!(st.reload_catalog().await);
-    Redirect::to(&format!("/admin/models/{id}")).into_response()
+    saved(&format!("/admin/models/{id}"), "Model saved.")
 }
 
 async fn set_cost(
@@ -782,7 +1189,10 @@ async fn set_cost(
     };
     tryr!(db::add_cost_card(&st.db, id, &rates).await);
     tryr!(st.reload_catalog().await);
-    Redirect::to(&format!("/admin/models/{id}")).into_response()
+    saved(
+        &format!("/admin/models/{id}"),
+        "Cost Card saved as a new Card Version.",
+    )
 }
 
 #[derive(Deserialize)]
@@ -803,7 +1213,7 @@ impl PriceForm {
             "default" => Ok(None),
             "markup" => Ok(Some(PriceSpec::MarkupBp(percent(&self.markup_percent)?))),
             "rates" => Ok(Some(PriceSpec::Rates(self.rates.parse()?))),
-            _ => Err(bad("Unknown price mode.")),
+            _ => Err(bad("Choose how to set the Price.")),
         }
     }
 }
@@ -823,7 +1233,10 @@ async fn set_price(
         None => tryr!(db::add_null_price_card(&st.db, id, None).await),
     };
     tryr!(st.reload_catalog().await);
-    Redirect::to(&format!("/admin/models/{id}")).into_response()
+    saved(
+        &format!("/admin/models/{id}"),
+        "Price Card saved as a new Card Version.",
+    )
 }
 
 async fn set_team_price(
@@ -833,7 +1246,7 @@ async fn set_team_price(
     Form(f): Form<PriceForm>,
 ) -> Response {
     let Some(team) = team_id(&f.team_id) else {
-        return bad("Select a team.");
+        return bad("Choose a Team.");
     };
     let spec = match f.spec() {
         Ok(s) => s,
@@ -844,7 +1257,7 @@ async fn set_team_price(
         None => tryr!(db::add_null_price_card(&st.db, id, Some(team)).await),
     };
     tryr!(st.reload_catalog().await);
-    Redirect::to(&format!("/admin/models/{id}")).into_response()
+    saved(&format!("/admin/models/{id}"), "Team override saved.")
 }
 
 #[derive(Deserialize)]
@@ -861,7 +1274,7 @@ async fn set_settings(
     let mut cfg = tryr!(crate::settings::load(&st.db, &st.secret_key).await).0;
     cfg.server.default_markup_percent = match f.default_markup_percent.trim().parse() {
         Ok(v) => v,
-        Err(_) => return bad("Markup must be a finite number."),
+        Err(_) => return bad("Enter the Markup as a number, for example 20."),
     };
     if let Err(e) = cfg.validate() {
         return bad(e.to_string());
@@ -872,7 +1285,7 @@ async fn set_settings(
     };
     tryr!(db::set_default_markup_bp(&st.db, bp).await);
     tryr!(st.reload_catalog().await);
-    Redirect::to("/admin/models").into_response()
+    saved("/admin/models", "Default Markup saved.")
 }
 
 // ----------------------------------------------------------------- ledger

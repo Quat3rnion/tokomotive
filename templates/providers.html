@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Providers - Tokomotive{% endblock %}
-{% block nav_providers %}class="on"{% endblock %}
+{% block nav_providers %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Providers</h1>
 <div id="errors"></div>
@@ -17,7 +17,7 @@
   {% if p.auth == "api_key" %}
   <p class="muted">{{ p.keys.len() }} keys. Saved keys show only their last 4 characters.</p>
   {% for key in p.keys %}
-  <form method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-post="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-target="#errors" class="inline"><code>{{ key }}</code><button class="danger">Remove key</button></form>
+  <form method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-post="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-target="#errors" class="inline" data-confirm="Remove Provider Key {{ key }} from {{ p.name }}? Requests stop using it at once."><code>{{ key }}</code><button class="danger">Remove key</button></form>
   {% endfor %}
   <form method="post" action="/admin/providers/{{ p.name }}/keys" hx-post="/admin/providers/{{ p.name }}/keys" hx-target="#errors" class="row" style="margin-top:12px">
     <label>New key or env:NAME <input type="password" name="api_key" required autocomplete="off" style="width:300px"></label><button>Add key</button>
@@ -25,14 +25,14 @@
   {% else %}
   <p>{{ p.status }}</p>
   <div class="row"><form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="#errors"><button>Sign in</button></form>
-  <form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect"><button class="danger">Disconnect</button></form></div>
+  <form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect" data-confirm="Disconnect {{ p.name }}? Requests to this Provider fail until you sign in again."><button class="danger">Disconnect</button></form></div>
   {% if p.auth == "chatgpt" %}<h3>Codex plan usage (optional)</h3><p>This login is used only for plan usage, not model requests.</p><p>{{ p.usage_status }}</p><p>Plan usage: {{ p.usage }}</p>
   <div class="row"><form method="post" action="/admin/providers/{{ p.name }}/usage/start" hx-post="/admin/providers/{{ p.name }}/usage/start" hx-target="#errors"><button>Sign in for usage</button></form>
-  <form method="post" action="/admin/providers/{{ p.name }}/usage/disconnect"><button class="danger">Disconnect usage login</button></form></div>{% endif %}
+  <form method="post" action="/admin/providers/{{ p.name }}/usage/disconnect" data-confirm="Disconnect the usage login of {{ p.name }}? Plan usage is no longer shown."><button class="danger">Disconnect usage login</button></form></div>{% endif %}
   {% endif %}
   <div class="row" style="margin-top:12px">
-    <form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="#errors"><button class="ghost">Test</button></form>
-    <form method="post" action="/admin/providers/{{ p.name }}/delete" hx-post="/admin/providers/{{ p.name }}/delete" hx-target="#errors"><button class="danger">Delete provider</button></form>
+    <form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="#errors"><button class="ghost" data-busy="Testing...">Test</button></form>
+    <form method="post" action="/admin/providers/{{ p.name }}/delete" hx-post="/admin/providers/{{ p.name }}/delete" hx-target="#errors" data-confirm="Delete Provider {{ p.name }}? Routes and Models that use it must be changed first."><button class="danger">Delete provider</button></form>
   </div>
 </section>
 {% endfor %}

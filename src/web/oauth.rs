@@ -38,7 +38,7 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
             path,
             url: a.authorize_url,
         }),
-        Err(_) => bad("Cannot start sign-in for this Provider."),
+        Err(_) => bad("Cannot start sign-in for this Provider. Reload the page and try again."),
     }
 }
 async fn start(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
@@ -56,9 +56,13 @@ struct CallbackForm {
 }
 async fn exchange(st: AppState, name: String, flow: Flow, callback: String) -> Response {
     match st.oauth.finish(&name, flow, &callback).await {
-        Ok(()) => Redirect::to("/admin/providers").into_response(),
-        // Manager errors have fixed messages. Never echo callback input or an issuer body.
-        Err(e) => bad(e.to_string()),
+        Ok(()) => saved("/admin/providers", &format!("Provider {name} connected.")),
+        // Never echo callback input or an issuer body. Log the fixed manager
+        // message and show the Operator what to do.
+        Err(e) => {
+            tracing::warn!(error = %e, provider = %name, "OAuth sign-in failed");
+            bad(oauth_message(&e.to_string()))
+        }
     }
 }
 async fn finish(
@@ -85,7 +89,10 @@ async fn disconnect(_: Admin, State(st): State<AppState>, Path(name): Path<Strin
         return bad("This Provider does not use OAuth.");
     };
     tryr!(st.oauth.disconnect(&name, flow).await);
-    Redirect::to("/admin/providers").into_response()
+    saved(
+        "/admin/providers",
+        &format!("Provider {name} disconnected."),
+    )
 }
 async fn usage_disconnect(
     _: Admin,
@@ -93,5 +100,27 @@ async fn usage_disconnect(
     Path(name): Path<String>,
 ) -> Response {
     tryr!(st.oauth.disconnect(&name, Flow::Codex).await);
-    Redirect::to("/admin/providers").into_response()
+    saved(
+        "/admin/providers",
+        &format!("Usage login for {name} disconnected."),
+    )
+}
+
+/// A plain next step for a failed sign-in. The manager messages are fixed
+/// strings; unknown ones get a generic step.
+fn oauth_message(e: &str) -> &'static str {
+    let has = |p: &str| e.contains(p);
+    if has("state mismatch") || has("expired") || has("attempt") {
+        "This code is from an old or different sign-in attempt. Click Sign in again and paste the new result."
+    } else if has("callback") || has("Duplicate") {
+        "This is not the expected sign-in result. Copy the full address from the browser after sign-in (or the code for Claude) and paste it again."
+    } else if has("consent rejected") {
+        "Sign-in was cancelled or refused. Click Sign in again and allow access."
+    } else if has("scope") {
+        "The account did not grant the required access. Click Sign in again and allow all requested access."
+    } else if has("does not match this Provider") {
+        "This Provider uses a different sign-in. Reload the page and use its own Sign in button."
+    } else {
+        "Sign-in failed. Click Sign in again. If it fails again, see the server log."
+    }
 }

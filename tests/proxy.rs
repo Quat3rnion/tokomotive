@@ -292,7 +292,7 @@ async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
             assert!(html.contains("Attempts"));
         }
         if path == "/admin" {
-            assert!(html.contains("By provider") && html.contains("Error rate"));
+            assert!(html.contains("By Provider") && html.contains("Error rate"));
         }
     }
     set_mode(&e, "full").await;

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Routes - Tokomotive{% endblock %}
-{% block nav_routes %}class="on"{% endblock %}
+{% block nav_routes %}aria-current="page"{% endblock %}
 {% macro deployment_row(providers, provider, model, weight) %}
 <div class="row deployment">
   <label>Provider <select name="deployment_provider"><option value="">Choose provider</option>{% for p in providers.iter() %}<option value="{{ p }}"{% if p.as_str() == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
@@ -37,7 +37,7 @@
   {% call deployments_editor(providers, r.deployments, false) %}
   <button>Save route</button>
 </form>
-<form method="post" action="/admin/routes/{{ r.name }}/delete" hx-post="/admin/routes/{{ r.name }}/delete" hx-target="#errors" style="margin-top:12px"><button class="danger">Delete route</button></form>
+<form method="post" action="/admin/routes/{{ r.name }}/delete" hx-post="/admin/routes/{{ r.name }}/delete" hx-target="#errors" style="margin-top:12px" data-confirm="Delete Route {{ r.name }}? Clients that send this model name get an error."><button class="danger">Delete route</button></form>
 </section>
 {% endfor %}
 <section class="panel">
