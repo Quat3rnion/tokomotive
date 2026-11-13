@@ -740,6 +740,13 @@ select **Connect**. This separate login is used only for plan usage. The panel
 shows 5-hour and weekly percentages and reset times, or **not available**.
 Values are cached for up to 60 seconds. Reload **Providers** to update them.
 
+A Subscription Provider accepts only model requests: `/v1/chat/completions`,
+`/v1/responses`, `/v1/messages`, `/v1/embeddings` and the image endpoints. The
+Proxy does not send the subscription token to any other path. A request for
+another path through a Subscription Provider gets HTTP 400. The Proxy also
+rejects every request path that has a `.` or `..` segment, also when it is
+percent-encoded, with HTTP 400.
+
 Select **Disconnect** to remove the model-request tokens. **Disconnect usage
 login** removes only the optional Codex tokens. API-key tests do not apply to
 Subscription Providers. To change a Provider's authentication type, create a

@@ -41,6 +41,31 @@ fn provider_allowed(auth: &KeyAuth, provider: &Provider) -> bool {
     }
 }
 
+/// True when a path has a "." or ".." segment, also percent-encoded, or a
+/// backslash. URL parsers resolve these, so the upstream path could leave
+/// the path that the client asked for.
+fn has_dot_segment(path: &str) -> bool {
+    path.contains('\\')
+        || path.split('/').any(|seg| {
+            let seg = seg.to_ascii_lowercase().replace("%2e", ".");
+            seg == "." || seg == ".."
+        })
+}
+
+/// A subscription credential is for model requests only. Only the canonical
+/// path of an accounted endpoint may carry it.
+fn subscription_path_allowed(endpoint: Endpoint, path_q: &str) -> bool {
+    let path = path_q.split('?').next().unwrap_or("").trim_end_matches('/');
+    match endpoint {
+        Endpoint::ChatCompletions => path == "/v1/chat/completions",
+        Endpoint::Responses => path == "/v1/responses",
+        Endpoint::Messages => path == "/v1/messages",
+        Endpoint::Embeddings => path == "/v1/embeddings",
+        Endpoint::Images => path == "/v1/images/generations" || path == "/v1/images/edits",
+        Endpoint::Other => false,
+    }
+}
+
 fn translation(kind: ProviderKind, endpoint: Endpoint) -> Option<Direction> {
     match (endpoint, kind) {
         (Endpoint::ChatCompletions, ProviderKind::Anthropic) => Some(Direction::ChatToMessages),
@@ -346,6 +371,13 @@ pub async fn handle(
         Ok(a) => a,
         Err(r) => return *r,
     };
+    if has_dot_segment(uri.path()) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "the request path is not valid",
+        );
+    }
 
     let json_body: Option<Value> = if body.is_empty() {
         None
@@ -539,6 +571,17 @@ pub async fn handle(
                 path
             },
         );
+        if provider.auth != crate::provider::ProviderAuth::ApiKey
+            && !subscription_path_allowed(target_endpoint, &path)
+        {
+            translation_error = Some(translate::TranslateError {
+                message: format!(
+                    "provider {} accepts only model requests on this path",
+                    provider.name
+                ),
+            });
+            continue;
+        }
         let base = if provider.auth == crate::provider::ProviderAuth::ApiKey {
             &provider.base_url
         } else {
