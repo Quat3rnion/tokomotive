@@ -183,6 +183,7 @@ impl Circuit {
         if self.probing || self.failures >= threshold {
             self.opened = Some(now);
             self.probing = false;
+            self.probe_generation = self.probe_generation.wrapping_add(1);
             return true;
         }
         false
@@ -194,6 +195,7 @@ pub struct DeploymentPermit {
     st: AppState,
     key: (String, String),
     threshold: usize,
+    generation: u64,
     probe_generation: Option<u64>,
     single_probe: bool,
 }
@@ -206,7 +208,9 @@ impl DeploymentPermit {
     pub fn record(&self, healthy: bool) {
         let mut circuits = self.st.circuits.lock().expect("circuits");
         let circuit = circuits.entry(self.key.clone()).or_default();
-        if circuit.record(healthy, Instant::now(), self.threshold) {
+        if circuit.probe_generation == self.generation
+            && circuit.record(healthy, Instant::now(), self.threshold)
+        {
             metrics::counter!("llm_circuit_opens_total", "provider" => self.key.0.clone(), "model" => self.key.1.clone()).increment(1);
         }
     }
@@ -366,6 +370,7 @@ impl AppState {
             st: self.clone(),
             key,
             threshold: settings.failure_threshold,
+            generation: c.probe_generation,
             probe_generation: c.probing.then_some(c.probe_generation),
             single_probe: c.probing && !degraded,
         })
@@ -395,6 +400,30 @@ mod tests {
         assert!(c.acquire(later + cooldown, cooldown, false));
         assert!(!c.record(true, later + cooldown, 2));
         assert!(c.acquire(later + cooldown, cooldown, false));
+    }
+
+    #[tokio::test]
+    async fn stale_success_cannot_clear_a_new_half_open_probe() {
+        let cfg: Config = toml::from_str("[server]\ndatabase = 'sqlite::memory:'").unwrap();
+        let st = crate::init(&cfg, None).await.unwrap();
+        let candidate = Candidate {
+            provider: Provider::new("test", ProviderKind::Openai, "http://localhost", vec![]),
+            model: Some("test".into()), rewrite: true, route: "test".into(),
+        };
+        let settings = RouterSettings { failure_threshold: 1, cooldown_secs: 30, max_attempts: 8 };
+        let old = st.acquire_deployment(&candidate, &settings, false).unwrap();
+        let failed = st.acquire_deployment(&candidate, &settings, false).unwrap();
+        failed.record(false);
+        // Advance the circuit's clock without waiting for the cooldown.
+        st.circuits.lock().unwrap().get_mut(&candidate.key()).unwrap().opened =
+            Some(Instant::now() - Duration::from_secs(31));
+        let probe = st.acquire_deployment(&candidate, &settings, false).unwrap();
+        old.record(true);
+        assert!(st.acquire_deployment(&candidate, &settings, false).is_none(),
+            "stale success admitted traffic beside the active probe");
+        probe.record(false);
+        old.record(true);
+        assert!(!st.deployment_available(&candidate, &settings), "stale success closed the newer open circuit");
     }
 
     #[tokio::test]
