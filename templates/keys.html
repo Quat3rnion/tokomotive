@@ -34,7 +34,7 @@
 <form class="panel row" method="post" action="/admin/keys">
   <label>User <select name="user_id" required>{% for u in users %}<option value="{{ u.value }}">{{ u.label }}</option>{% endfor %}</select></label>
   <label>Label <input name="label" style="width:160px"></label>
-  <label>Allowed models (comma list, empty = all) <input name="allowed_models" style="width:320px" placeholder="gpt-4o, claude-sonnet-4-5"></label>
+  <label>Allowed models (comma list, empty = all) <input name="allowed_models" style="width:320px" placeholder="gpt-4o, claude-sonnet-5-5"></label>
   {% if !base.simple %}<label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited"></label>
   <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited"></label>
   {% endif %}

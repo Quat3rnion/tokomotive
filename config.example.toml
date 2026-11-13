@@ -27,7 +27,7 @@ metrics_token_env = "LLM_ACCOUNTING_METRICS_TOKEN"
 reserve_output_tokens = 4096
 # Dashboard login duration.
 session_days = 7
-mode = "full" # "simple" is stored, but does not change behaviour yet.
+mode = "full" # "simple" records usage without Budget checks or Rate Limits.
 
 # Initial router settings. Use Settings in the dashboard for live changes.
 [router]
