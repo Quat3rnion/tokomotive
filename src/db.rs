@@ -775,31 +775,46 @@ pub struct Group {
     pub key: String,
     #[sqlx(flatten)]
     pub t: Totals,
+    pub attempts: i64,
+    pub retried: i64,
 }
 
 pub async fn by_model(db: &Db, since_s: i64) -> Result<Vec<Group>> {
-    Ok(sqlx::query_as(&format!(
-        "SELECT model AS key, {TOTALS_COLS} FROM rollup_hourly WHERE hour >= ? GROUP BY model ORDER BY price_micros DESC"
-    ))
-    .bind(since_s)
-    .fetch_all(db)
-    .await?)
+    grouped_ledger(
+        db,
+        since_s,
+        "COALESCE(m.name, l.model, l.requested_model, '')",
+        "COALESCE(m.name, l.model, l.requested_model, '')",
+    )
+    .await
 }
 
 pub async fn by_user(db: &Db, since_s: i64) -> Result<Vec<Group>> {
-    Ok(sqlx::query_as(&format!(
-        "SELECT u.name AS key, {TOTALS_COLS} FROM rollup_hourly r JOIN users u ON u.id = r.user_id
-         WHERE hour >= ? GROUP BY r.user_id ORDER BY price_micros DESC"
-    ))
-    .bind(since_s)
-    .fetch_all(db)
-    .await?)
+    grouped_ledger(db, since_s, "u.name", "u.id").await
 }
 
 pub async fn by_team(db: &Db, since_s: i64) -> Result<Vec<Group>> {
+    grouped_ledger(db, since_s, "IFNULL(t.name, '(no team)')", "u.team_id").await
+}
+
+pub async fn by_provider(db: &Db, since_s: i64) -> Result<Vec<Group>> {
+    grouped_ledger(db, since_s, "l.provider", "l.provider").await
+}
+
+// Only callers above supply the grouping expression. The Ledger holds Provider
+// and attempt data that the hourly rollup does not retain.
+async fn grouped_ledger(db: &Db, since_s: i64, key: &str, group: &str) -> Result<Vec<Group>> {
     Ok(sqlx::query_as(&format!(
-        "SELECT IFNULL(t.name, '(no team)') AS key, {TOTALS_COLS} FROM rollup_hourly r JOIN users u ON u.id = r.user_id
-         LEFT JOIN teams t ON t.id = u.team_id WHERE hour >= ? GROUP BY u.team_id ORDER BY price_micros DESC"
+        "SELECT {key} AS key, COUNT(*) AS requests, SUM(l.status >= 400) AS errors,
+            SUM(l.input) AS input, SUM(l.output) AS output, SUM(l.cache_read) AS cache_read,
+            SUM(l.cache_write_5m) AS cache_write_5m, SUM(l.cache_write_1h) AS cache_write_1h,
+            SUM(l.image_input) AS image_input, SUM(l.image_output) AS image_output,
+            SUM(l.cost_micros) AS cost_micros, SUM(l.price_micros) AS price_micros,
+            SUM(l.latency_ms) AS latency_ms_sum, IFNULL(SUM(l.ttft_ms),0) AS ttft_ms_sum,
+            COUNT(l.ttft_ms) AS ttft_count, SUM(l.attempts) AS attempts, SUM(l.attempts > 1) AS retried
+         FROM ledger l JOIN users u ON u.id = l.user_id LEFT JOIN teams t ON t.id = u.team_id
+         LEFT JOIN models m ON m.id = l.model_id
+         WHERE l.ts_ms >= ? * 1000 GROUP BY {group} ORDER BY price_micros DESC"
     ))
     .bind(since_s)
     .fetch_all(db)

@@ -35,6 +35,15 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Shows requests, tokens, latency, time to first token, Cost, Price and Profit
   per Model, User and Team in the dashboard.
 - Exports Prometheus metrics at `/metrics`, optionally with a token.
+- Offers Simple Mode for routing and token metrics without prices or usage
+  limits. Full Mode keeps pricing, Budgets and Rate Limits.
+
+### Simple mode
+
+Select **Simple** on `/setup` or in **Settings**. Changes apply without a
+restart. Virtual Keys, model allowlists, routing and token metrics stay active.
+You do not need cards or limits. The dashboard hides financial data and controls.
+The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 
 ## Quick start
 
@@ -45,8 +54,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
    ```
 
 2. Open `http://127.0.0.1:8787/admin`. Setup asks for a password of at least 8
-   characters. Log in, add a Provider and its keys on **Providers**, and add
-   Models and cards on **Models**. Check rates against the Provider price list.
+   characters and lets you select the mode. Log in and add a Provider and its
+   keys on **Providers**. Add Models on **Models**, or use `provider/model` names.
+   In Full Mode, add cards and check rates against the Provider price list.
 3. Add a User on **Users**, then create a Virtual Key on **Keys**. Copy the key.
    You cannot see it again. Back up the database and its `secret.key` file.
 

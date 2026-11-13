@@ -225,8 +225,34 @@ restart. Select **Log out** to end the session. All dashboard times are UTC.
 The header also has **Providers**, **Routes** and **Settings**. These pages apply
 changes without a restart. Providers has key-pool forms and a **Test** button.
 Routes has deployment rows and Fallbacks. Settings has server/router values,
-password change and a metrics token. The `simple` mode toggle stores a choice;
-it does not change behaviour yet. Back up `secret.key` with the database.
+password change, a mode choice and a metrics token. Back up `secret.key` with
+the database.
+
+### Simple mode
+
+Select **Simple** on `/setup` or in **Settings** to use the Proxy as a router
+without prices or limits. The default is **Full**. A change applies to new
+requests without a restart.
+
+- Virtual Keys, User and Team usage, model allowlists and server-side Provider
+  Keys stay active. Routing, Fallbacks, Circuit Breakers, Translation and
+  `/v1/models` work in both modes.
+- Simple Mode skips Budget checks, Reservations and Rate Limits. These checks
+  cannot cause HTTP 402 or 429. A Provider can still return these statuses.
+- The dashboard shows requests, all seven Token Classes, latency, TTFT, error
+  rate, attempts and retried requests per Model, Provider, User and Team.
+  Attempts include key retries and Fallbacks. It hides money, cards, Markup,
+  Budgets, Rate Limits and the unpriced and estimated flags.
+- Add Models without cards, or use `provider/model` names. No price setup is
+  required. Prometheus token and latency metrics stay active.
+- The Ledger still stores all usage and request details. If a card exists, it
+  also stores the amounts. Otherwise the entry stays unpriced. Full Mode can
+  price these entries with **Price unpriced entries** after you add cards.
+- Saved cards and limits stay in the database. Simple Mode does not add to the
+  Rate Limit window. When you select **Full**, the saved checks apply again;
+  Budget checks include the amounts recorded in Simple Mode.
+
+The financial fields and procedures below apply to Full Mode.
 
 ### Overview
 
@@ -244,7 +270,7 @@ The page shows the totals for a time range.
   (with time to first token and output tokens each second).
 - The charts show Money (Cost, Price and Profit) and Traffic (requests and
   tokens).
-- The tables **By model**, **By user** and **By team** show requests, errors,
+- The tables **By model**, **By provider**, **By user** and **By team** show requests, errors,
   tokens for each Token Class, Price, Cost, Profit, margin, average latency, average
   time to first token and output tokens each second.
 

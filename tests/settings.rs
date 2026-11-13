@@ -56,6 +56,160 @@ async fn authenticate(c: &reqwest::Client, url: &str) -> String {
 }
 
 #[tokio::test]
+async fn setup_mode_choice_is_clear_validated_and_persists() {
+    let (_dir, st, url, task) = app().await;
+    let c = client();
+    let html = c
+        .get(format!("{url}/setup"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("name=\"mode\""));
+    assert!(html.contains("value=\"full\" selected"));
+    assert!(html.contains("value=\"simple\""));
+    assert_eq!(
+        c.post(format!("{url}/setup"))
+            .form(&[("password", "long-password"), ("mode", "wrong")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    assert_eq!(
+        c.post(format!("{url}/setup"))
+            .form(&[("password", "long-password"), ("mode", "simple")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    assert_eq!(st.settings().mode, "simple");
+    st.reload_settings().await.unwrap();
+    assert_eq!(st.settings().mode, "simple");
+    assert_eq!(
+        c.post(format!("{url}/setup"))
+            .form(&[("password", "another-password"), ("mode", "full")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(st.settings().mode, "simple");
+    task.abort();
+}
+
+#[tokio::test]
+async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
+    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let mut cfg: Config = toml::from_str(
+        "[server]\nmode = 'simple'\ndefault_markup_percent = 37\nreserve_output_tokens = 123",
+    )
+    .unwrap();
+    cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
+    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    assert_eq!(st.settings().mode, "simple");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let app = llm_accounting::router(st.clone());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    assert_eq!(st.settings().mode, "simple"); // Legacy password-only Setup preserves the seed.
+    let user = llm_accounting::db::create_user_with_limits(
+        &st.db,
+        "limited",
+        None,
+        Some(1234),
+        true,
+        llm_accounting::ratelimit::Limits {
+            rpm: Some(5),
+            tpm: Some(6),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        c.post(format!("{url}/admin/users/{user}"))
+            .header("cookie", &cookie)
+            .form(&[("disabled", "on")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    let users = llm_accounting::db::list_users(&st.db).await.unwrap();
+    assert_eq!(
+        (
+            users[0].budget_micros,
+            users[0].budget_monthly,
+            users[0].rpm_limit,
+            users[0].tpm_limit
+        ),
+        (Some(1234), true, Some(5), Some(6))
+    );
+    assert!(users[0].disabled);
+    assert_eq!(
+        c.post(format!("{url}/admin/providers"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "p"),
+                ("kind", "openai"),
+                ("base_url", "https://example.com")
+            ])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    assert_eq!(
+        c.post(format!("{url}/admin/models"))
+            .header("cookie", &cookie)
+            .form(&[("name", "demo"), ("provider", "p"), ("aliases", "alias")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    let cat = st.catalog();
+    let model = cat.models.iter().find(|m| m.name == "demo").unwrap();
+    assert!(model.cost.is_none());
+    assert_eq!(model.aliases, ["alias"]);
+    assert_eq!(
+        c.post(format!("{url}/admin/settings"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("upstream_timeout_secs", "45"),
+                ("session_days", "7"),
+                ("failure_threshold", "3"),
+                ("cooldown_secs", "30"),
+                ("max_attempts", "8"),
+                ("mode", "full")
+            ])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    assert_eq!(st.settings().reserve_output_tokens, 123);
+    assert_eq!(st.catalog().default_markup_bp, 3700);
+    // A later seed cannot undo the saved mode.
+    let restarted = llm_accounting::init(&cfg, None).await.unwrap();
+    assert_eq!(restarted.settings().mode, "full");
+    assert_eq!(restarted.settings().upstream_timeout_secs, 45);
+    task.abort();
+}
+
+#[tokio::test]
 async fn provider_created_in_dashboard_is_live_and_keys_are_redacted() {
     let (_dir, st, url, task) = app().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -2,9 +2,13 @@
 
 **Proxy** — The service that clients call instead of the Provider. It forwards each request and records its usage.
 
+**Simple Mode** - A mode that routes requests and records token metrics without Budget checks, Reservations or Rate Limits. The dashboard hides financial data and controls.
+
+**Full Mode** - The default mode. It includes pricing, Budget checks, Reservations and Rate Limits.
+
 **Provider** — An upstream LLM API vendor (for example OpenAI or Anthropic) that serves the request and charges the operator.
 
-**Model** — A named LLM offered by a Provider. Each Model has one Cost Card and one Price Card.
+**Model** - A named LLM offered by a Provider. A Model can have a Cost Card and a Price Card.
 
 **Route** - A model name that the client sends, with an ordered set of Deployments. An explicit Route can override a catalog Model. Otherwise a catalog Model has one implicit Deployment.
 
@@ -44,7 +48,7 @@
 
 **Master Key** - The secret that protects stored Provider Keys and other recoverable secrets. It must be kept with the database backup.
 
-**Setup** - The first-use step in which the Operator sets the dashboard password.
+**Setup** - The first-use step in which the Operator sets the dashboard password and selects the mode.
 
 **Key Pool** — The set of Provider Keys for one Provider. The Proxy uses them in turn, and tries the next key when the Provider refuses a request.
 

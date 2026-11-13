@@ -64,6 +64,7 @@ svg .axis { fill:var(--muted); font-size:11px; }
 {% block header %}
 <header>
   <b>LLM Accounting</b>
+  {% if base.simple %}<span class="muted">Simple mode</span>{% endif %}
   <nav>
     <a href="/admin" {% block nav_overview %}{% endblock %}>Overview</a>
     <a href="/admin/users" {% block nav_users %}{% endblock %}>Users</a>

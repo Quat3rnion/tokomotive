@@ -6,6 +6,9 @@
   <h1>Set admin password</h1>
   <p>Set a password to protect the dashboard. Use at least 8 characters.</p>
   <form method="post" action="/setup" class="row">
+    <label>Mode <select name="mode"><option value="full" {% if mode == "full" %}selected{% endif %}>Full</option><option value="simple" {% if mode == "simple" %}selected{% endif %}>Simple</option></select></label>
+    <p>Simple mode routes requests and keeps token metrics without pricing or usage limits.</p>
+    <p>Full mode also applies pricing, Budgets and Rate Limits.</p>
     <label>New password <input type="password" name="password" minlength="8" autocomplete="new-password" required style="width:240px"></label>
     <button>Set password</button>
   </form>

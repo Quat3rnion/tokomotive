@@ -2,7 +2,7 @@
 {% block nav_teams %}class="on"{% endblock %}
 {% block content %}
 <h1>Teams</h1>
-<p class="muted">A Team groups users for billing. Set Team price overrides on the page of each model.</p>
+{% if base.simple %}<p class="muted">A Team groups users for token metrics.</p>{% else %}<p class="muted">A Team groups users for billing. Set Team price overrides on the page of each model.</p>{% endif %}
 <div class="panel">
 <table>
   <tr><th>Name</th><th class="n">Users</th></tr>

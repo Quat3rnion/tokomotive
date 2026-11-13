@@ -28,6 +28,7 @@ pub(super) fn router() -> Router<AppState> {
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    base: Base,
     settings: std::sync::Arc<store::Settings>,
     markup: f64,
     metrics_set: bool,
@@ -35,6 +36,7 @@ struct SettingsPage {
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
     render(SettingsPage {
+        base: Base::new(&st),
         metrics_set: settings.metrics_token.is_some(),
         settings,
         markup: st.catalog().default_markup_bp as f64 / 100.0,
@@ -43,9 +45,9 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct ServerForm {
-    default_markup_percent: String,
+    default_markup_percent: Option<String>,
     upstream_timeout_secs: String,
-    reserve_output_tokens: String,
+    reserve_output_tokens: Option<String>,
     session_days: String,
     failure_threshold: String,
     cooldown_secs: String,
@@ -60,18 +62,19 @@ impl ServerForm {
         if !matches!(self.mode.as_str(), "full" | "simple") {
             anyhow::bail!("Choose full or simple mode.");
         }
-        cfg.server.default_markup_percent = self
-            .default_markup_percent
-            .parse()
-            .context("Markup must be a number.")?;
+        if let Some(value) = &self.default_markup_percent {
+            cfg.server.default_markup_percent =
+                value.parse().context("Markup must be a number.")?;
+        }
         cfg.server.upstream_timeout_secs = self
             .upstream_timeout_secs
             .parse()
             .context("Timeout must be a positive integer.")?;
-        cfg.server.reserve_output_tokens = self
-            .reserve_output_tokens
-            .parse()
-            .context("Reserved tokens must be a non-negative integer.")?;
+        if let Some(value) = &self.reserve_output_tokens {
+            cfg.server.reserve_output_tokens = value
+                .parse()
+                .context("Reserved tokens must be a non-negative integer.")?;
+        }
         cfg.server.session_days = self
             .session_days
             .parse()
@@ -106,7 +109,9 @@ async fn save_settings(
     Form(f): Form<ServerForm>,
 ) -> Response {
     let _guard = st.settings_write.lock().await;
-    let cfg = tryr!(runtime(&st).await);
+    let mut cfg = tryr!(runtime(&st).await);
+    cfg.server.default_markup_percent = st.catalog().default_markup_bp as f64 / 100.0;
+    cfg.server.reserve_output_tokens = st.settings().reserve_output_tokens;
     let (cfg, mut settings) = match f.parse(cfg) {
         Ok(v) => v,
         Err(e) => return form_error(e),
@@ -171,6 +176,7 @@ async fn change_password(
 #[derive(Template)]
 #[template(path = "routes.html")]
 struct RoutesPage {
+    base: Base,
     routes: Vec<RouteView>,
     providers: Vec<String>,
 }
@@ -199,6 +205,7 @@ async fn routes(_: Admin, State(st): State<AppState>) -> Response {
         })
         .collect::<anyhow::Result<Vec<_>>>();
     render(RoutesPage {
+        base: Base::new(&st),
         routes: tryr!(routes),
         providers: cfg.providers.into_iter().map(|p| p.name).collect(),
     })
@@ -303,6 +310,7 @@ async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<Str
 #[derive(Template)]
 #[template(path = "providers.html")]
 struct ProvidersPage {
+    base: Base,
     providers: Vec<ProviderView>,
 }
 struct ProviderView {
@@ -350,7 +358,10 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
             keys,
         });
     }
-    render(ProvidersPage { providers })
+    render(ProvidersPage {
+        base: Base::new(&st),
+        providers,
+    })
 }
 
 #[derive(Deserialize)]
@@ -607,7 +618,9 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
 
 #[derive(Template)]
 #[template(path = "setup.html")]
-struct SetupPage;
+struct SetupPage {
+    mode: String,
+}
 
 async fn setup_page(State(st): State<AppState>) -> Response {
     if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_some() {
@@ -616,10 +629,19 @@ async fn setup_page(State(st): State<AppState>) -> Response {
             "Setup is complete. Log in to change the password.",
         );
     }
-    render(SetupPage)
+    render(SetupPage {
+        mode: st.settings().mode.clone(),
+    })
 }
 
-async fn setup(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response {
+#[derive(Deserialize)]
+struct SetupForm {
+    password: String,
+    mode: Option<String>,
+}
+
+async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response {
+    let _guard = st.settings_write.lock().await;
     if tryr!(store::value(&st.db, "admin_password_hash").await).is_some() {
         return page_error(
             StatusCode::FORBIDDEN,
@@ -629,11 +651,20 @@ async fn setup(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
     if f.password.chars().count() < 8 {
         return bad("Use at least 8 characters for the password.");
     }
+    let mode = f.mode.unwrap_or_else(|| st.settings().mode.clone());
+    if !matches!(mode.as_str(), "full" | "simple") {
+        return bad("Choose full or simple mode.");
+    }
+    let mut settings: store::Settings = tryr!(serde_json::from_str(
+        &tryr!(store::value(&st.db, "runtime_settings").await).unwrap_or_default()
+    ));
+    settings.mode = mode;
     let hash = tryr!(crate::settings::hash_password(&f.password));
+    let mut tx = tryr!(st.db.begin().await);
     let result = tryr!(
         sqlx::query("INSERT OR IGNORE INTO settings(key,value) VALUES('admin_password_hash',?)")
             .bind(hash)
-            .execute(&st.db)
+            .execute(&mut *tx)
             .await
     );
     if result.rows_affected() == 0 {
@@ -642,5 +673,13 @@ async fn setup(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
             "Setup is complete. Log in to change the password.",
         );
     }
+    tryr!(
+        sqlx::query("UPDATE settings SET value=? WHERE key='runtime_settings'")
+            .bind(tryr!(serde_json::to_string(&settings)))
+            .execute(&mut *tx)
+            .await
+    );
+    tryr!(tx.commit().await);
+    tryr!(st.reload_settings().await);
     Redirect::to("/admin/login").into_response()
 }

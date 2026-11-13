@@ -9,13 +9,13 @@
 <p class="muted">Changes apply without a restart. Listen address and database path are process options.</p>
 <form method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="#errors">
 <div class="row">
-  <label>Default markup (%) <input name="default_markup_percent" value="{{ markup }}" required></label>
+  {% if !base.simple %}<label>Default markup (%) <input name="default_markup_percent" value="{{ markup }}" required></label>{% endif %}
   <label>Upstream timeout (seconds) <input type="number" min="1" name="upstream_timeout_secs" value="{{ settings.upstream_timeout_secs }}" required></label>
-  <label>Reserve output tokens <input type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required></label>
+  {% if !base.simple %}<label>Reserve output tokens <input type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required></label>{% endif %}
   <label>Session days <input type="number" min="1" max="3650" name="session_days" value="{{ settings.session_days }}" required></label>
   <label>Mode <select name="mode"><option value="full" {% if settings.mode == "full" %}selected{% endif %}>Full</option><option value="simple" {% if settings.mode == "simple" %}selected{% endif %}>Simple</option></select></label>
 </div>
-<p class="muted">Mode is stored now. Both modes currently use the full interface and behaviour.</p>
+<p class="muted">Simple mode routes requests and keeps token metrics. Full mode also applies pricing and usage limits.</p>
 <div class="row">
   <label>Failure threshold <input type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required></label>
   <label>Cooldown (seconds) <input type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required></label>

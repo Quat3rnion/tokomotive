@@ -305,6 +305,8 @@ pub async fn handle(
     let requested_model = json_body.as_ref().and_then(model_of);
     let catalog = st.catalog();
     let table = st.router_table();
+    let settings = st.settings();
+    let simple = settings.mode == "simple";
 
     if !table.allowed(&catalog, &auth.allowed_models, requested_model.as_deref()) {
         return error(
@@ -319,9 +321,9 @@ pub async fn handle(
         (Scope::User(auth.user_id), auth.user_limits),
     ]
     .into_iter()
-    .filter(|(_, limits)| limits.rpm.is_some() || limits.tpm.is_some())
+    .filter(|(_, limits)| !simple && (limits.rpm.is_some() || limits.tpm.is_some()))
     .collect();
-    if let Err(limited) = st.limiter.admit(&scopes, db::now_ms()) {
+    if !simple && let Err(limited) = st.limiter.admit(&scopes, db::now_ms()) {
         let scope = match limited.scope {
             Scope::Key(_) => "key",
             Scope::User(_) => "user",
@@ -357,7 +359,7 @@ pub async fn handle(
     };
 
     let mut reservation = None;
-    if let Some(budget) = auth.budget_micros {
+    if !simple && let Some(budget) = auth.budget_micros {
         let spent = match db::spend_since(
             &st.db,
             auth.user_id,
@@ -385,7 +387,7 @@ pub async fn handle(
                     c.model.as_deref(),
                     json_body.as_ref(),
                     body.len(),
-                    st.settings().reserve_output_tokens,
+                    settings.reserve_output_tokens,
                 )
             })
             .max()

@@ -73,6 +73,19 @@ fn team_opts(teams: &[TeamRow], selected: Option<i64>) -> Vec<Opt> {
 
 // ------------------------------------------------------------------- pages
 
+#[derive(Clone, Copy, Default)]
+pub struct Base {
+    pub simple: bool,
+}
+
+impl Base {
+    pub fn new(st: &crate::state::AppState) -> Self {
+        Self {
+            simple: st.settings().mode == "simple",
+        }
+    }
+}
+
 #[derive(Template)]
 #[template(path = "login.html")]
 pub struct LoginPage {
@@ -82,6 +95,7 @@ pub struct LoginPage {
 #[derive(Template)]
 #[template(path = "error.html")]
 pub struct ErrorPage {
+    pub base: Base,
     pub message: String,
 }
 
@@ -143,8 +157,13 @@ pub struct GroupView {
     pub input: String,
     pub output: String,
     pub cache_read: String,
-    pub cache_write: String,
-    pub image: String,
+    pub cache_write_5m: String,
+    pub cache_write_1h: String,
+    pub image_input: String,
+    pub image_output: String,
+    pub attempts: String,
+    pub retried: String,
+    pub error_rate: String,
     pub cost: String,
     pub price: String,
     pub profit: String,
@@ -162,6 +181,14 @@ fn margin(t: &Totals) -> String {
             "{:.1}%",
             (t.price_micros - t.cost_micros) as f64 * 100.0 / t.price_micros as f64
         )
+    }
+}
+
+fn error_rate(t: &Totals) -> String {
+    if t.requests == 0 {
+        "-".into()
+    } else {
+        format!("{:.1}%", t.errors as f64 * 100.0 / t.requests as f64)
     }
 }
 
@@ -183,7 +210,9 @@ fn tps(t: &Totals) -> String {
 }
 
 impl GroupView {
-    fn new(key: &str, t: &Totals) -> GroupView {
+    fn new(group: &Group) -> GroupView {
+        let key = &group.key;
+        let t = &group.t;
         GroupView {
             key: if key.is_empty() {
                 "(unknown)".into()
@@ -195,8 +224,13 @@ impl GroupView {
             input: int(t.input),
             output: int(t.output),
             cache_read: int(t.cache_read),
-            cache_write: int(t.cache_write_5m + t.cache_write_1h),
-            image: format!("{} / {}", int(t.image_input), int(t.image_output)),
+            cache_write_5m: int(t.cache_write_5m),
+            cache_write_1h: int(t.cache_write_1h),
+            image_input: int(t.image_input),
+            image_output: int(t.image_output),
+            attempts: int(group.attempts),
+            retried: int(group.retried),
+            error_rate: error_rate(t),
             cost: money(t.cost_micros),
             price: money(t.price_micros),
             profit: money(t.price_micros - t.cost_micros),
@@ -211,11 +245,13 @@ impl GroupView {
 #[derive(Template)]
 #[template(path = "overview.html")]
 pub struct OverviewPage {
+    pub base: Base,
     pub range: &'static str,
     pub stats: Vec<Stat>,
     pub money_chart: String,
     pub traffic_chart: String,
     pub by_model: Vec<GroupView>,
+    pub by_provider: Vec<GroupView>,
     pub by_user: Vec<GroupView>,
     pub by_team: Vec<GroupView>,
     pub unpriced: i64,
@@ -225,10 +261,12 @@ pub struct OverviewPage {
 impl OverviewPage {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
+        base: Base,
         range: Range,
         t: &Totals,
         series: &[Bucket],
         by_model: &[Group],
+        by_provider: &[Group],
         by_user: &[Group],
         by_team: &[Group],
         unpriced: i64,
@@ -242,7 +280,7 @@ impl OverviewPage {
             + t.image_input
             + t.image_output;
         let hours = range.span() as f64 / 3600.0;
-        let stats = vec![
+        let mut stats = vec![
             Stat {
                 label: "Requests",
                 value: int(t.requests),
@@ -256,12 +294,14 @@ impl OverviewPage {
                 label: "Tokens",
                 value: int(tokens),
                 sub: format!(
-                    "in {} / out {} / cache r {} w {} / image {}",
+                    "in {} / out {} / cache r {} w5m {} w1h {} / image in {} out {}",
                     int(t.input),
                     int(t.output),
                     int(t.cache_read),
-                    int(t.cache_write_5m + t.cache_write_1h),
-                    int(t.image_input + t.image_output)
+                    int(t.cache_write_5m),
+                    int(t.cache_write_1h),
+                    int(t.image_input),
+                    int(t.image_output)
                 ),
             },
             Stat {
@@ -289,6 +329,22 @@ impl OverviewPage {
                 ),
             },
         ];
+        if base.simple {
+            stats.retain(|s| !matches!(s.label, "Price (billed)" | "Cost (provider)" | "Profit"));
+        }
+        stats.push(Stat {
+            label: "Error rate",
+            value: error_rate(t),
+            sub: format!("{} errors", int(t.errors)),
+        });
+        stats.push(Stat {
+            label: "Attempts",
+            value: int(by_model.iter().map(|g| g.attempts).sum()),
+            sub: format!(
+                "{} retried requests",
+                int(by_model.iter().map(|g| g.retried).sum())
+            ),
+        });
 
         // Fill empty buckets so the time axis is continuous.
         let b = range.bucket();
@@ -364,13 +420,15 @@ impl OverviewPage {
             ],
             &|v| format!("{v:.0}"),
         );
-        let g = |rows: &[Group]| rows.iter().map(|r| GroupView::new(&r.key, &r.t)).collect();
+        let g = |rows: &[Group]| rows.iter().map(GroupView::new).collect();
         OverviewPage {
+            base,
             range: range.name(),
             stats,
             money_chart,
             traffic_chart,
             by_model: g(by_model),
+            by_provider: g(by_provider),
             by_user: g(by_user),
             by_team: g(by_team),
             unpriced,
@@ -399,12 +457,13 @@ pub struct UserView {
 #[derive(Template)]
 #[template(path = "users.html")]
 pub struct UsersPage {
+    pub base: Base,
     pub users: Vec<UserView>,
     pub team_opts: Vec<Opt>,
 }
 
 impl UsersPage {
-    pub fn build(users: &[UserRow], teams: &[TeamRow]) -> UsersPage {
+    pub fn build(base: Base, users: &[UserRow], teams: &[TeamRow]) -> UsersPage {
         let users = users
             .iter()
             .map(|u| UserView {
@@ -429,6 +488,7 @@ impl UsersPage {
             })
             .collect();
         UsersPage {
+            base,
             users,
             team_opts: team_opts(teams, None),
         }
@@ -438,6 +498,7 @@ impl UsersPage {
 #[derive(Template)]
 #[template(path = "teams.html")]
 pub struct TeamsPage {
+    pub base: Base,
     pub teams: Vec<TeamRow>,
 }
 
@@ -459,14 +520,21 @@ pub struct KeyView {
 #[derive(Template)]
 #[template(path = "keys.html")]
 pub struct KeysPage {
+    pub base: Base,
     pub keys: Vec<KeyView>,
     pub users: Vec<Opt>,
     pub new_key: Option<String>,
 }
 
 impl KeysPage {
-    pub fn build(keys: &[KeyRow], users: &[UserRow], new_key: Option<String>) -> KeysPage {
+    pub fn build(
+        base: Base,
+        keys: &[KeyRow],
+        users: &[UserRow],
+        new_key: Option<String>,
+    ) -> KeysPage {
         KeysPage {
+            base,
             keys: keys
                 .iter()
                 .map(|k| KeyView {
@@ -595,14 +663,16 @@ pub struct ModelView {
 #[derive(Template)]
 #[template(path = "models.html")]
 pub struct ModelsPage {
+    pub base: Base,
     pub models: Vec<ModelView>,
     pub providers: Vec<String>,
     pub default_markup: String,
 }
 
 impl ModelsPage {
-    pub fn build(cat: &Catalog, providers: Vec<String>) -> ModelsPage {
+    pub fn build(base: Base, cat: &Catalog, providers: Vec<String>) -> ModelsPage {
         ModelsPage {
+            base,
             models: cat
                 .models
                 .iter()
@@ -639,6 +709,7 @@ pub struct HistView {
 #[derive(Template)]
 #[template(path = "model.html")]
 pub struct ModelPage {
+    pub base: Base,
     pub id: i64,
     pub name: String,
     pub provider_opts: Vec<Opt>,
@@ -656,6 +727,7 @@ pub struct ModelPage {
 
 impl ModelPage {
     pub fn build(
+        base: Base,
         m: &ModelEntry,
         default_bp: i64,
         history: &[CardHistoryRow],
@@ -707,6 +779,7 @@ impl ModelPage {
             })
             .collect();
         ModelPage {
+            base,
             id: m.id,
             name: m.name.clone(),
             provider_opts: providers
@@ -752,8 +825,11 @@ pub struct LedgerView {
     pub input: String,
     pub output: String,
     pub cache_read: String,
-    pub cache_write: String,
-    pub image: String,
+    pub cache_write_5m: String,
+    pub cache_write_1h: String,
+    pub image_input: String,
+    pub image_output: String,
+    pub attempts: i64,
     pub key: String,
     pub cost: String,
     pub price: String,
@@ -767,14 +843,21 @@ pub struct LedgerView {
 #[derive(Template)]
 #[template(path = "ledger.html")]
 pub struct LedgerPage {
+    pub base: Base,
     pub rows: Vec<LedgerView>,
     pub filter: &'static str,
     pub notice: Option<String>,
 }
 
 impl LedgerPage {
-    pub fn build(rows: &[LedgerRow], filter: &'static str, notice: Option<String>) -> LedgerPage {
+    pub fn build(
+        base: Base,
+        rows: &[LedgerRow],
+        filter: &'static str,
+        notice: Option<String>,
+    ) -> LedgerPage {
         LedgerPage {
+            base,
             rows: rows
                 .iter()
                 .map(|r| LedgerView {
@@ -797,12 +880,11 @@ impl LedgerPage {
                     input: int(r.input),
                     output: int(r.output),
                     cache_read: int(r.cache_read),
-                    cache_write: int(r.cache_write_5m + r.cache_write_1h),
-                    image: if r.image_input + r.image_output == 0 {
-                        "-".into()
-                    } else {
-                        format!("{} / {}", int(r.image_input), int(r.image_output))
-                    },
+                    cache_write_5m: int(r.cache_write_5m),
+                    cache_write_1h: int(r.cache_write_1h),
+                    image_input: int(r.image_input),
+                    image_output: int(r.image_output),
+                    attempts: r.attempts,
                     key: match (r.provider_key, r.attempts) {
                         (None, _) => "-".into(),
                         (Some(k), a) if a > 1 => format!("#{k} ({a} tries)"),

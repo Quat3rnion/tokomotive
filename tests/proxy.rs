@@ -56,6 +56,9 @@ async fn mock_openai(
     if b["metadata"]["omit_model"] == json!(true) {
         return Json(json!({"choices": [], "usage": usage})).into_response();
     }
+    if b["metadata"]["omit_usage"] == json!(true) {
+        return Json(json!({"model": b["model"], "choices": []})).into_response();
+    }
     if b["stream"] == json!(true) {
         let mut ev = vec![format!(
             "data: {}\n\n",
@@ -141,6 +144,271 @@ struct Env {
 
 async fn env() -> Env {
     env_with_routes("").await
+}
+
+async fn set_mode(e: &Env, mode: &str) {
+    let settings = e.st.settings();
+    llm_accounting::db::delete_session(&e.st.db, "mode-test")
+        .await
+        .unwrap();
+    llm_accounting::db::create_session(&e.st.db, "mode-test", 1)
+        .await
+        .unwrap();
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .post(format!("{}/admin/settings", e.proxy))
+        .header("cookie", "llma_session=mode-test")
+        .form(&[
+            (
+                "upstream_timeout_secs",
+                settings.upstream_timeout_secs.to_string(),
+            ),
+            ("session_days", settings.session_days.to_string()),
+            (
+                "failure_threshold",
+                settings.router.failure_threshold.to_string(),
+            ),
+            ("cooldown_secs", settings.router.cooldown_secs.to_string()),
+            ("max_attempts", settings.router.max_attempts.to_string()),
+            ("mode", mode.to_owned()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 303);
+}
+
+#[tokio::test]
+async fn simple_mode_skips_budget_keeps_usage_and_full_mode_enforces_live() {
+    let e = env().await;
+    set_mode(&e, "simple").await;
+    let request = || {
+        e.http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-bob")
+            .json(&json!({"model":"gpt-4o", "max_tokens":1_000_000}))
+    };
+    let response = request().send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let row = last_entry(&e.st).await;
+    assert_eq!(
+        (i(&row, "input"), i(&row, "output"), i(&row, "cache_read")),
+        (600, 100, 400)
+    );
+    assert_eq!(
+        (i(&row, "cost_micros"), i(&row, "price_micros")),
+        (3000, 3600)
+    );
+    assert_eq!(e.st.reserved(row.get("user_id")), 0);
+    set_mode(&e, "full").await;
+    assert_eq!(request().send().await.unwrap().status(), 402);
+    assert_eq!(e.seen.0.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
+    let e = env().await;
+    set_mode(&e, "simple").await;
+    e.http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"gpt-4o"}))
+        .send()
+        .await
+        .unwrap();
+    for body in [
+        json!({"model":"gpt-pool"}),
+        json!({"model":"new-model", "metadata":{"omit_usage":true}}),
+    ] {
+        assert_eq!(
+            e.http
+                .post(format!("{}/v1/chat/completions", e.proxy))
+                .bearer_auth("sk-alice")
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    e.st.flush().await;
+    assert_eq!(
+        llm_accounting::db::count_flags(&e.st.db).await.unwrap(),
+        (1, 1)
+    );
+    let providers = llm_accounting::db::by_provider(&e.st.db, 0).await.unwrap();
+    let pool = providers.iter().find(|g| g.key == "pool").unwrap();
+    assert_eq!(
+        (
+            pool.t.requests,
+            pool.t.input,
+            pool.t.output,
+            pool.t.cache_read,
+            pool.attempts,
+            pool.retried
+        ),
+        (1, 600, 100, 400, 2, 1)
+    );
+    for path in [
+        "/admin",
+        "/admin/ledger",
+        "/admin/ledger?filter=unpriced",
+        "/admin/users",
+        "/admin/keys",
+        "/admin/models",
+        "/admin/models/1",
+        "/admin/settings",
+        "/admin/teams",
+        "/admin/providers",
+        "/admin/routes",
+    ] {
+        let response = e
+            .http
+            .get(format!("{}{path}", e.proxy))
+            .header("cookie", "llma_session=mode-test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{path}");
+        let html = response.text().await.unwrap();
+        for hidden in [
+            "Cost",
+            "Price",
+            "Profit",
+            "Budget",
+            "Rate Limits",
+            "RPM",
+            "TPM",
+            "unpriced",
+            "estimated",
+            "name=\"default_markup_percent\"",
+            "name=\"reserve_output_tokens\"",
+        ] {
+            assert!(!html.contains(hidden), "{path} contains {hidden}");
+        }
+        if path == "/admin" || path == "/admin/ledger" {
+            assert!(html.contains("600") && html.contains("400") && html.contains("100"));
+            assert!(html.contains("Cache write 5m") && html.contains("Cache write 1h"));
+            assert!(html.contains("Attempts"));
+        }
+        if path == "/admin" {
+            assert!(html.contains("By provider") && html.contains("Error rate"));
+        }
+    }
+    set_mode(&e, "full").await;
+    let html = e
+        .http
+        .get(format!("{}/admin", e.proxy))
+        .header("cookie", "llma_session=mode-test")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("Price") && html.contains("Cost") && html.contains("Profit"));
+    assert!(html.contains("unpriced") && html.contains("estimated"));
+}
+
+#[tokio::test]
+async fn simple_mode_skips_key_and_user_limits_without_counting_admissions_or_tokens() {
+    use llm_accounting::{db, ratelimit::Limits};
+    let metrics = llm_accounting::metrics::install().unwrap();
+    let e = env().await;
+    let blocked = Limits {
+        rpm: Some(0),
+        tpm: Some(0),
+    };
+    let user =
+        db::create_user_with_limits(&e.st.db, "simple-mode-metrics", None, None, false, blocked)
+            .await
+            .unwrap();
+    let (key_id, key) = db::create_key_with_limits(
+        &e.st.db,
+        user,
+        "",
+        Some(vec!["claude-sonnet-4-5".into(), "gpt-image-2".into()]),
+        blocked,
+    )
+    .await
+    .unwrap();
+    set_mode(&e, "simple").await;
+    for (path, body, expected) in [
+        (
+            "messages",
+            json!({"model":"claude-sonnet-4-5", "messages":[], "stream":true}),
+            200,
+        ),
+        (
+            "images/generations",
+            json!({"model":"gpt-image-2", "prompt":"x"}),
+            200,
+        ),
+        ("chat/completions", json!({"model":"gpt-4o"}), 403),
+    ] {
+        let r = e
+            .http
+            .post(format!("{}/v1/{path}", e.proxy))
+            .bearer_auth(&key)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), expected);
+        r.bytes().await.unwrap();
+    }
+    let row = last_entry(&e.st).await;
+    assert_eq!(
+        (i(&row, "image_input"), i(&row, "image_output")),
+        (200, 1000)
+    );
+    let totals = db::totals_since(&e.st.db, 0).await.unwrap();
+    assert_eq!(
+        (
+            totals.requests,
+            totals.cache_write_5m,
+            totals.cache_write_1h
+        ),
+        (2, 100, 200)
+    );
+    let rendered = metrics.render();
+    for metric in [
+        "llm_tokens_total",
+        "llm_request_duration_seconds",
+        "llm_time_to_first_token_seconds",
+    ] {
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.starts_with(metric)
+                    && line.contains("user=\"simple-mode-metrics\"")),
+            "{metric}"
+        );
+    }
+    set_mode(&e, "full").await;
+    let request = || {
+        e.http
+            .post(format!("{}/v1/messages", e.proxy))
+            .bearer_auth(&key)
+            .json(&json!({"model":"claude-sonnet-4-5", "messages":[]}))
+    };
+    assert_eq!(request().send().await.unwrap().status(), 429);
+    let limited = Limits {
+        rpm: Some(1),
+        tpm: Some(1),
+    };
+    db::update_user_with_limits(&e.st.db, user, None, None, false, false, limited)
+        .await
+        .unwrap();
+    db::update_key_limits(&e.st.db, key_id, limited)
+        .await
+        .unwrap();
+    assert_eq!(request().send().await.unwrap().status(), 200);
+    e.st.flush().await;
+    assert_eq!(request().send().await.unwrap().status(), 429);
 }
 
 async fn env_with_routes(routes: &str) -> Env {
@@ -309,7 +577,8 @@ fallbacks = ["smart"]
 "#,
     )
     .await;
-    for attempts in [3, 1] {
+    for (mode, attempts) in [("full", 3), ("simple", 1)] {
+        set_mode(&e, mode).await;
         let r = e
             .http
             .post(format!("{}/v1/chat/completions", e.proxy))
@@ -1240,6 +1509,7 @@ async fn auth_allowlist_and_budget() {
 #[tokio::test]
 async fn unpriced_model_is_flagged_then_repriced() {
     let e = env().await;
+    set_mode(&e, "simple").await;
     let r = e
         .http
         .post(format!("{}/v1/chat/completions", e.proxy))
@@ -1271,6 +1541,7 @@ async fn unpriced_model_is_flagged_then_repriced() {
         .await
         .unwrap();
     e.st.reload_catalog().await.unwrap();
+    set_mode(&e, "full").await;
     let n = llm_accounting::db::reprice_unpriced(&e.st.db, &e.st.catalog())
         .await
         .unwrap();

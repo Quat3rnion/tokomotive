@@ -218,6 +218,7 @@ fn render<T: Template>(t: T) -> Response {
 
 fn page_error(status: StatusCode, msg: &str) -> Response {
     let mut r = render(ErrorPage {
+        base: Base::default(),
         message: msg.to_owned(),
     });
     *r.status_mut() = status;
@@ -307,11 +308,21 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
     let totals = tryr!(db::totals_since(&st.db, since).await);
     let series = tryr!(db::series(&st.db, since, range.bucket()).await);
     let by_model = tryr!(db::by_model(&st.db, since).await);
+    let by_provider = tryr!(db::by_provider(&st.db, since).await);
     let by_user = tryr!(db::by_user(&st.db, since).await);
     let by_team = tryr!(db::by_team(&st.db, since).await);
     let (unpriced, estimated) = tryr!(db::count_flags(&st.db).await);
     render(OverviewPage::build(
-        range, &totals, &series, &by_model, &by_user, &by_team, unpriced, estimated,
+        Base::new(&st),
+        range,
+        &totals,
+        &series,
+        &by_model,
+        &by_provider,
+        &by_user,
+        &by_team,
+        unpriced,
+        estimated,
     ))
 }
 
@@ -320,7 +331,7 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
 async fn users(_: Admin, State(st): State<AppState>) -> Response {
     let users = tryr!(db::list_users(&st.db).await);
     let teams = tryr!(db::list_teams(&st.db).await);
-    render(UsersPage::build(&users, &teams))
+    render(UsersPage::build(Base::new(&st), &users, &teams))
 }
 
 #[derive(Deserialize)]
@@ -375,6 +386,17 @@ async fn update_user(
     Path(id): Path<i64>,
     Form(f): Form<UserForm>,
 ) -> Response {
+    if st.settings().mode == "simple" {
+        tryr!(
+            sqlx::query("UPDATE users SET team_id=?, disabled=? WHERE id=?")
+                .bind(team_id(&f.team_id))
+                .bind(f.disabled.is_some())
+                .bind(id)
+                .execute(&st.db)
+                .await
+        );
+        return Redirect::to("/admin/users").into_response();
+    }
     let budget = match opt_usd(&f.budget_usd) {
         Ok(b) => b,
         Err(r) => return r,
@@ -402,7 +424,10 @@ async fn update_user(
 
 async fn teams(_: Admin, State(st): State<AppState>) -> Response {
     let teams = tryr!(db::list_teams(&st.db).await);
-    render(TeamsPage { teams })
+    render(TeamsPage {
+        base: Base::new(&st),
+        teams,
+    })
 }
 
 #[derive(Deserialize)]
@@ -426,7 +451,7 @@ async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameFor
 async fn keys_page(st: &AppState, new_key: Option<String>) -> Response {
     let keys = tryr!(db::list_keys(&st.db).await);
     let users = tryr!(db::list_users(&st.db).await);
-    render(KeysPage::build(&keys, &users, new_key))
+    render(KeysPage::build(Base::new(st), &keys, &users, new_key))
 }
 
 async fn keys(_: Admin, State(st): State<AppState>) -> Response {
@@ -489,7 +514,7 @@ async fn models(_: Admin, State(st): State<AppState>) -> Response {
         .iter()
         .map(|p| p.name.clone())
         .collect();
-    render(ModelsPage::build(&cat, providers))
+    render(ModelsPage::build(Base::new(&st), &cat, providers))
 }
 
 /// Form fields for one set of rates plus Context Tiers.
@@ -584,15 +609,21 @@ async fn create_model(
     {
         return bad("Unknown provider.");
     }
-    let rates = match f.rates.parse() {
-        Ok(r) => r,
-        Err(r) => return r,
+    let rates = if st.settings().mode == "simple" {
+        None
+    } else {
+        match f.rates.parse() {
+            Ok(r) => Some(r),
+            Err(r) => return r,
+        }
     };
     let id = match db::create_model(&st.db, name, &f.provider, &csv(&f.aliases)).await {
         Ok(id) => id,
         Err(e) => return bad(format!("Cannot create the model: {e}")),
     };
-    tryr!(db::add_cost_card(&st.db, id, &rates).await);
+    if let Some(rates) = rates {
+        tryr!(db::add_cost_card(&st.db, id, &rates).await);
+    }
     tryr!(st.reload_catalog().await);
     Redirect::to(&format!("/admin/models/{id}")).into_response()
 }
@@ -611,6 +642,7 @@ async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
         .map(|p| p.name.clone())
         .collect();
     render(ModelPage::build(
+        Base::new(&st),
         m,
         cat.default_markup_bp,
         &history,
@@ -759,20 +791,29 @@ struct LedgerQ {
 }
 
 async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) -> Response {
-    let (filter, name) = match q.filter.as_deref() {
+    let base = Base::new(&st);
+    let (filter, name) = match q
+        .filter
+        .as_deref()
+        .filter(|f| !base.simple || *f == "errors")
+    {
         Some("unpriced") => (LedgerFilter::Unpriced, "unpriced"),
         Some("estimated") => (LedgerFilter::Estimated, "estimated"),
         Some("errors") => (LedgerFilter::Errors, "errors"),
         _ => (LedgerFilter::All, "all"),
     };
     let rows = tryr!(db::recent_ledger(&st.db, filter, 200).await);
-    render(LedgerPage::build(&rows, name, None))
+    render(LedgerPage::build(base, &rows, name, None))
 }
 
 async fn reprice(_: Admin, State(st): State<AppState>) -> Response {
+    if st.settings().mode == "simple" {
+        return Redirect::to("/admin/ledger").into_response();
+    }
     let n = tryr!(db::reprice_unpriced(&st.db, &st.catalog()).await);
     let rows = tryr!(db::recent_ledger(&st.db, LedgerFilter::Unpriced, 200).await);
     render(LedgerPage::build(
+        Base::new(&st),
         &rows,
         "unpriced",
         Some(format!("Priced {n} entries.")),

@@ -3,7 +3,7 @@
 {% block nav_models %}class="on"{% endblock %}
 {% block content %}
 <h1>{{ name }}</h1>
-<p class="muted">A change to a card makes a new Card Version. Old Ledger Entries keep the amounts they had.</p>
+{% if base.simple %}<p class="muted">Pricing is off in simple mode.</p>{% else %}<p class="muted">A change to a card makes a new Card Version. Old Ledger Entries keep the amounts they had.</p>{% endif %}
 
 <h2>Model</h2>
 <form class="panel row" method="post" action="/admin/models/{{ id }}">
@@ -12,7 +12,7 @@
   <button>Save</button>
 </form>
 
-<h2>Cost Card (what the provider charges you)</h2>
+{% if !base.simple %}<h2>Cost Card (what the provider charges you)</h2>
 <form class="panel" method="post" action="/admin/models/{{ id }}/cost">
   {% call f::rates_fields(cost) %}
   <p><button>Save new Cost Card version</button></p>
@@ -66,4 +66,5 @@
   {% endfor %}
 </table>
 </div>
+{% endif %}
 {% endblock %}

@@ -80,7 +80,24 @@ options and the password override, values seed once. Edit them in **Settings**.
 | `metrics_token_env`      | string | `"LLM_ACCOUNTING_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
 | `reserve_output_tokens`  | integer | `4096` | Output tokens that a Reservation assumes when the request sets no maximum. Must be non-negative. |
 | `session_days`           | integer | `7` | Duration of new dashboard sessions, from 1 to 3650 days. |
-| `mode`                   | string | `"full"` | `full` or `simple`. Stored and shown now; simple-mode behaviour is not implemented yet. |
+| `mode`                   | string | `"full"` | `full` enables pricing and usage limits. `simple` enables routing and token metrics without Budget checks, Reservations or Rate Limits. |
+
+### Simple mode
+
+Select the mode on `/setup` or in **Settings**. The default is `full` for
+compatibility. To seed Simple Mode on the first start:
+
+```toml
+[server]
+mode = "simple"
+```
+
+Later file changes do not replace the saved mode. Use **Settings** for live
+changes. Simple Mode hides financial data and controls, but keeps Virtual Keys,
+model allowlists, routing and token metrics. Saved cards and limits stay in the
+database. Existing cards still supply amounts for Ledger Entries. Entries with
+no card can be priced after you select Full Mode. See "Simple mode" in
+[usage.md](usage.md#simple-mode).
 
 ### Dashboard password
 

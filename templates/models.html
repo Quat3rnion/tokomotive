@@ -2,15 +2,15 @@
 {% block nav_models %}class="on"{% endblock %}
 {% block content %}
 <h1>Models</h1>
-<p class="muted">Rates are USD per million tokens. A Model also matches dated names that start with <code>name-</code>.</p>
+{% if base.simple %}<p class="muted">Pricing is off in simple mode.</p>{% else %}<p class="muted">Rates are USD per million tokens. A Model also matches dated names that start with <code>name-</code>.</p>{% endif %}
 <div class="panel scroll">
 <table>
-  <tr><th>Model</th><th>Provider</th><th>Aliases</th><th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th>
-      <th class="n">Write 5m</th><th class="n">Write 1h</th><th class="n">Image in</th><th class="n">Image out</th><th class="n">Tiers</th><th>Price</th><th class="n">Team overrides</th></tr>
+  <tr><th>Model</th><th>Provider</th><th>Aliases</th>{% if !base.simple %}<th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th>
+      <th class="n">Write 5m</th><th class="n">Write 1h</th><th class="n">Image in</th><th class="n">Image out</th><th class="n">Tiers</th><th>Price</th><th class="n">Team overrides</th>{% endif %}</tr>
   {% for m in models %}
   <tr>
     <td><a href="/admin/models/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.provider }}</td><td class="muted">{{ m.aliases }}</td>
-    {% if let Some(c) = m.cost %}
+    {% if !base.simple %}{% if let Some(c) = m.cost %}
     <td class="n">{{ c.input }}</td><td class="n">{{ c.output }}</td><td class="n">{{ c.cache_read }}</td>
     <td class="n">{{ c.cache_write_5m }}</td><td class="n">{{ c.cache_write_1h }}</td>
     <td class="n">{{ c.image_input }}</td><td class="n">{{ c.image_output }}</td><td class="n">{{ c.tier_count }}</td>
@@ -18,18 +18,20 @@
     <td colspan="8"><span class="tag warn">no cost card</span></td>
     {% endif %}
     <td>{{ m.price }}</td><td class="n">{{ m.overrides }}</td>
+    {% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="13" class="muted">No models.</td></tr>
+  <tr><td colspan="{% if base.simple %}3{% else %}13{% endif %}" class="muted">No models.</td></tr>
   {% endfor %}
 </table>
 </div>
 
-<h2>Default markup</h2>
+{% if !base.simple %}<h2>Default markup</h2>
 <form class="panel row" method="post" action="/admin/settings/markup">
   <label>Markup for models with no Price Card (%) <input name="default_markup_percent" value="{{ default_markup }}"></label>
   <button>Save</button>
 </form>
+{% endif %}
 
 <h2>Add model</h2>
 <form class="panel" method="post" action="/admin/models">
@@ -38,7 +40,7 @@
     <label>Provider <select name="provider">{% for p in providers %}<option>{{ p }}</option>{% endfor %}</select></label>
     <label>Aliases (comma list) <input name="aliases" style="width:260px"></label>
   </div>
-  <p class="muted" style="margin:0 0 4px">Cost Card (what the provider charges you):</p>
+  {% if !base.simple %}<p class="muted" style="margin:0 0 4px">Cost Card (what the provider charges you):</p>
   <div class="row">
     <label>Input <input name="input" value="0"></label>
     <label>Output <input name="output" value="0"></label>
@@ -50,6 +52,7 @@
   </div>
   <p class="muted" style="margin:10px 0 4px">Context Tiers, one per line: <code>above_input_tokens input output cache_read cache_write_5m cache_write_1h [image_input image_output]</code></p>
   <textarea name="tiers" rows="2"></textarea>
+  {% endif %}
   <p><button>Add model</button></p>
 </form>
 {% endblock %}

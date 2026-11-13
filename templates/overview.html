@@ -5,15 +5,18 @@
 <div class="panel scroll">
 <table>
   <tr><th>{{ title }}</th><th class="n">Requests</th><th class="n">Errors</th><th class="n">Input</th><th class="n">Output</th>
-      <th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Image in/out</th><th class="n">Price</th><th class="n">Cost</th><th class="n">Profit</th>
-      <th class="n">Margin</th><th class="n">Latency</th><th class="n">TTFT</th><th class="n">Out tok/s</th></tr>
+      <th class="n">Cache read</th><th class="n">Cache write 5m</th><th class="n">Cache write 1h</th><th class="n">Image input</th><th class="n">Image output</th>
+      {% if !base.simple %}<th class="n">Price</th><th class="n">Cost</th><th class="n">Profit</th><th class="n">Margin</th>{% endif %}
+      <th class="n">Error rate</th><th class="n">Attempts</th><th class="n">Retried requests</th><th class="n">Latency</th><th class="n">TTFT</th><th class="n">Out tok/s</th></tr>
   {% for r in rows %}
   <tr><td>{{ r.key }}</td><td class="n">{{ r.requests }}</td><td class="n">{{ r.errors }}</td><td class="n">{{ r.input }}</td>
-      <td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write }}</td>
-      <td class="n">{{ r.image }}</td><td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>
+      <td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write_5m }}</td><td class="n">{{ r.cache_write_1h }}</td>
+      <td class="n">{{ r.image_input }}</td><td class="n">{{ r.image_output }}</td>
+      {% if !base.simple %}<td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.profit }}</td><td class="n">{{ r.margin }}</td>{% endif %}
+      <td class="n">{{ r.error_rate }}</td><td class="n">{{ r.attempts }}</td><td class="n">{{ r.retried }}</td>
       <td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="n">{{ r.tps }}</td></tr>
   {% else %}
-  <tr><td colspan="15" class="muted">No requests in this range.</td></tr>
+  <tr><td colspan="{% if base.simple %}16{% else %}20{% endif %}" class="muted">No requests in this range.</td></tr>
   {% endfor %}
 </table>
 </div>
@@ -30,7 +33,7 @@
   </div>
 </div>
 
-{% if unpriced > 0 || estimated > 0 %}
+{% if !base.simple && (unpriced > 0 || estimated > 0) %}
 <div class="panel">
   {% if unpriced > 0 %}<a href="/admin/ledger?filter=unpriced"><span class="tag warn">{{ unpriced }} unpriced</span></a> requests used a model with no card. {% endif %}
   {% if estimated > 0 %}<a href="/admin/ledger?filter=estimated"><span class="tag info">{{ estimated }} estimated</span></a> requests have incomplete usage from the provider.{% endif %}
@@ -44,12 +47,14 @@
 </div>
 
 <div class="grid2">
-  <div class="panel"><h2 style="margin-top:0">Money (USD)</h2>{{ money_chart|safe }}</div>
+  {% if !base.simple %}<div class="panel"><h2 style="margin-top:0">Money (USD)</h2>{{ money_chart|safe }}</div>{% endif %}
   <div class="panel"><h2 style="margin-top:0">Traffic</h2>{{ traffic_chart|safe }}</div>
 </div>
 
 <h2>By model</h2>
 {% call group_table(by_model, "Model") %}
+<h2>By provider</h2>
+{% call group_table(by_provider, "Provider") %}
 <h2>By user</h2>
 {% call group_table(by_user, "User") %}
 <h2>By team</h2>

@@ -5,13 +5,15 @@
   <h1 style="margin:0">Ledger</h1>
   <div class="tabs">
     <a href="/admin/ledger" {% if filter == "all" %}class="on"{% endif %}>All</a>
+    {% if !base.simple %}
     <a href="/admin/ledger?filter=unpriced" {% if filter == "unpriced" %}class="on"{% endif %}>Unpriced</a>
     <a href="/admin/ledger?filter=estimated" {% if filter == "estimated" %}class="on"{% endif %}>Estimated</a>
+    {% endif %}
     <a href="/admin/ledger?filter=errors" {% if filter == "errors" %}class="on"{% endif %}>Errors</a>
   </div>
 </div>
 {% if let Some(n) = notice %}<div class="notice">{{ n }}</div>{% endif %}
-{% if filter == "unpriced" %}
+{% if !base.simple && filter == "unpriced" %}
 <form class="panel row" method="post" action="/admin/reprice">
   <span class="muted">After you add a card for the model, price these entries with the current cards.</span>
   <button>Price unpriced entries</button>
@@ -21,18 +23,18 @@
 <div class="panel scroll">
 <table>
   <tr><th>#</th><th>Time</th><th>User</th><th>Provider</th><th>Endpoint</th><th>Model</th><th class="n">Status</th>
-      <th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Image in/out</th>
-      <th class="n">Price</th><th class="n">Cost</th><th class="n">Latency</th><th class="n">TTFT</th><th>Provider key</th><th>Flags</th></tr>
+      <th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th><th class="n">Cache write 5m</th><th class="n">Cache write 1h</th><th class="n">Image input</th><th class="n">Image output</th>
+      {% if !base.simple %}<th class="n">Price</th><th class="n">Cost</th>{% endif %}<th class="n">Latency</th><th class="n">TTFT</th><th>Provider key</th><th class="n">Attempts</th><th>Flags</th></tr>
   {% for r in rows %}
   <tr>
     <td class="muted">{{ r.id }}</td><td>{{ r.time }}</td><td>{{ r.user }}</td><td>{{ r.provider }}</td><td>{{ r.endpoint }}</td>
     <td>{{ r.model }}</td><td class="n {% if r.status >= 400 %}bad{% endif %}">{{ r.status }}</td>
-    <td class="n">{{ r.input }}</td><td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write }}</td><td class="n">{{ r.image }}</td>
-    <td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td><td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="muted">{{ r.key }}</td>
-    <td>{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
+    <td class="n">{{ r.input }}</td><td class="n">{{ r.output }}</td><td class="n">{{ r.cache_read }}</td><td class="n">{{ r.cache_write_5m }}</td><td class="n">{{ r.cache_write_1h }}</td><td class="n">{{ r.image_input }}</td><td class="n">{{ r.image_output }}</td>
+    {% if !base.simple %}<td class="n">{{ r.price }}</td><td class="n">{{ r.cost }}</td>{% endif %}<td class="n">{{ r.latency }}</td><td class="n">{{ r.ttft }}</td><td class="muted">{{ r.key }}</td><td class="n">{{ r.attempts }}</td>
+    <td>{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
   </tr>
   {% else %}
-  <tr><td colspan="18" class="muted">No entries.</td></tr>
+  <tr><td colspan="{% if base.simple %}19{% else %}21{% endif %}" class="muted">No entries.</td></tr>
   {% endfor %}
 </table>
 </div>
