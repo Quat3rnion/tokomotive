@@ -1,4 +1,4 @@
-# llm-accounting optional seed configuration. No file is required.
+# tokomotive optional seed configuration. No file is required.
 #
 # Pass --config PATH to use this file. Providers, routes and server/router
 # settings seed once, on the first start. Later edits belong in the dashboard.
@@ -14,14 +14,14 @@
 
 [server]
 # Binding and storage use --listen/--database or the corresponding environment
-# variables, not this file. Defaults: 127.0.0.1:8787 and sqlite://llm-accounting.db.
+# variables, not this file. Defaults: 127.0.0.1:8787 and sqlite://tokomotive.db.
 # The dashboard password. The environment variable has priority.
-admin_password_env = "LLM_ACCOUNTING_ADMIN_PASSWORD"
+admin_password_env = "TOKOMOTIVE_ADMIN_PASSWORD"
 # Markup for Models that have no Price Card.
 default_markup_percent = 20
 upstream_timeout_secs = 600
 # When set, /metrics needs "Authorization: Bearer <token>".
-metrics_token_env = "LLM_ACCOUNTING_METRICS_TOKEN"
+metrics_token_env = "TOKOMOTIVE_METRICS_TOKEN"
 # Output tokens that a Budget reservation assumes when a request sets no
 # max_tokens.
 reserve_output_tokens = 4096

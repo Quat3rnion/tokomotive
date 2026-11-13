@@ -1,6 +1,6 @@
-use llm_accounting::translate::{Direction, translate_request};
-use llm_accounting::{config::Config, state::AppState};
 use serde_json::json;
+use tokomotive::translate::{Direction, translate_request};
+use tokomotive::{config::Config, state::AppState};
 
 #[test]
 fn examples_describe_simple_mode_and_current_sonnet() {
@@ -31,7 +31,7 @@ impl Drop for Env {
 
 #[tokio::test]
 async fn seeded_provider_keeps_env_first_literal_fallback() {
-    if std::env::var_os("LLMA_REVIEW_SEED_CHILD").is_none() {
+    if std::env::var_os("TOKOMOTIVE_REVIEW_SEED_CHILD").is_none() {
         for value in [None, Some(""), Some("environment-key")] {
             let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
             cmd.args([
@@ -39,10 +39,10 @@ async fn seeded_provider_keeps_env_first_literal_fallback() {
                 "seeded_provider_keeps_env_first_literal_fallback",
                 "--nocapture",
             ])
-            .env("LLMA_REVIEW_SEED_CHILD", "1")
-            .env_remove("LLMA_REVIEW_PROVIDER_KEY");
+            .env("TOKOMOTIVE_REVIEW_SEED_CHILD", "1")
+            .env_remove("TOKOMOTIVE_REVIEW_PROVIDER_KEY");
             if let Some(value) = value {
-                cmd.env("LLMA_REVIEW_PROVIDER_KEY", value);
+                cmd.env("TOKOMOTIVE_REVIEW_PROVIDER_KEY", value);
             }
             let out = cmd.output().unwrap();
             assert!(
@@ -62,13 +62,13 @@ database = "sqlite::memory:"
 name = "test"
 kind = "openai"
 base_url = "http://localhost"
-api_key_env = "LLMA_REVIEW_PROVIDER_KEY"
+api_key_env = "TOKOMOTIVE_REVIEW_PROVIDER_KEY"
 api_key = "literal-key"
 "#,
     )
     .unwrap();
     let expected = cfg.providers[0].keys();
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(
         *st.router_table().providers[0].keys,
         expected,
@@ -78,7 +78,7 @@ api_key = "literal-key"
 
 #[test]
 fn blank_secret_key_uses_the_persistent_generated_key() {
-    if std::env::var_os("LLMA_REVIEW_SECRET_CHILD").is_none() {
+    if std::env::var_os("TOKOMOTIVE_REVIEW_SECRET_CHILD").is_none() {
         for value in ["", "  \t\n"] {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -86,8 +86,8 @@ fn blank_secret_key_uses_the_persistent_generated_key() {
                     "blank_secret_key_uses_the_persistent_generated_key",
                     "--nocapture",
                 ])
-                .env("LLMA_REVIEW_SECRET_CHILD", "1")
-                .env("LLM_ACCOUNTING_SECRET_KEY", value)
+                .env("TOKOMOTIVE_REVIEW_SECRET_CHILD", "1")
+                .env("TOKOMOTIVE_SECRET_KEY", value)
                 .output()
                 .unwrap();
             assert!(
@@ -101,11 +101,11 @@ fn blank_secret_key_uses_the_persistent_generated_key() {
     }
     let dir = tempfile::tempdir_in("/arboretum").unwrap();
     let database = format!("sqlite://{}/db.sqlite", dir.path().display());
-    let key = llm_accounting::settings::SecretKey::load(&database)
+    let key = tokomotive::settings::SecretKey::load(&database)
         .expect("blank secret key must use generated key instead of failing startup");
     let encrypted = key.encrypt("provider-key").unwrap();
     assert_eq!(
-        llm_accounting::settings::SecretKey::load(&database)
+        tokomotive::settings::SecretKey::load(&database)
             .unwrap()
             .decrypt(&encrypted)
             .unwrap(),
@@ -131,7 +131,7 @@ async fn env(routes: &str) -> Env {
 [server]
 database = "sqlite://{}/db.sqlite"
 admin_password = "long-password"
-admin_password_env = "LLMA_REVIEW_UNSET_ADMIN"
+admin_password_env = "TOKOMOTIVE_REVIEW_UNSET_ADMIN"
 default_markup_percent = 0
 [[providers]]
 name = "anthropic"
@@ -158,10 +158,10 @@ keys = ["sk-review"]
         dir.path().display()
     ))
     .unwrap();
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     let pl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", pl.local_addr().unwrap());
-    let app = llm_accounting::router(st.clone());
+    let app = tokomotive::router(st.clone());
     let pt = tokio::spawn(async move { axum::serve(pl, app).await.unwrap() });
     Env {
         _dir: dir,
@@ -293,42 +293,42 @@ async fn translation_error_without_upstream_attempts_is_400_without_ledger() {
 #[tokio::test]
 async fn sessions_cannot_outlive_the_password_they_verified() {
     let e = env("").await;
-    let old_hash = llm_accounting::settings::value(&e.st.db, "admin_password_hash")
+    let old_hash = tokomotive::settings::value(&e.st.db, "admin_password_hash")
         .await
         .unwrap()
         .unwrap();
-    llm_accounting::db::create_session(&e.st.db, "old-login", 1)
+    tokomotive::db::create_session(&e.st.db, "old-login", 1)
         .await
         .unwrap();
     assert!(
-        llm_accounting::db::session_valid(&e.st.db, "old-login")
+        tokomotive::db::session_valid(&e.st.db, "old-login")
             .await
             .unwrap()
     );
-    let new_hash = llm_accounting::settings::hash_password("new-password").unwrap();
-    llm_accounting::settings::put(&e.st.db, "admin_password_hash", &new_hash)
+    let new_hash = tokomotive::settings::hash_password("new-password").unwrap();
+    tokomotive::settings::put(&e.st.db, "admin_password_hash", &new_hash)
         .await
         .unwrap();
     assert!(
-        !llm_accounting::db::session_valid(&e.st.db, "old-login")
+        !tokomotive::db::session_valid(&e.st.db, "old-login")
             .await
             .unwrap(),
         "a session verified against the old password survived rotation"
     );
     // A login that verified before rotation can finish inserting afterwards.
-    llm_accounting::db::create_session_for_password(&e.st.db, "late-login", 1, Some(&old_hash))
+    tokomotive::db::create_session_for_password(&e.st.db, "late-login", 1, Some(&old_hash))
         .await
         .unwrap();
     assert!(
-        !llm_accounting::db::session_valid(&e.st.db, "late-login")
+        !tokomotive::db::session_valid(&e.st.db, "late-login")
             .await
             .unwrap()
     );
-    llm_accounting::db::create_session_for_password(&e.st.db, "new-login", 1, Some(&new_hash))
+    tokomotive::db::create_session_for_password(&e.st.db, "new-login", 1, Some(&new_hash))
         .await
         .unwrap();
     assert!(
-        llm_accounting::db::session_valid(&e.st.db, "new-login")
+        tokomotive::db::session_valid(&e.st.db, "new-login")
             .await
             .unwrap()
     );

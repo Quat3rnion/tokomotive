@@ -1,4 +1,4 @@
-use llm_accounting::{config::Config, db, ratelimit::Limits};
+use tokomotive::{config::Config, db, ratelimit::Limits};
 
 #[test]
 fn config_rejects_negative_rate_limits() {
@@ -11,12 +11,12 @@ fn config_rejects_negative_rate_limits() {
 
 #[tokio::test]
 async fn dashboard_creates_edits_and_validates_rate_limits() {
-    let cfg: Config = toml::from_str("[server]\ndatabase = 'sqlite::memory:'\nadmin_password = 'pw'\nadmin_password_env = 'LLMA_TEST_UNSET_VAR'").unwrap();
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let cfg: Config = toml::from_str("[server]\ndatabase = 'sqlite::memory:'\nadmin_password = 'pw'\nadmin_password_env = 'TOKOMOTIVE_TEST_UNSET_VAR'").unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     db::create_session(&st.db, "test-session", 1).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let app = llm_accounting::router(st.clone());
+    let app = tokomotive::router(st.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -24,7 +24,7 @@ async fn dashboard_creates_edits_and_validates_rate_limits() {
         .unwrap();
     let post = |path: &str| {
         http.post(format!("{base}{path}"))
-            .header("cookie", "llma_session=test-session")
+            .header("cookie", "tokomotive_session=test-session")
     };
     let response = post("/admin/users")
         .form(&[
@@ -106,7 +106,7 @@ async fn dashboard_creates_edits_and_validates_rate_limits() {
     assert_eq!((keys[0].rpm_limit, keys[0].tpm_limit), (None, Some(0)));
     let html = http
         .get(format!("{base}/admin/users"))
-        .header("cookie", "llma_session=test-session")
+        .header("cookie", "tokomotive_session=test-session")
         .send()
         .await
         .unwrap()

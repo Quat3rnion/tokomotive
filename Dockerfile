@@ -9,14 +9,14 @@ COPY config.example.toml ./
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
-RUN useradd --system --uid 10001 --home /data llma && mkdir -p /data /etc/llm-accounting && chown llma /data
-COPY --from=build /src/target/release/llm-accounting /usr/local/bin/llm-accounting
-COPY config.example.toml /etc/llm-accounting/config.toml
-USER llma
+RUN useradd --system --uid 10001 --home /data tokomotive && mkdir -p /data /etc/tokomotive && chown tokomotive /data
+COPY --from=build /src/target/release/tokomotive /usr/local/bin/tokomotive
+COPY config.example.toml /etc/tokomotive/config.toml
+USER tokomotive
 WORKDIR /data
-ENV LLM_ACCOUNTING_LISTEN=0.0.0.0:8787 \
-    LLM_ACCOUNTING_DATABASE=sqlite:///data/llm-accounting.db
+ENV TOKOMOTIVE_LISTEN=0.0.0.0:8787 \
+    TOKOMOTIVE_DATABASE=sqlite:///data/tokomotive.db
 EXPOSE 8787
 VOLUME /data
-# Optional seed: mount a file and pass --config /etc/llm-accounting/config.toml.
-CMD ["llm-accounting"]
+# Optional seed: mount a file and pass --config /etc/tokomotive/config.toml.
+CMD ["tokomotive"]

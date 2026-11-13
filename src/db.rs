@@ -408,7 +408,7 @@ pub async fn create_key_with_limits(
 ) -> Result<(i64, String)> {
     let mut bytes = [0u8; 24];
     rand::rng().fill_bytes(&mut bytes);
-    let key = format!("sk-llma-{}", hex::encode(bytes));
+    let key = format!("sk-toko-{}", hex::encode(bytes));
     let id = sqlx::query(
         "INSERT INTO virtual_keys(user_id, key_hash, prefix, label, allowed_models, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
     )

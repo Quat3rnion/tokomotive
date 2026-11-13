@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use llm_accounting::config::Config;
+use tokomotive::config::Config;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -13,14 +13,14 @@ async fn main() -> Result<()> {
         .init();
 
     let cfg = configuration()?;
-    let metrics = llm_accounting::metrics::install()?;
-    let state = llm_accounting::init(&cfg, Some(metrics)).await?;
-    let app = llm_accounting::router(state.clone());
+    let metrics = tokomotive::metrics::install()?;
+    let state = tokomotive::init(&cfg, Some(metrics)).await?;
+    let app = tokomotive::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.listen)
         .await
         .with_context(|| format!("bind {}", cfg.server.listen))?;
-    tracing::info!(listen = %cfg.server.listen, "llm-accounting started");
+    tracing::info!(listen = %cfg.server.listen, "tokomotive started");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
@@ -31,11 +31,9 @@ async fn main() -> Result<()> {
 
 fn configuration() -> Result<Config> {
     let mut args = std::env::args().skip(1);
-    let mut path = std::env::var("LLM_ACCOUNTING_CONFIG")
-        .ok()
-        .map(PathBuf::from);
-    let mut listen = std::env::var("LLM_ACCOUNTING_LISTEN").ok();
-    let mut database = std::env::var("LLM_ACCOUNTING_DATABASE").ok();
+    let mut path = std::env::var("TOKOMOTIVE_CONFIG").ok().map(PathBuf::from);
+    let mut listen = std::env::var("TOKOMOTIVE_LISTEN").ok();
+    let mut database = std::env::var("TOKOMOTIVE_DATABASE").ok();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-c" | "--config" => path = Some(args.next().context("--config needs a path")?.into()),
@@ -43,7 +41,7 @@ fn configuration() -> Result<Config> {
             "--database" => database = Some(args.next().context("--database needs a SQLite URL")?),
             "-h" | "--help" => {
                 println!(
-                    "usage: llm-accounting [--config PATH] [--listen ADDRESS] [--database SQLITE_URL]\n\nThe optional config file seeds the database once. Use /setup, then the dashboard.\nEnvironment: LLM_ACCOUNTING_CONFIG, LLM_ACCOUNTING_LISTEN, LLM_ACCOUNTING_DATABASE"
+                    "usage: tokomotive [--config PATH] [--listen ADDRESS] [--database SQLITE_URL]\n\nThe optional config file seeds the database once. Use /setup, then the dashboard.\nEnvironment: TOKOMOTIVE_CONFIG, TOKOMOTIVE_LISTEN, TOKOMOTIVE_DATABASE"
                 );
                 std::process::exit(0);
             }
@@ -55,9 +53,9 @@ fn configuration() -> Result<Config> {
         None => toml::from_str("")?,
     };
     // Binding and storage are process options, not dashboard settings.
-    cfg.server.listen = listen.unwrap_or_else(|| llm_accounting::config::Server::default().listen);
+    cfg.server.listen = listen.unwrap_or_else(|| tokomotive::config::Server::default().listen);
     cfg.server.database =
-        database.unwrap_or_else(|| llm_accounting::config::Server::default().database);
+        database.unwrap_or_else(|| tokomotive::config::Server::default().database);
     Ok(cfg)
 }
 

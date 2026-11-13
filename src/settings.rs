@@ -70,7 +70,9 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             let mut keys = Vec::new();
             if let (Some(env), Some(fallback)) = (&p.api_key_env, &p.api_key) {
                 // Resolve the legacy single-key pair once, with env precedence.
-                let value = std::env::var(env).ok().filter(|v| !v.is_empty())
+                let value = std::env::var(env)
+                    .ok()
+                    .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| fallback.clone());
                 keys.push(key.encrypt(&value)?);
             } else if let Some(env) = &p.api_key_env {
@@ -106,7 +108,7 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
         tx.commit().await?;
     }
     // An explicit environment password remains an operator recovery override.
-    let override_password = std::env::var("LLM_ACCOUNTING_ADMIN_PASSWORD")
+    let override_password = std::env::var("TOKOMOTIVE_ADMIN_PASSWORD")
         .ok()
         .filter(|v| !v.is_empty());
     if let Some(pw) = override_password {
@@ -193,12 +195,12 @@ impl SecretKey {
         }
         let cipher = Aes256Gcm::new_from_slice(&self.0).expect("32-byte key");
         let plain = cipher.decrypt(Nonce::from_slice(&bytes[..12]), &bytes[12..])
-            .map_err(|_| anyhow::anyhow!("cannot decrypt stored secret: restore the original LLM_ACCOUNTING_SECRET_KEY or secret.key backup"))?;
+            .map_err(|_| anyhow::anyhow!("cannot decrypt stored secret: restore the original TOKOMOTIVE_SECRET_KEY or secret.key backup"))?;
         Ok(String::from_utf8(plain)?)
     }
 
     pub fn load(database: &str) -> Result<Self> {
-        if let Ok(value) = std::env::var("LLM_ACCOUNTING_SECRET_KEY")
+        if let Ok(value) = std::env::var("TOKOMOTIVE_SECRET_KEY")
             && !value.trim().is_empty()
         {
             let bytes = if value.len() == 64 {
@@ -207,7 +209,7 @@ impl SecretKey {
                 STANDARD.decode(&value)?
             };
             return Ok(Self(bytes.try_into().map_err(|_| {
-                anyhow::anyhow!("LLM_ACCOUNTING_SECRET_KEY must contain 32 bytes (hex or base64)")
+                anyhow::anyhow!("TOKOMOTIVE_SECRET_KEY must contain 32 bytes (hex or base64)")
             })?));
         }
         if database.contains(":memory:") {

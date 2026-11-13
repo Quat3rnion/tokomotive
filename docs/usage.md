@@ -13,7 +13,7 @@ in the variable `KEY`:
 
 ```sh
 export PROXY=http://127.0.0.1:8787
-export KEY=sk-llma-...
+export KEY=sk-toko-...
 ```
 
 ## Connect a client
@@ -37,7 +37,7 @@ Or in Python:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="sk-llma-...")
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="sk-toko-...")
 ```
 
 ### Anthropic SDK
@@ -54,7 +54,7 @@ Or in Python:
 ```python
 from anthropic import Anthropic
 
-client = Anthropic(base_url="http://127.0.0.1:8787", api_key="sk-llma-...")
+client = Anthropic(base_url="http://127.0.0.1:8787", api_key="sk-toko-...")
 ```
 
 ### Endpoints that the Proxy accounts
@@ -418,7 +418,7 @@ To create a Virtual Key:
 5. Copy the key from the page. The Proxy stores only a hash of the key. You
    cannot see the key again.
 
-A Virtual Key has the form `sk-llma-` followed by 48 hexadecimal characters.
+A Virtual Key has the form `sk-toko-` followed by 48 hexadecimal characters.
 
 Rules for allowed Models:
 
@@ -760,16 +760,16 @@ the configuration:
 
 ```yaml
 scrape_configs:
-  - job_name: llm-accounting
+  - job_name: tokomotive
     metrics_path: /metrics
     authorization:
       type: Bearer
-      credentials_file: /etc/prometheus/llm-accounting.token
+      credentials_file: /etc/prometheus/tokomotive.token
     static_configs:
       - targets: ["127.0.0.1:8787"]
 ```
 
-The file `llm-accounting.token` holds the value of `LLM_ACCOUNTING_METRICS_TOKEN`.
+The file `tokomotive.token` holds the value of `TOKOMOTIVE_METRICS_TOKEN`.
 
 ## Error responses
 

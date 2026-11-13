@@ -1,6 +1,6 @@
-# llm-accounting
+# Tokomotive
 
-llm-accounting is an LLM router and Proxy with optional cost accounting. Clients
+Tokomotive is an LLM router and Proxy with optional cost accounting. Clients
 send requests to the Proxy instead of to the Provider. The Proxy chooses a
 Deployment, forwards the request, and reads the token usage from the response.
 In Full Mode, it also records the Cost, the Price and the Profit for each User
@@ -60,7 +60,7 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   Operator changes them on the **Providers**, **Routes** and **Settings** pages.
   Changes apply without a restart.
 - Encrypts Provider Keys with AES-256-GCM. The Master Key comes from
-  `LLM_ACCOUNTING_SECRET_KEY` or from a generated `secret.key` file.
+  `TOKOMOTIVE_SECRET_KEY` or from a generated `secret.key` file.
 - Lets a Provider Key refer to an environment variable with `env:NAME`.
 - Shows requests, tokens, latency, time to first token, Cost, Price and Profit
   per Model, User and Team in the dashboard.
@@ -93,7 +93,7 @@ Both methods are UI-first. You do not edit a file.
 3. Go to the next section, "Configure in the dashboard".
 
 Compose keeps the database and the generated `secret.key` file in the volume
-`llma-data`. Back up both. See [INSTALL.md](INSTALL.md) for the Master Key
+`tokomotive-data`. Back up both. See [INSTALL.md](INSTALL.md) for the Master Key
 options.
 
 ### With Cargo
@@ -108,7 +108,7 @@ options.
    steps above.
 3. Go to the next section, "Configure in the dashboard".
 
-The Proxy creates `llm-accounting.db` and `secret.key` in the working directory.
+The Proxy creates `tokomotive.db` and `secret.key` in the working directory.
 Back up both.
 
 ### Configure in the dashboard
@@ -126,7 +126,7 @@ Back up both.
 
    ```sh
    curl http://127.0.0.1:8787/v1/chat/completions \
-     -H "Authorization: Bearer sk-llma-..." -H "content-type: application/json" \
+     -H "Authorization: Bearer sk-toko-..." -H "content-type: application/json" \
      -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
    ```
 
@@ -134,7 +134,7 @@ Back up both.
    when a Provider named `openai` exists and no Model has that full name.
 
 The default listen address is `127.0.0.1:8787`. Use `--listen` and `--database`
-(or `LLM_ACCOUNTING_LISTEN` and `LLM_ACCOUNTING_DATABASE`) to change the listen
+(or `TOKOMOTIVE_LISTEN` and `TOKOMOTIVE_DATABASE`) to change the listen
 address and the database. These two options are the only settings outside the
 dashboard. An optional `--config PATH` file seeds the database once. See
 [docs/configuration.md](docs/configuration.md).

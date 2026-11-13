@@ -1,12 +1,12 @@
-use llm_accounting::settings::SecretKey;
-use llm_accounting::{config::Config, state::AppState};
+use tokomotive::settings::SecretKey;
+use tokomotive::{config::Config, state::AppState};
 
 #[tokio::test]
 async fn master_key_is_next_to_database_with_encoded_parent_path() {
     let dir = tempfile::tempdir_in("/arboretum").unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/with%20space/db.sqlite", dir.path().display());
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     assert!(dir.path().join("with space/secret.key").exists());
     st.db.close().await;
 }
@@ -20,10 +20,10 @@ async fn app() -> (
     let dir = tempfile::tempdir_in("/arboretum").unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let router = llm_accounting::router(st.clone());
+    let router = tokomotive::router(st.clone());
     let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (dir, st, url, task)
 }
@@ -112,22 +112,22 @@ async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
     )
     .unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(st.settings().mode, "simple");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let app = llm_accounting::router(st.clone());
+    let app = tokomotive::router(st.clone());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let c = client();
     let cookie = authenticate(&c, &url).await;
     assert_eq!(st.settings().mode, "simple"); // Legacy password-only Setup preserves the seed.
-    let user = llm_accounting::db::create_user_with_limits(
+    let user = tokomotive::db::create_user_with_limits(
         &st.db,
         "limited",
         None,
         Some(1234),
         true,
-        llm_accounting::ratelimit::Limits {
+        tokomotive::ratelimit::Limits {
             rpm: Some(5),
             tpm: Some(6),
         },
@@ -144,7 +144,7 @@ async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
             .status(),
         303
     );
-    let users = llm_accounting::db::list_users(&st.db).await.unwrap();
+    let users = tokomotive::db::list_users(&st.db).await.unwrap();
     assert_eq!(
         (
             users[0].budget_micros,
@@ -203,7 +203,7 @@ async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
     assert_eq!(st.settings().reserve_output_tokens, 123);
     assert_eq!(st.catalog().default_markup_bp, 3700);
     // A later seed cannot undo the saved mode.
-    let restarted = llm_accounting::init(&cfg, None).await.unwrap();
+    let restarted = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(restarted.settings().mode, "full");
     assert_eq!(restarted.settings().upstream_timeout_secs, 45);
     task.abort();
@@ -253,10 +253,10 @@ async fn provider_created_in_dashboard_is_live_and_keys_are_redacted() {
         .await
         .unwrap();
     assert!(!stored.contains("secret-value"));
-    let user = llm_accounting::db::create_user(&st.db, "demo", None, None, false)
+    let user = tokomotive::db::create_user(&st.db, "demo", None, None, false)
         .await
         .unwrap();
-    let (_, key) = llm_accounting::db::create_key(&st.db, user, "demo", None)
+    let (_, key) = tokomotive::db::create_key(&st.db, user, "demo", None)
         .await
         .unwrap();
     let r = c
@@ -357,10 +357,10 @@ async fn route_edits_apply_live_and_invalid_changes_are_refused() {
         .await
         .unwrap();
     assert_eq!(r.status(), 303, "{}", r.text().await.unwrap());
-    let user = llm_accounting::db::create_user(&st.db, "demo", None, None, false)
+    let user = tokomotive::db::create_user(&st.db, "demo", None, None, false)
         .await
         .unwrap();
-    let (_, key) = llm_accounting::db::create_key(&st.db, user, "demo", None)
+    let (_, key) = tokomotive::db::create_key(&st.db, user, "demo", None)
         .await
         .unwrap();
     let request = || {
@@ -522,10 +522,10 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
             ("alpha".to_string(), "upstream-two".to_string(), 7)
         ]
     );
-    let user = llm_accounting::db::create_user(&st.db, "rows", None, None, false)
+    let user = tokomotive::db::create_user(&st.db, "rows", None, None, false)
         .await
         .unwrap();
-    let (_, key) = llm_accounting::db::create_key(&st.db, user, "rows", None)
+    let (_, key) = tokomotive::db::create_key(&st.db, user, "rows", None)
         .await
         .unwrap();
     let answer: serde_json::Value = c
@@ -833,7 +833,7 @@ async fn binary_starts_without_a_config_file() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_llm-accounting"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tokomotive"))
         .current_dir(dir.path())
         .args([
             "--listen",
@@ -841,7 +841,7 @@ async fn binary_starts_without_a_config_file() {
             "--database",
             "sqlite://nested/db.sqlite",
         ])
-        .env_remove("LLM_ACCOUNTING_CONFIG")
+        .env_remove("TOKOMOTIVE_CONFIG")
         .spawn()
         .unwrap();
     let mut ready = false;
@@ -876,7 +876,7 @@ name = "seeded"
 kind = "openai"
 base_url = "https://first.example"
 api_key = "seed-secret"
-api_keys_env = ["LLMA_SETTINGS_MISSING_TEST_KEY"]
+api_keys_env = ["TOKOMOTIVE_SETTINGS_MISSING_TEST_KEY"]
 [[routes]]
 name = "r"
 deployments = [{provider="seeded",model="first",weight=1}]
@@ -884,7 +884,7 @@ deployments = [{provider="seeded",model="first",weight=1}]
     )
     .unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
-    let first = llm_accounting::init(&cfg, None).await.unwrap();
+    let first = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(first.router_table().providers[0].keys[0], "seed-secret");
     #[cfg(unix)]
     {
@@ -902,12 +902,12 @@ deployments = [{provider="seeded",model="first",weight=1}]
         .fetch_one(&first.db)
         .await
         .unwrap();
-    assert!(stored.contains("env:LLMA_SETTINGS_MISSING_TEST_KEY"));
+    assert!(stored.contains("env:TOKOMOTIVE_SETTINGS_MISSING_TEST_KEY"));
     assert!(!stored.contains("seed-secret"));
     cfg.providers[0].base_url = "https://later.example".into();
     cfg.router.max_attempts = 99;
     cfg.routes[0].deployments[0].model = "later".into();
-    let second = llm_accounting::init(&cfg, None).await.unwrap();
+    let second = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(
         second.router_table().providers[0].base_url,
         "https://first.example"
@@ -923,7 +923,7 @@ deployments = [{provider="seeded",model="first",weight=1}]
         base64::engine::general_purpose::STANDARD.encode([8; 32]),
     )
     .unwrap();
-    let error = match llm_accounting::init(&cfg, None).await {
+    let error = match tokomotive::init(&cfg, None).await {
         Ok(_) => panic!("wrong master key must stop startup"),
         Err(e) => e,
     };

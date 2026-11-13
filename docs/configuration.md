@@ -1,6 +1,6 @@
 # Configuration reference
 
-This document lists every setting of llm-accounting. The terms are defined in
+This document lists every setting of tokomotive. The terms are defined in
 [GLOSSARY.md](../GLOSSARY.md).
 
 The database is the source of truth. Start the Proxy without a file, open
@@ -14,12 +14,12 @@ the first installation.
 The Proxy reads a seed file only when you give a path:
 
 1. The `--config PATH` flag (short form `-c PATH`).
-2. The environment variable `LLM_ACCOUNTING_CONFIG`.
+2. The environment variable `TOKOMOTIVE_CONFIG`.
 
 There is no implicit `config.toml`. With no path, the Proxy uses defaults and
-the existing database. `--listen ADDRESS` overrides `LLM_ACCOUNTING_LISTEN`.
-`--database SQLITE_URL` overrides `LLM_ACCOUNTING_DATABASE`. Their defaults are
-`127.0.0.1:8787` and `sqlite://llm-accounting.db`. Parent directories are created.
+the existing database. `--listen ADDRESS` overrides `TOKOMOTIVE_LISTEN`.
+`--database SQLITE_URL` overrides `TOKOMOTIVE_DATABASE`. Their defaults are
+`127.0.0.1:8787` and `sqlite://tokomotive.db`. Parent directories are created.
 These two options cannot be changed in the UI. Legacy `server.listen` and
 `server.database` seed-file fields are accepted but the binary ignores them.
 
@@ -57,13 +57,13 @@ The Proxy does not check the spelling of rate keys. This applies to the keys in
 
 | Variable                        | Function                                                                                             |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `LLM_ACCOUNTING_CONFIG`         | Path of the optional seed file. The `--config` flag has priority.                                    |
-| `LLM_ACCOUNTING_LISTEN`         | Listen address, unless `--listen` is set. |
-| `LLM_ACCOUNTING_DATABASE`       | SQLite URL, unless `--database` is set. |
-| `LLM_ACCOUNTING_ADMIN_PASSWORD` | Recovery override. When not empty, it replaces the stored password hash at each start. Use Setup for the normal path. |
-| `LLM_ACCOUNTING_SECRET_KEY`     | Master Key: 32 bytes encoded as 64 hex characters or base64. |
-| `LLM_ACCOUNTING_METRICS_TOKEN`  | Initial metrics token, used only on the first start, before runtime settings exist. |
-| `RUST_LOG`                      | Log filter, for example `info` or `llm_accounting=debug`. The default is `info`.                     |
+| `TOKOMOTIVE_CONFIG`         | Path of the optional seed file. The `--config` flag has priority.                                    |
+| `TOKOMOTIVE_LISTEN`         | Listen address, unless `--listen` is set. |
+| `TOKOMOTIVE_DATABASE`       | SQLite URL, unless `--database` is set. |
+| `TOKOMOTIVE_ADMIN_PASSWORD` | Recovery override. When not empty, it replaces the stored password hash at each start. Use Setup for the normal path. |
+| `TOKOMOTIVE_SECRET_KEY`     | Master Key: 32 bytes encoded as 64 hex characters or base64. |
+| `TOKOMOTIVE_METRICS_TOKEN`  | Initial metrics token, used only on the first start, before runtime settings exist. |
+| `RUST_LOG`                      | Log filter, for example `info` or `tokomotive=debug`. The default is `info`.                     |
 | Names in `env:NAME` references and in `*_env` keys | Each name is a variable that holds a Provider Key, a password or a token. |
 
 An empty listen address or database URL is not valid.
@@ -79,13 +79,13 @@ first start. Edit them in **Settings** afterward.
 | Key                      | Type   | Default                         | Meaning                                                                                                                                                  |
 | ------------------------ | ------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `listen`                 | string | `"127.0.0.1:8787"` | Legacy field; use `--listen` or the environment. |
-| `database`               | string | `"sqlite://llm-accounting.db"` | Legacy field; use `--database` or the environment. |
+| `database`               | string | `"sqlite://tokomotive.db"` | Legacy field; use `--database` or the environment. |
 | `admin_password`         | string | none                            | Legacy. A dashboard password in the file. It seeds the hash only when none exists. Use Setup instead. Do not use it in a repository that you commit. |
-| `admin_password_env`     | string | `"LLM_ACCOUNTING_ADMIN_PASSWORD"` | Name of the variable that holds the dashboard password. The variable has priority over `admin_password`. |
+| `admin_password_env`     | string | `"TOKOMOTIVE_ADMIN_PASSWORD"` | Name of the variable that holds the dashboard password. The variable has priority over `admin_password`. |
 | `default_markup_percent` | float  | `0`                             | Markup for Models that have no Price Card. The file `config.example.toml` sets it to `20`.                                                               |
 | `upstream_timeout_secs`  | integer | `600`                          | Time limit in seconds for one request to a Provider. The limit includes the time to read the response body. The connect time limit is 15 seconds and is fixed. |
 | `metrics_token`          | string | none                            | The bearer token for `/metrics`, in the file. It seeds once. Later changes belong in **Settings**. |
-| `metrics_token_env`      | string | `"LLM_ACCOUNTING_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
+| `metrics_token_env`      | string | `"TOKOMOTIVE_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
 | `reserve_output_tokens`  | integer | `4096` | Output tokens that a Reservation assumes when the request sets no maximum. Must be non-negative. |
 | `session_days`           | integer | `7` | Duration of new dashboard sessions, from 1 to 3650 days. |
 | `mode`                   | string | `"full"` | `full` enables pricing and usage limits. `simple` enables routing and token metrics without Budget checks, Reservations or Rate Limits. See "Simple mode". |
@@ -112,7 +112,7 @@ The Proxy stores passwords as salted Argon2 hashes. Use **Settings** to change t
 password. Enter the current password and a new password of at least 8 characters.
 This ends all sessions. Existing sessions otherwise survive restarts.
 
-`LLM_ACCOUNTING_ADMIN_PASSWORD`, when non-empty, replaces the stored hash at
+`TOKOMOTIVE_ADMIN_PASSWORD`, when non-empty, replaces the stored hash at
 each start. Remove that variable after recovery if you want UI password changes
 to remain after a restart. Legacy `admin_password` or `admin_password_env` values
 seed a hash only when none exists. The default environment variable remains the
@@ -138,7 +138,7 @@ not stored in SQLite.
 
 The Proxy finds the Master Key in this order:
 
-1. The variable `LLM_ACCOUNTING_SECRET_KEY`. It holds 32 bytes as 64 hex
+1. The variable `TOKOMOTIVE_SECRET_KEY`. It holds 32 bytes as 64 hex
    characters or as base64. An empty value or a wrong length stops the start.
 2. The file `secret.key` next to the database. It holds 32 bytes in base64. If
    the file does not exist, the Proxy makes it at the first start with Unix mode
@@ -437,31 +437,31 @@ The `Dockerfile` makes an image that holds the binary and a copy of
 | Item                   | Value                                                                                  |
 | ---------------------- | -------------------------------------------------------------------------------------- |
 | Base of the final image | `debian:bookworm-slim`                                                                |
-| User                   | `llma` (uid 10001)                                                                     |
+| User                   | `tokomotive` (uid 10001)                                                                     |
 | Working directory      | `/data`                                                                                |
 | Volume                 | `/data`                                                                                |
 | Port                   | `8787`                                                                                 |
-| Configuration file     | `/etc/llm-accounting/config.toml`                                                      |
-| `LLM_ACCOUNTING_CONFIG` | Not set; the example seed file is optional. |
-| `LLM_ACCOUNTING_LISTEN` | `0.0.0.0:8787`                                                                        |
-| `LLM_ACCOUNTING_DATABASE` | `sqlite:///data/llm-accounting.db`                                                  |
+| Configuration file     | `/etc/tokomotive/config.toml`                                                      |
+| `TOKOMOTIVE_CONFIG` | Not set; the example seed file is optional. |
+| `TOKOMOTIVE_LISTEN` | `0.0.0.0:8787`                                                                        |
+| `TOKOMOTIVE_DATABASE` | `sqlite:///data/tokomotive.db`                                                  |
 
 Build and run:
 
 ```sh
-docker build -t llm-accounting .
-docker run -p 8787:8787 -v llma-data:/data \
-  llm-accounting
+docker build -t tokomotive .
+docker run -p 8787:8787 -v tokomotive-data:/data \
+  tokomotive
 ```
 
 The file `compose.yaml` builds this image and runs it with these settings:
 
 - It publishes `127.0.0.1:8787:8787`.
-- It mounts the volume `llma-data` at `/data`.
+- It mounts the volume `tokomotive-data` at `/data`.
 - It passes `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `RUST_LOG` and
-  `LLM_ACCOUNTING_ADMIN_PASSWORD` from the shell or from a `.env` file.
+  `TOKOMOTIVE_ADMIN_PASSWORD` from the shell or from a `.env` file.
 - It has a health check on `/healthz`.
-- It does not set `LLM_ACCOUNTING_SECRET_KEY`. The line is a comment, because an
+- It does not set `TOKOMOTIVE_SECRET_KEY`. The line is a comment, because an
   empty value stops the start. Without it, the Proxy makes `/data/secret.key`.
 
 Start it with `docker compose up -d`. See [INSTALL.md](../INSTALL.md).
@@ -469,7 +469,7 @@ Start it with `docker compose up -d`. See [INSTALL.md](../INSTALL.md).
 Rules for Docker:
 
 - Open `/setup` on the first start. To seed instead, mount your own file and add
-  `--config /etc/llm-accounting/config.toml` after the image name. The image does
+  `--config /etc/tokomotive/config.toml` after the image name. The image does
   not use the example file unless you ask for it.
 - Keep the database on the volume `/data`. Without a volume, the Ledger Entries
   are lost when the container is removed.

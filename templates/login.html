@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Log in - LLM Accounting{% endblock %}
+{% block title %}Log in - Tokomotive{% endblock %}
 {% block header %}{% endblock %}
 {% block content %}
 <div class="panel" style="max-width:360px;margin:80px auto">
-  <h1>LLM Accounting</h1>
+  <h1>Tokomotive</h1>
   {% if let Some(e) = error %}<p class="bad">{{ e }}</p>{% endif %}
   <form method="post" action="/admin/login" class="row">
     <label>Admin password <input type="password" name="password" autofocus required style="width:220px"></label>

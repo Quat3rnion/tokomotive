@@ -1,4 +1,4 @@
-//! LLM API proxy that accounts per-model Cost, Price and Profit per User.
+//! LLM router and proxy with optional per-model Cost, Price and Profit accounting per User.
 
 pub mod catalog;
 pub mod config;

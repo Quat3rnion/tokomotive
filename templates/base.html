@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
-<title>{% block title %}LLM Accounting{% endblock %}</title>
+<title>{% block title %}Tokomotive{% endblock %}</title>
 <script src="/admin/assets/htmx.min.js"></script>
 <style>
 :root { --bg:#0f1115; --panel:#171a21; --line:#272b35; --text:#e6e8ee; --muted:#8a90a0; --accent:#3b82f6; --bad:#ef4444; --good:#10b981; --warn:#f59e0b; }
@@ -69,7 +69,7 @@ svg .axis { fill:var(--muted); font-size:11px; }
 <body>
 {% block header %}
 <header>
-  <b>LLM Accounting</b>
+  <b>Tokomotive</b>
   {% if base.simple %}<span class="muted">Simple mode</span>{% endif %}
   <nav>
     <a href="/admin" {% block nav_overview %}{% endblock %}>Overview</a>

@@ -23,7 +23,7 @@ use crate::ratelimit::Limits;
 use crate::state::AppState;
 use views::*;
 
-const COOKIE: &str = "llma_session";
+const COOKIE: &str = "tokomotive_session";
 
 macro_rules! tryr {
     ($e:expr) => {

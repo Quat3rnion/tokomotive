@@ -1,15 +1,15 @@
 //! Dashboard saves from htmx must navigate, not swap a page into #errors.
 
-use llm_accounting::config::Config;
+use tokomotive::config::Config;
 
 async fn app() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir_in("/arboretum").unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let router = llm_accounting::router(st);
+    let router = tokomotive::router(st);
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (dir, url)
 }

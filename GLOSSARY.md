@@ -48,7 +48,7 @@
 
 **Provider Key** - The secret credential that the Proxy uses to call a Provider. Users never see it.
 
-**Master Key** - The secret that protects stored Provider Keys and the metrics token. It comes from `LLM_ACCOUNTING_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
+**Master Key** - The secret that protects stored Provider Keys and the metrics token. It comes from `TOKOMOTIVE_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
 
 **Setup** - The first-use step in which the Operator sets the dashboard password and selects the mode. It runs once, on `/setup`.
 

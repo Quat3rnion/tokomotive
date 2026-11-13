@@ -1,8 +1,8 @@
 [package]
-name = "llm-accounting"
+name = "tokomotive"
 version = "0.1.0"
 edition = "2024"
-description = "LLM API proxy that accounts per-model cost, price and profit per user"
+description = "LLM router and proxy with fallbacks, format translation and optional per-user cost accounting"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

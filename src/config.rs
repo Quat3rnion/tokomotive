@@ -102,13 +102,13 @@ impl Default for Server {
     fn default() -> Self {
         Server {
             listen: "127.0.0.1:8787".into(),
-            database: "sqlite://llm-accounting.db".into(),
+            database: "sqlite://tokomotive.db".into(),
             admin_password: None,
-            admin_password_env: Some("LLM_ACCOUNTING_ADMIN_PASSWORD".into()),
+            admin_password_env: Some("TOKOMOTIVE_ADMIN_PASSWORD".into()),
             default_markup_percent: 0.0,
             upstream_timeout_secs: 600,
             metrics_token: None,
-            metrics_token_env: Some("LLM_ACCOUNTING_METRICS_TOKEN".into()),
+            metrics_token_env: Some("TOKOMOTIVE_METRICS_TOKEN".into()),
             reserve_output_tokens: 4096,
             session_days: 7,
             mode: "full".into(),

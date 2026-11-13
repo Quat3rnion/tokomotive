@@ -9,10 +9,10 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use futures_util::StreamExt;
-use llm_accounting::config::Config;
-use llm_accounting::state::AppState;
 use serde_json::{Value, json};
 use sqlx::Row;
+use tokomotive::config::Config;
+use tokomotive::state::AppState;
 
 #[derive(Clone, Default)]
 struct Seen(Arc<Mutex<Vec<(HeaderMap, Value)>>>);
@@ -148,10 +148,10 @@ async fn env() -> Env {
 
 async fn set_mode(e: &Env, mode: &str) {
     let settings = e.st.settings();
-    llm_accounting::db::delete_session(&e.st.db, "mode-test")
+    tokomotive::db::delete_session(&e.st.db, "mode-test")
         .await
         .unwrap();
-    llm_accounting::db::create_session(&e.st.db, "mode-test", 1)
+    tokomotive::db::create_session(&e.st.db, "mode-test", 1)
         .await
         .unwrap();
     let response = reqwest::Client::builder()
@@ -159,7 +159,7 @@ async fn set_mode(e: &Env, mode: &str) {
         .build()
         .unwrap()
         .post(format!("{}/admin/settings", e.proxy))
-        .header("cookie", "llma_session=mode-test")
+        .header("cookie", "tokomotive_session=mode-test")
         .form(&[
             (
                 "upstream_timeout_secs",
@@ -235,11 +235,8 @@ async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
         );
     }
     e.st.flush().await;
-    assert_eq!(
-        llm_accounting::db::count_flags(&e.st.db).await.unwrap(),
-        (1, 1)
-    );
-    let providers = llm_accounting::db::by_provider(&e.st.db, 0).await.unwrap();
+    assert_eq!(tokomotive::db::count_flags(&e.st.db).await.unwrap(), (1, 1));
+    let providers = tokomotive::db::by_provider(&e.st.db, 0).await.unwrap();
     let pool = providers.iter().find(|g| g.key == "pool").unwrap();
     assert_eq!(
         (
@@ -268,7 +265,7 @@ async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
         let response = e
             .http
             .get(format!("{}{path}", e.proxy))
-            .header("cookie", "llma_session=mode-test")
+            .header("cookie", "tokomotive_session=mode-test")
             .send()
             .await
             .unwrap();
@@ -302,7 +299,7 @@ async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
     let html = e
         .http
         .get(format!("{}/admin", e.proxy))
-        .header("cookie", "llma_session=mode-test")
+        .header("cookie", "tokomotive_session=mode-test")
         .send()
         .await
         .unwrap()
@@ -315,8 +312,8 @@ async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
 
 #[tokio::test]
 async fn simple_mode_skips_key_and_user_limits_without_counting_admissions_or_tokens() {
-    use llm_accounting::{db, ratelimit::Limits};
-    let metrics = llm_accounting::metrics::install().unwrap();
+    use tokomotive::{db, ratelimit::Limits};
+    let metrics = tokomotive::metrics::install().unwrap();
     let e = env().await;
     let blocked = Limits {
         rpm: Some(0),
@@ -440,9 +437,9 @@ async fn env_with_config(routes: &str, with_models: bool) -> Env {
 [server]
 database = "sqlite://{db}"
 admin_password = "pw"
-admin_password_env = "LLMA_TEST_UNSET_VAR"
+admin_password_env = "TOKOMOTIVE_TEST_UNSET_VAR"
 metrics_token = "mtok"
-metrics_token_env = "LLMA_TEST_UNSET_VAR"
+metrics_token_env = "TOKOMOTIVE_TEST_UNSET_VAR"
 default_markup_percent = 20
 
 {routes}
@@ -517,8 +514,8 @@ keys = ["sk-carol"]
         cfg.models.clear();
     }
     cfg.validate().unwrap();
-    let st = llm_accounting::init(&cfg, None).await.unwrap();
-    let app = llm_accounting::router(st.clone());
+    let st = tokomotive::init(&cfg, None).await.unwrap();
+    let app = tokomotive::router(st.clone());
     let pl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let paddr = pl.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(pl, app).await.unwrap() });
@@ -748,7 +745,7 @@ async fn translated_streams_keep_upstream_usage_and_client_formats() {
 
 #[tokio::test]
 async fn key_rpm_limit_returns_retry_after_without_counting_model_reads() {
-    use llm_accounting::{db, ratelimit::Limits};
+    use tokomotive::{db, ratelimit::Limits};
     for endpoint in ["chat/completions", "messages"] {
         let e = env().await;
         let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
@@ -800,7 +797,7 @@ async fn key_rpm_limit_returns_retry_after_without_counting_model_reads() {
 
 #[tokio::test]
 async fn tpm_limit_counts_all_upstream_token_classes_after_completion() {
-    use llm_accounting::{db, ratelimit::Limits};
+    use tokomotive::{db, ratelimit::Limits};
     for stream in [false, true] {
         let e = env().await;
         let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
@@ -972,7 +969,7 @@ async fn translated_errors_use_client_format_and_invalid_requests_never_reach_up
 
 #[tokio::test]
 async fn user_rate_limit_is_shared_by_two_virtual_keys() {
-    use llm_accounting::{db, ratelimit::Limits};
+    use tokomotive::{db, ratelimit::Limits};
     for limits in [
         Limits {
             rpm: Some(1),
@@ -1010,7 +1007,7 @@ async fn user_rate_limit_is_shared_by_two_virtual_keys() {
 
 #[tokio::test]
 async fn authentication_and_allowlist_checks_do_not_consume_rate_limits() {
-    use llm_accounting::{db, ratelimit::Limits};
+    use tokomotive::{db, ratelimit::Limits};
     let e = env().await;
     let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
     let (_, key) = db::create_key_with_limits(
@@ -1093,7 +1090,7 @@ deployments = [{ provider = "openai", model = "gpt-4o" }]
         .await
         .unwrap();
     let (_, key) =
-        llm_accounting::db::create_key(&e.st.db, carol, "routes", Some(vec!["smart".into()]))
+        tokomotive::db::create_key(&e.st.db, carol, "routes", Some(vec!["smart".into()]))
             .await
             .unwrap();
     let listed: Value = e
@@ -1176,7 +1173,7 @@ async fn provider_prefix_rewrites_prices_and_accepts_canonical_or_exact_allowlis
         .unwrap();
     for allowed in ["gpt-4o", "openai/gpt-4o"] {
         let (_, key) =
-            llm_accounting::db::create_key(&e.st.db, carol, "prefix", Some(vec![allowed.into()]))
+            tokomotive::db::create_key(&e.st.db, carol, "prefix", Some(vec![allowed.into()]))
                 .await
                 .unwrap();
         let r = e
@@ -1297,7 +1294,7 @@ deployments = [{ provider = "down", model = "gpt-4o" }]
         assert_eq!(r.status(), status);
         assert_eq!(i(&last_entry(&e.st).await, "attempts"), 1);
         // A runtime table swap must not discard the open circuit.
-        e.st.set_router_table(llm_accounting::routing::RouterTable::from_config(&e.cfg));
+        e.st.set_router_table(tokomotive::routing::RouterTable::from_config(&e.cfg));
     }
     assert_eq!(e.seen.0.lock().unwrap().len(), 2);
 }
@@ -1392,7 +1389,7 @@ async fn openai_stream_gets_include_usage_and_default_markup() {
     assert_eq!(i(&row, "price_micros"), 3600); // default 20%
     assert!(row.get::<Option<i64>, _>("ttft_ms").is_some());
     // Rollups group the dated name under the matched Model.
-    let groups = llm_accounting::db::by_model(&e.st.db, 0).await.unwrap();
+    let groups = tokomotive::db::by_model(&e.st.db, 0).await.unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].key, "gpt-4o");
 }
@@ -1477,14 +1474,10 @@ async fn auth_allowlist_and_budget() {
         .fetch_one(&e.st.db)
         .await
         .unwrap();
-    let (_, key) = llm_accounting::db::create_key(
-        &e.st.db,
-        alice,
-        "t",
-        Some(vec!["claude-sonnet-4-5".into()]),
-    )
-    .await
-    .unwrap();
+    let (_, key) =
+        tokomotive::db::create_key(&e.st.db, alice, "t", Some(vec!["claude-sonnet-4-5".into()]))
+            .await
+            .unwrap();
     let r = e
         .http
         .post(format!("{}/v1/chat/completions", e.proxy))
@@ -1500,7 +1493,7 @@ async fn auth_allowlist_and_budget() {
         .fetch_one(&e.st.db)
         .await
         .unwrap();
-    llm_accounting::db::revoke_key(&e.st.db, kid).await.unwrap();
+    tokomotive::db::revoke_key(&e.st.db, kid).await.unwrap();
     let r = e
         .http
         .post(format!("{}/v1/messages", e.proxy))
@@ -1527,15 +1520,15 @@ async fn unpriced_model_is_flagged_then_repriced() {
     assert_eq!(r.status(), 200);
     let row = last_entry(&e.st).await;
     assert_eq!((i(&row, "unpriced"), i(&row, "cost_micros")), (1, 0));
-    let before = llm_accounting::db::totals_since(&e.st.db, 0).await.unwrap();
+    let before = tokomotive::db::totals_since(&e.st.db, 0).await.unwrap();
     assert_eq!(before.cost_micros, 0);
 
     // Operator adds the card; reprice.
-    let id = llm_accounting::db::create_model(&e.st.db, "gpt-9", "openai", &[])
+    let id = tokomotive::db::create_model(&e.st.db, "gpt-9", "openai", &[])
         .await
         .unwrap();
-    let card = llm_accounting::pricing::CardRates {
-        base: llm_accounting::pricing::Rates {
+    let card = tokomotive::pricing::CardRates {
+        base: tokomotive::pricing::Rates {
             input: 1_000_000,
             output: 1_000_000,
             cache_read: 1_000_000,
@@ -1543,19 +1536,19 @@ async fn unpriced_model_is_flagged_then_repriced() {
         },
         tiers: vec![],
     };
-    llm_accounting::db::add_cost_card(&e.st.db, id, &card)
+    tokomotive::db::add_cost_card(&e.st.db, id, &card)
         .await
         .unwrap();
     e.st.reload_catalog().await.unwrap();
     set_mode(&e, "full").await;
-    let n = llm_accounting::db::reprice_unpriced(&e.st.db, &e.st.catalog())
+    let n = tokomotive::db::reprice_unpriced(&e.st.db, &e.st.catalog())
         .await
         .unwrap();
     assert_eq!(n, 1);
     let row = last_entry(&e.st).await;
     assert_eq!((i(&row, "unpriced"), i(&row, "cost_micros")), (0, 1100));
     // Rollups follow the ledger.
-    let after = llm_accounting::db::totals_since(&e.st.db, 0).await.unwrap();
+    let after = tokomotive::db::totals_since(&e.st.db, 0).await.unwrap();
     assert_eq!((after.requests, after.cost_micros), (1, 1100));
 }
 
@@ -1619,7 +1612,7 @@ async fn dashboard_requires_login_and_renders_every_page() {
             .unwrap();
         assert_eq!(r.status(), 200, "{path}");
         let body = r.text().await.unwrap();
-        assert!(body.contains("LLM Accounting"), "{path}");
+        assert!(body.contains("Tokomotive"), "{path}");
     }
     let body = c
         .get(format!("{}/admin", e.proxy))
@@ -1640,7 +1633,7 @@ async fn dashboard_requires_login_and_renders_every_page() {
         .send()
         .await
         .unwrap();
-    assert!(r.text().await.unwrap().contains("sk-llma-"));
+    assert!(r.text().await.unwrap().contains("sk-toko-"));
 
     // New Price Card version through the form.
     let r = c
@@ -1658,7 +1651,7 @@ async fn dashboard_requires_login_and_renders_every_page() {
     let m = e.st.catalog();
     assert!(matches!(
         m.resolve("gpt-4o").unwrap().price,
-        Some((_, llm_accounting::pricing::PriceSpec::MarkupBp(3000)))
+        Some((_, tokomotive::pricing::PriceSpec::MarkupBp(3000)))
     ));
 }
 
@@ -1867,8 +1860,8 @@ async fn sessions_survive_restart_and_logout_ends_them() {
     let token = cookie.split_once('=').unwrap().1.to_owned();
 
     // A new process on the same database accepts the session.
-    let st2 = llm_accounting::init(&e.cfg, None).await.unwrap();
-    let app2 = llm_accounting::router(st2.clone());
+    let st2 = tokomotive::init(&e.cfg, None).await.unwrap();
+    let app2 = tokomotive::router(st2.clone());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(l, app2).await.unwrap() });
@@ -1886,7 +1879,7 @@ async fn sessions_survive_restart_and_logout_ends_them() {
         .await
         .unwrap();
     assert!(
-        !llm_accounting::db::session_valid(&e.st.db, &token)
+        !tokomotive::db::session_valid(&e.st.db, &token)
             .await
             .unwrap()
     );
