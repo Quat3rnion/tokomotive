@@ -360,7 +360,13 @@ async fn simple_mode_skips_key_and_user_limits_without_counting_admissions_or_to
         assert_eq!(r.status(), expected);
         r.bytes().await.unwrap();
     }
-    let row = last_entry(&e.st).await;
+    // The streamed request can be recorded after the image request, so
+    // select the image entry by endpoint, not by order.
+    e.st.flush().await;
+    let row = sqlx::query("SELECT * FROM ledger WHERE endpoint = 'images'")
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
     assert_eq!(
         (i(&row, "image_input"), i(&row, "image_output")),
         (200, 1000)
