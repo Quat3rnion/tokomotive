@@ -385,7 +385,12 @@ async fn revoke_key(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -
 
 async fn models(_: Admin, State(st): State<AppState>) -> Response {
     let cat = st.catalog();
-    let providers: Vec<String> = st.providers.iter().map(|p| p.name.clone()).collect();
+    let providers: Vec<String> = st
+        .router_table()
+        .providers
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
     render(ModelsPage::build(&cat, providers))
 }
 
@@ -472,7 +477,12 @@ async fn create_model(
     if name.is_empty() {
         return bad("A model needs a name.");
     }
-    if !st.providers.iter().any(|p| p.name == f.provider) {
+    if !st
+        .router_table()
+        .providers
+        .iter()
+        .any(|p| p.name == f.provider)
+    {
         return bad("Unknown provider.");
     }
     let rates = match f.rates.parse() {
@@ -495,7 +505,12 @@ async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
     };
     let history = tryr!(db::card_history(&st.db, id).await);
     let teams = tryr!(db::list_teams(&st.db).await);
-    let providers: Vec<String> = st.providers.iter().map(|p| p.name.clone()).collect();
+    let providers: Vec<String> = st
+        .router_table()
+        .providers
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
     render(ModelPage::build(
         m,
         cat.default_markup_bp,
@@ -518,7 +533,12 @@ async fn update_model(
     Path(id): Path<i64>,
     Form(f): Form<ModelForm>,
 ) -> Response {
-    if !st.providers.iter().any(|p| p.name == f.provider) {
+    if !st
+        .router_table()
+        .providers
+        .iter()
+        .any(|p| p.name == f.provider)
+    {
         return bad("Unknown provider.");
     }
     tryr!(db::update_model(&st.db, id, &f.provider, &csv(&f.aliases)).await);

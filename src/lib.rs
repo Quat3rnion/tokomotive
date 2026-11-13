@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod pricing;
 pub mod provider;
 pub mod proxy;
+pub mod routing;
 pub mod state;
 pub mod usage;
 pub mod web;
@@ -35,6 +36,8 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(|| async { Redirect::to("/admin") }))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics_endpoint))
+        .route("/v1/models", get(proxy::list_models))
+        .route("/v1/models/{id}", get(proxy::get_model))
         .route("/v1/{*rest}", any(proxy::handle))
         .merge(web::router())
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))

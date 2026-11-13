@@ -26,6 +26,24 @@ reserve_output_tokens = 4096
 # Dashboard login duration.
 session_days = 7
 
+# Routing settings are static. Restart the Proxy after changes.
+[router]
+failure_threshold = 3
+cooldown_secs = 30
+max_attempts = 8
+
+# Optional client-facing model name. Strategies: priority (default),
+# round_robin, weighted. Weighted picks one deployment at random first,
+# then tries the others in descending weight order.
+# [[routes]]
+# name = "smart"
+# strategy = "priority"
+# deployments = [{ provider = "openai", model = "gpt-4o", weight = 1 }]
+# fallbacks = ["gpt-4o-mini"]
+# Fallbacks are route names or catalog Model names. They are allowed
+# implicitly when a Virtual Key allows the primary route. Unknown names
+# are skipped with a warning. Fallbacks do not expand recursively.
+
 [[providers]]
 name = "openai"
 kind = "openai"

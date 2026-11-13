@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
@@ -18,11 +18,15 @@ use crate::state::{AppState, Provider, Reservation};
 use crate::usage::Usage;
 
 fn error(status: StatusCode, kind: &str, msg: &str) -> Response {
-    (
-        status,
-        axum::Json(json!({"error": {"type": kind, "message": msg}})),
-    )
-        .into_response()
+    formatted_error(status, kind, msg, false)
+}
+
+fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -> Response {
+    let mut body = json!({"error": {"type": kind, "message": msg}});
+    if anthropic {
+        body["type"] = json!("error");
+    }
+    (status, axum::Json(body)).into_response()
 }
 
 fn internal() -> Response {
@@ -31,6 +35,11 @@ fn internal() -> Response {
         "api_error",
         "internal error",
     )
+}
+
+/// The single compatibility seam for native and translated deployments.
+fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
+    endpoint.native_kind().is_none_or(|native| native == kind)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -47,6 +56,93 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_owned())
+}
+
+async fn authenticate(
+    st: &AppState,
+    headers: &HeaderMap,
+    anthropic: bool,
+) -> Result<KeyAuth, Box<Response>> {
+    let Some(key) = bearer(headers) else {
+        return Err(Box::new(formatted_error(
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "missing API key",
+            anthropic,
+        )));
+    };
+    match db::lookup_key(&st.db, &key).await {
+        Ok(Some(a)) if !a.revoked && !a.user_disabled => Ok(a),
+        Ok(_) => Err(Box::new(formatted_error(
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "invalid API key",
+            anthropic,
+        ))),
+        Err(e) => {
+            tracing::error!(error = %e, "key lookup failed");
+            Err(Box::new(formatted_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+                "internal error",
+                anthropic,
+            )))
+        }
+    }
+}
+
+pub async fn list_models(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    models_response(st, headers, None).await
+}
+
+pub async fn get_model(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    models_response(st, headers, Some(id)).await
+}
+
+async fn models_response(st: AppState, headers: HeaderMap, id: Option<String>) -> Response {
+    let anthropic = headers.contains_key("anthropic-version");
+    let auth = match authenticate(&st, &headers, anthropic).await {
+        Ok(a) => a,
+        Err(r) => return *r,
+    };
+    let catalog = st.catalog();
+    let table = st.router_table();
+    let mut models = std::collections::BTreeMap::new();
+    for model in &catalog.models {
+        models.insert(model.name.clone(), model.provider.clone());
+    }
+    for route in &table.routes {
+        models.insert(route.name.clone(), "router".to_owned());
+    }
+    let data: Vec<Value> = models.into_iter()
+        .filter(|(name, _)| table.allowed(&catalog, &auth.allowed_models, Some(name)))
+        .map(|(name, owner)| {
+            if anthropic {
+                json!({"type":"model", "id":name, "display_name":name, "created_at":"1970-01-01T00:00:00Z"})
+            } else {
+                json!({"id":name, "object":"model", "created":0, "owned_by":owner})
+            }
+        }).collect();
+    if let Some(id) = id {
+        return match data.into_iter().find(|m| m["id"].as_str() == Some(&id)) {
+            Some(model) => axum::Json(model).into_response(),
+            None => formatted_error(
+                StatusCode::NOT_FOUND,
+                "not_found_error",
+                "model not found",
+                anthropic,
+            ),
+        };
+    }
+    if anthropic {
+        axum::Json(json!({"first_id": data.first().map(|m| &m["id"]), "last_id": data.last().map(|m| &m["id"]), "data":data, "has_more":false})).into_response()
+    } else {
+        axum::Json(json!({"object":"list", "data":data})).into_response()
+    }
 }
 
 /// Headers that are not copied between client and upstream.
@@ -76,6 +172,7 @@ struct Ctx {
     provider: Provider,
     endpoint: Endpoint,
     requested_model: Option<String>,
+    upstream_model: Option<String>,
     streamed: bool,
     started: Instant,
     ts_ms: i64,
@@ -111,7 +208,7 @@ impl Outcome {
 impl Ctx {
     fn finish(self, o: Outcome) {
         let catalog = self.st.catalog();
-        let model = o.model.or_else(|| self.requested_model.clone());
+        let model = o.model.or_else(|| self.upstream_model.clone());
         let mut quote = catalog.quote(model.as_deref(), self.auth.team_id, &o.usage);
         // Failed requests with no usage are errors, not Unpriced Entries.
         quote.unpriced = quote.unpriced && o.status < 400;
@@ -189,44 +286,45 @@ pub async fn handle(
     let started = Instant::now();
     let ts_ms = db::now_ms();
 
-    let Some(key) = bearer(&headers) else {
-        return error(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            "missing API key",
-        );
-    };
-    let auth = match db::lookup_key(&st.db, &key).await {
-        Ok(Some(a)) if !a.revoked && !a.user_disabled => a,
-        Ok(_) => {
-            return error(
-                StatusCode::UNAUTHORIZED,
-                "authentication_error",
-                "invalid API key",
-            );
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "key lookup failed");
-            return internal();
-        }
+    let auth = match authenticate(&st, &headers, false).await {
+        Ok(a) => a,
+        Err(r) => return *r,
     };
 
     let endpoint = Endpoint::from_path(uri.path());
-    let mut json_body: Option<Value> = if body.is_empty() {
+    let json_body: Option<Value> = if body.is_empty() {
         None
     } else {
         serde_json::from_slice(&body).ok()
     };
     let requested_model = json_body.as_ref().and_then(model_of);
     let catalog = st.catalog();
+    let table = st.router_table();
 
-    if !catalog.allowed(&auth.allowed_models, requested_model.as_deref()) {
+    if !table.allowed(&catalog, &auth.allowed_models, requested_model.as_deref()) {
         return error(
             StatusCode::FORBIDDEN,
             "permission_error",
             "this API key may not use this model",
         );
     }
+
+    let anthropic_hint = headers.contains_key("anthropic-version");
+    let mut candidates = st.candidates(
+        &table,
+        &catalog,
+        requested_model.as_deref(),
+        endpoint,
+        anthropic_hint,
+    );
+    candidates.retain(|c| compatible(c.provider.kind, endpoint));
+    let Some(first) = candidates.first() else {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "no provider is configured for this request",
+        );
+    };
 
     let mut reservation = None;
     if let Some(budget) = auth.budget_micros {
@@ -243,15 +341,21 @@ pub async fn handle(
                 return internal();
             }
         };
-        let worst = worst_case_price(
-            &catalog,
-            auth.team_id,
-            endpoint,
-            requested_model.as_deref(),
-            json_body.as_ref(),
-            body.len(),
-            st.reserve_output_tokens,
-        );
+        let worst = candidates
+            .iter()
+            .map(|c| {
+                worst_case_price(
+                    &catalog,
+                    auth.team_id,
+                    endpoint,
+                    c.model.as_deref(),
+                    json_body.as_ref(),
+                    body.len(),
+                    st.reserve_output_tokens,
+                )
+            })
+            .max()
+            .unwrap_or(0);
         match st.reserve(auth.user_id, budget, spent, worst) {
             Some(r) => reservation = Some(r),
             None => {
@@ -264,39 +368,15 @@ pub async fn handle(
         }
     }
 
-    let anthropic_hint = headers.contains_key("anthropic-version");
-    let Some(provider) = st.pick_provider(
-        &catalog,
-        requested_model.as_deref(),
-        endpoint,
-        anthropic_hint,
-    ) else {
-        return error(
-            StatusCode::BAD_GATEWAY,
-            "api_error",
-            "no provider is configured for this request",
-        );
-    };
-
     let streamed = json_body.as_ref().is_some_and(is_stream);
-    let mut strip_usage_chunk = false;
-    let body = match json_body.as_mut() {
-        Some(v) if endpoint.is_accounted() => {
-            strip_usage_chunk = provider.kind.prepare_body(endpoint, v);
-            Bytes::from(serde_json::to_vec(v).unwrap_or_default())
-        }
-        _ => body,
-    };
-
     let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let url = format!("{}{}", provider.base_url.trim_end_matches('/'), path_q);
-
     let mut ctx = Ctx {
         st: st.clone(),
         auth,
-        provider: provider.clone(),
+        provider: first.provider.clone(),
         endpoint,
         requested_model,
+        upstream_model: first.model.clone(),
         streamed,
         started,
         ts_ms,
@@ -305,34 +385,77 @@ pub async fn handle(
         reservation,
     };
 
-    // Try the keys of the pool in turn. Retry with the next key on a
-    // connection error, 429 or 5xx, before any byte goes to the client.
-    let order: Vec<Option<usize>> = match provider.key_order() {
-        o if o.is_empty() => vec![None],
-        o => o.into_iter().map(Some).collect(),
-    };
+    // Try each deployment's keys before the next deployment. Nothing has
+    // been sent to the client, so connection errors, 429 and 5xx can retry.
+    let degraded = candidates
+        .iter()
+        .all(|c| !st.deployment_available(c, &table.settings));
     let mut upstream = None;
-    for (n, idx) in order.iter().enumerate() {
-        let last = n + 1 == order.len();
-        let key = idx.map(|i| provider.keys[i].as_str()).unwrap_or("");
-        let req = build_request(&st, &provider, key, &method, &url, &headers, anthropic_hint);
-        ctx.attempts += 1;
-        ctx.provider_key = idx.map(|i| i as i64);
-        match req.body(body.clone()).send().await {
-            Ok(r) if !last && retryable(r.status()) => {
-                tracing::warn!(provider = %provider.name, key = ?idx, status = %r.status(), "upstream refused; retry with next key");
-                metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
+    let mut strip_usage_chunk = false;
+    let mut previous_route = None;
+    'deployments: for candidate in &candidates {
+        if ctx.attempts as usize >= table.settings.max_attempts {
+            break;
+        }
+        let Some(permit) = st.acquire_deployment(candidate, &table.settings, degraded) else {
+            continue;
+        };
+        let provider = &candidate.provider;
+        let mut prepared = json_body.clone();
+        if candidate.rewrite
+            && let Some(v) = prepared.as_mut()
+        {
+            v["model"] = json!(candidate.model);
+        }
+        let strip = prepared
+            .as_mut()
+            .is_some_and(|v| provider.kind.prepare_body(endpoint, v));
+        let upstream_body = match prepared {
+            Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
+            None => body.clone(),
+        };
+        let url = format!("{}{}", provider.base_url.trim_end_matches('/'), path_q);
+        let order: Vec<Option<usize>> = match provider.key_order() {
+            o if o.is_empty() => vec![None],
+            o => o.into_iter().map(Some).collect(),
+        };
+        for idx in order {
+            if ctx.attempts as usize >= table.settings.max_attempts {
+                break 'deployments;
             }
-            Ok(r) => {
-                upstream = Some(r);
+            if ctx.attempts > 0 {
+                metrics::counter!("llm_upstream_retries_total", "provider" => ctx.provider.name.clone()).increment(1);
+            }
+            if let Some(from) = previous_route.take() {
+                metrics::counter!("llm_upstream_fallbacks_total", "from" => from, "to" => candidate.route.clone()).increment(1);
+            }
+            ctx.provider = provider.clone();
+            ctx.upstream_model = candidate.model.clone();
+            ctx.attempts += 1;
+            ctx.provider_key = idx.map(|i| i as i64);
+            strip_usage_chunk = strip;
+            let key = idx.map(|i| provider.keys[i].as_str()).unwrap_or("");
+            let req = build_request(&st, provider, key, &method, &url, &headers, anthropic_hint);
+            upstream = None;
+            match req.body(upstream_body.clone()).send().await {
+                Ok(r) => {
+                    let healthy = !retryable(r.status());
+                    permit.record(healthy);
+                    upstream = Some(r);
+                    if healthy {
+                        break 'deployments;
+                    }
+                }
+                Err(e) => {
+                    permit.record(false);
+                    tracing::warn!(error = %e, url = %url, "upstream request failed");
+                }
+            }
+            if permit.is_probe() {
                 break;
             }
-            Err(e) if !last => {
-                tracing::warn!(provider = %provider.name, key = ?idx, error = %e, "upstream failed; retry with next key");
-                metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
-            }
-            Err(e) => tracing::warn!(error = %e, url = %url, "upstream request failed"),
         }
+        previous_route = Some(candidate.route.clone());
     }
     let Some(upstream) = upstream else {
         ctx.finish(Outcome::failed(502));

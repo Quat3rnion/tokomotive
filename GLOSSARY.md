@@ -6,6 +6,14 @@
 
 **Model** — A named LLM offered by a Provider. Each Model has one Cost Card and one Price Card.
 
+**Route** - A model name that the client sends, with an ordered set of Deployments. An explicit Route can override a catalog Model. Otherwise a catalog Model has one implicit Deployment.
+
+**Deployment** - A Provider and an upstream model name that can serve a Route. An explicit Deployment replaces the model name in the upstream request.
+
+**Fallback** - A Route or catalog Model tried after the primary Route's Deployments fail. A Virtual Key that allows the primary Route also allows its Fallbacks. Fallbacks do not expand recursively.
+
+**Circuit Breaker** - The in-memory health state for a Provider and upstream model. Repeated connection errors, 429 or 5xx responses start a cooldown. After it ends, one probe request tests recovery. If every candidate is open, the Proxy can try them anyway.
+
 **Token Class** — One billable category of tokens: input, output, cache read, cache write (5 minute), cache write (1 hour), image input, image output.
 
 **Cost Card** — The rates per million tokens, per Token Class, that the Provider charges the operator for a Model.

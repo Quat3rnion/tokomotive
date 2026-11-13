@@ -38,7 +38,13 @@ async fn mock_openai(
     if headers["authorization"] == "Bearer bad-key" {
         return (axum::http::StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
+    if headers["authorization"] == "Bearer fail-key" {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response();
+    }
     let usage = json!({"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 400}});
+    if b["metadata"]["omit_model"] == json!(true) {
+        return Json(json!({"choices": [], "usage": usage})).into_response();
+    }
     if b["stream"] == json!(true) {
         let mut ev = vec![format!(
             "data: {}\n\n",
@@ -109,6 +115,14 @@ struct Env {
 }
 
 async fn env() -> Env {
+    env_with_routes("").await
+}
+
+async fn env_with_routes(routes: &str) -> Env {
+    env_with_config(routes, true).await
+}
+
+async fn env_with_config(routes: &str, with_models: bool) -> Env {
     let seen = Seen::default();
     let upstream = axum::Router::new()
         .route("/v1/chat/completions", post(mock_openai))
@@ -118,6 +132,7 @@ async fn env() -> Env {
         .with_state(seen.clone());
     let ul = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let uaddr = ul.local_addr().unwrap();
+    let routes = routes.replace("$UPSTREAM", &uaddr.to_string());
     tokio::spawn(async move { axum::serve(ul, upstream).await.unwrap() });
 
     let dir = tempfile::tempdir().unwrap();
@@ -130,6 +145,8 @@ admin_password_env = "LLMA_TEST_UNSET_VAR"
 metrics_token = "mtok"
 metrics_token_env = "LLMA_TEST_UNSET_VAR"
 default_markup_percent = 20
+
+{routes}
 
 [[providers]]
 name = "openai"
@@ -196,7 +213,10 @@ keys = ["sk-carol"]
         db = dir.path().join("t.db").display(),
         u = uaddr
     );
-    let cfg: Config = toml::from_str(&cfg).unwrap();
+    let mut cfg: Config = toml::from_str(&cfg).unwrap();
+    if !with_models {
+        cfg.models.clear();
+    }
     cfg.validate().unwrap();
     let st = llm_accounting::init(&cfg, None).await.unwrap();
     let app = llm_accounting::router(st.clone());
@@ -210,6 +230,440 @@ keys = ["sk-carol"]
         http: reqwest::Client::new(),
         cfg,
         _dir: dir,
+    }
+}
+
+#[tokio::test]
+async fn explicit_route_rewrites_and_prices_the_deployment_model() {
+    let e = env_with_routes(
+        r#"
+[[routes]]
+name = "smart"
+deployments = [{ provider = "openai", model = "gpt-4o" }]
+"#,
+    )
+    .await;
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model": "smart", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(e.seen.0.lock().unwrap()[0].1["model"], "gpt-4o");
+    let row = last_entry(&e.st).await;
+    assert_eq!(row.get::<String, _>("requested_model"), "smart");
+    assert_eq!(row.get::<String, _>("model"), "gpt-4o");
+    assert_eq!(row.get::<String, _>("provider"), "openai");
+    assert_eq!(i(&row, "cost_micros"), 3000);
+    assert_eq!(i(&row, "price_micros"), 3600);
+}
+
+#[tokio::test]
+async fn route_falls_back_after_all_keys_fail_and_skips_open_circuit() {
+    let e = env_with_routes(
+        r#"
+[router]
+failure_threshold = 2
+cooldown_secs = 30
+[[providers]]
+name = "down"
+kind = "openai"
+base_url = "http://$UPSTREAM"
+api_keys = ["bad-key", "fail-key"]
+[[routes]]
+name = "smart"
+deployments = [{ provider = "down", model = "gpt-4o" }]
+fallbacks = ["backup", "smart", "missing"]
+[[routes]]
+name = "backup"
+deployments = [{ provider = "openai", model = "gpt-4o" }]
+fallbacks = ["smart"]
+"#,
+    )
+    .await;
+    for attempts in [3, 1] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model": "smart"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let row = last_entry(&e.st).await;
+        assert_eq!(i(&row, "attempts"), attempts);
+        assert_eq!(row.get::<String, _>("provider"), "openai");
+    }
+    assert_eq!(e.seen.0.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn route_strategies_distribute_first_choices_and_rotation_survives_table_swap() {
+    for strategy in ["round_robin", "weighted"] {
+        let cfg = r#"
+[[providers]]
+name = "second"
+kind = "openai"
+base_url = "http://$UPSTREAM"
+api_key = "second-key"
+[[routes]]
+name = "balanced"
+strategy = "$STRATEGY"
+deployments = [
+  { provider = "openai", model = "gpt-4o", weight = 3 },
+  { provider = "second", model = "gpt-4o", weight = 1 },
+]
+"#
+        .replace("$STRATEGY", strategy);
+        let e = env_with_routes(&cfg).await;
+        for n in 0..120 {
+            if n == 5 {
+                e.st.set_router_table((*e.st.router_table()).clone());
+            }
+            let r = e
+                .http
+                .post(format!("{}/v1/chat/completions", e.proxy))
+                .bearer_auth("sk-carol")
+                .json(&json!({"model": "balanced"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200);
+        }
+        let seen = e.seen.0.lock().unwrap();
+        let first = seen
+            .iter()
+            .filter(|(h, _)| h["authorization"] == "Bearer upstream-openai-key")
+            .count();
+        if strategy == "round_robin" {
+            assert_eq!(first, 60);
+            assert!(
+                seen.windows(2)
+                    .all(|pair| pair[0].0["authorization"] != pair[1].0["authorization"])
+            );
+        } else {
+            assert!(
+                (65..=110).contains(&first),
+                "first deployment chosen {first}/120 times"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn incompatible_deployment_is_skipped() {
+    let e = env_with_routes(
+        r#"
+[[routes]]
+name = "smart"
+deployments = [
+ { provider = "anthropic", model = "claude-sonnet-4-5" },
+ { provider = "openai", model = "gpt-4o" },
+]
+"#,
+    )
+    .await;
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model": "smart"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(e.seen.0.lock().unwrap().len(), 1);
+    assert_eq!(e.seen.0.lock().unwrap()[0].1["model"], "gpt-4o");
+    assert_eq!(i(&last_entry(&e.st).await, "attempts"), 1);
+}
+
+#[tokio::test]
+async fn model_endpoints_authenticate_filter_and_return_native_formats_without_ledger_entries() {
+    let e = env_with_routes(
+        r#"
+[[routes]]
+name = "smart"
+deployments = [{ provider = "openai", model = "gpt-4o" }]
+[[routes]]
+name = "gpt-4o"
+deployments = [{ provider = "openai", model = "gpt-4o" }]
+"#,
+    )
+    .await;
+    let url = format!("{}/v1/models", e.proxy);
+    assert_eq!(e.http.get(&url).send().await.unwrap().status(), 401);
+    let all: Value = e
+        .http
+        .get(&url)
+        .bearer_auth("sk-carol")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all["object"], "list");
+    assert_eq!(all["data"].as_array().unwrap().len(), 6);
+    assert!(
+        all["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "smart" && m["owned_by"] == "router")
+    );
+    assert_eq!(
+        all["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["id"] == "gpt-4o")
+            .count(),
+        1
+    );
+    let carol: i64 = sqlx::query_scalar("SELECT id FROM users WHERE name = 'carol'")
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
+    let (_, key) =
+        llm_accounting::db::create_key(&e.st.db, carol, "routes", Some(vec!["smart".into()]))
+            .await
+            .unwrap();
+    let listed: Value = e
+        .http
+        .get(&url)
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        listed["data"],
+        json!([{"id":"smart", "object":"model", "created":0, "owned_by":"router"}])
+    );
+    let anthropic: Value = e
+        .http
+        .get(&url)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        anthropic,
+        json!({"data":[{"type":"model", "id":"smart", "display_name":"smart", "created_at":"1970-01-01T00:00:00Z"}], "has_more":false, "first_id":"smart", "last_id":"smart"})
+    );
+    let single: Value = e
+        .http
+        .get(format!("{url}/smart"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(single["id"], "smart");
+    for id in ["missing", "gpt-4o"] {
+        let r = e
+            .http
+            .get(format!("{url}/{id}"))
+            .bearer_auth(&key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        assert_eq!(r.json::<Value>().await.unwrap()["type"], "error");
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ledger")
+            .fetch_one(&e.st.db)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(e.seen.0.lock().unwrap().is_empty());
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth(&key)
+        .json(&json!({"model":"smart"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn provider_prefix_rewrites_prices_and_accepts_canonical_or_exact_allowlist() {
+    let e = env().await;
+    let carol: i64 = sqlx::query_scalar("SELECT id FROM users WHERE name = 'carol'")
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
+    for allowed in ["gpt-4o", "openai/gpt-4o"] {
+        let (_, key) =
+            llm_accounting::db::create_key(&e.st.db, carol, "prefix", Some(vec![allowed.into()]))
+                .await
+                .unwrap();
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth(&key)
+            .json(&json!({"model":"openai/gpt-4o"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let row = last_entry(&e.st).await;
+        assert_eq!(row.get::<String, _>("requested_model"), "openai/gpt-4o");
+        assert_eq!(row.get::<String, _>("model"), "gpt-4o");
+        assert_eq!(i(&row, "cost_micros"), 3000);
+    }
+    assert!(
+        e.seen
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, b)| b["model"] == "gpt-4o")
+    );
+}
+
+#[tokio::test]
+async fn no_catalog_or_routes_forwards_and_records_unpriced_usage() {
+    let e = env_with_config("", false).await;
+    assert!(e.cfg.models.is_empty() && e.cfg.routes.is_empty());
+    for model in ["openai/new-model", "unknown/new-model"] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model":model}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let row = last_entry(&e.st).await;
+        assert_eq!(i(&row, "unpriced"), 1);
+        assert_eq!((i(&row, "input"), i(&row, "output")), (600, 100));
+        assert_eq!(row.get::<String, _>("requested_model"), model);
+    }
+    let seen = e.seen.0.lock().unwrap();
+    assert_eq!(seen[0].1["model"], "new-model");
+    assert_eq!(seen[1].1["model"], "unknown/new-model");
+}
+
+#[tokio::test]
+async fn route_uses_deployment_price_without_response_model_and_reserves_most_expensive_model() {
+    let e = env_with_routes(
+        r#"
+[[routes]]
+name = "smart"
+deployments = [{ provider = "openai", model = "gpt-4o" }]
+fallbacks = ["expensive"]
+[[routes]]
+name = "expensive"
+deployments = [{ provider = "openai", model = "claude-sonnet-4-5" }]
+"#,
+    )
+    .await;
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model":"smart", "metadata":{"omit_model":true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let row = last_entry(&e.st).await;
+    assert_eq!(row.get::<String, _>("model"), "gpt-4o");
+    assert_eq!(i(&row, "cost_micros"), 3000);
+    // 500 output tokens fit on gpt-4o ($0.006 at +20%) but not the
+    // fallback ($0.015 at +100%). No upstream request may start.
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model":"smart", "max_tokens":500}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 402);
+    assert_eq!(e.seen.0.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn attempt_cap_and_all_open_degraded_mode_still_return_an_upstream_response() {
+    let e = env_with_routes(
+        r#"
+[router]
+max_attempts = 1
+failure_threshold = 1
+[[providers]]
+name = "down"
+kind = "openai"
+base_url = "http://$UPSTREAM"
+api_keys = ["bad-key", "fail-key"]
+[[routes]]
+name = "only-down"
+deployments = [{ provider = "down", model = "gpt-4o" }]
+"#,
+    )
+    .await;
+    for status in [429, 503] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model":"only-down"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status);
+        assert_eq!(i(&last_entry(&e.st).await, "attempts"), 1);
+        // A runtime table swap must not discard the open circuit.
+        e.st.set_router_table(llm_accounting::routing::RouterTable::from_config(&e.cfg));
+    }
+    assert_eq!(e.seen.0.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn degraded_mode_tries_the_entire_key_pool() {
+    let e = env_with_routes(
+        r#"
+[router]
+failure_threshold = 1
+[[providers]]
+name = "down"
+kind = "openai"
+base_url = "http://$UPSTREAM"
+api_keys = ["bad-key", "fail-key"]
+[[routes]]
+name = "only-down"
+deployments = [{ provider = "down", model = "gpt-4o" }]
+"#,
+    )
+    .await;
+    for _ in 0..2 {
+        e.http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model":"only-down"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(i(&last_entry(&e.st).await, "attempts"), 2);
     }
 }
 

@@ -14,6 +14,10 @@ use crate::provider::ProviderKind;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
+    pub router: RouterCfg,
+    #[serde(default)]
+    pub routes: Vec<RouteCfg>,
+    #[serde(default)]
     pub server: Server,
     #[serde(default)]
     pub providers: Vec<ProviderCfg>,
@@ -23,6 +27,57 @@ pub struct Config {
     pub teams: Vec<TeamCfg>,
     #[serde(default)]
     pub users: Vec<UserCfg>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RouterCfg {
+    pub failure_threshold: usize,
+    pub cooldown_secs: u64,
+    pub max_attempts: usize,
+}
+
+impl Default for RouterCfg {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 3,
+            cooldown_secs: 30,
+            max_attempts: 8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Strategy {
+    #[default]
+    Priority,
+    RoundRobin,
+    Weighted,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCfg {
+    pub name: String,
+    #[serde(default)]
+    pub strategy: Strategy,
+    pub deployments: Vec<DeploymentCfg>,
+    #[serde(default)]
+    pub fallbacks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentCfg {
+    pub provider: String,
+    pub model: String,
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+fn default_weight() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -234,6 +289,23 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
+            bail!("router failure_threshold and max_attempts must be positive");
+        }
+        let mut names = std::collections::HashSet::new();
+        for r in &self.routes {
+            if !names.insert(&r.name) {
+                bail!("duplicate route {}", r.name);
+            }
+            for d in &r.deployments {
+                if !self.providers.iter().any(|p| p.name == d.provider) {
+                    bail!("route {} uses unknown provider {}", r.name, d.provider);
+                }
+                if d.weight == 0 {
+                    bail!("route {} has zero deployment weight", r.name);
+                }
+            }
+        }
         for m in &self.models {
             if !self.providers.iter().any(|p| p.name == m.provider) {
                 bail!("model {} uses unknown provider {}", m.name, m.provider);
@@ -320,6 +392,49 @@ mod tests {
         let rates: PriceCfg = toml::from_str("input = 1.5").unwrap();
         assert!(
             matches!(rates.to_spec().unwrap(), PriceSpec::Rates(r) if r.base.input == 1_500_000)
+        );
+    }
+
+    #[test]
+    fn route_validation_rejects_invalid_deployments_and_duplicate_names() {
+        let text = r#"
+[[providers]]
+name = "test"
+kind = "openai"
+base_url = "http://localhost"
+[[routes]]
+name = "smart"
+deployments = [{ provider = "test", model = "m", weight = 1 }]
+fallbacks = ["loaded-from-db-at-request-time"]
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        cfg.validate().unwrap();
+        let mut invalid = cfg.clone();
+        invalid.routes.push(invalid.routes[0].clone());
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate route")
+        );
+        let mut invalid = cfg.clone();
+        invalid.routes[0].deployments[0].provider = "missing".into();
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unknown provider")
+        );
+        let mut invalid = cfg;
+        invalid.routes[0].deployments[0].weight = 0;
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("zero deployment weight")
         );
     }
 }
