@@ -1,0 +1,35 @@
+# Start:  docker compose up -d
+# Then open http://127.0.0.1:8787/admin and set the admin password on the
+# setup page. Add Providers, Routes and Virtual Keys in the dashboard.
+services:
+  llm-accounting:
+    build: .
+    image: llm-accounting:latest
+    restart: unless-stopped
+    ports:
+      # Remove "127.0.0.1:" to accept connections from other hosts.
+      - "127.0.0.1:8787:8787"
+    environment:
+      # Optional. Without a Master Key here, the Proxy makes /data/secret.key at
+      # first start. Back up the key: without it, the Provider Keys in the
+      # database are lost. To set it (32 bytes, hex or base64), remove the "#":
+      # LLM_ACCOUNTING_SECRET_KEY: ${LLM_ACCOUNTING_SECRET_KEY}
+      # Optional. Sets the admin password instead of the setup page.
+      LLM_ACCOUNTING_ADMIN_PASSWORD: ${LLM_ACCOUNTING_ADMIN_PASSWORD:-}
+      # Optional. Provider Keys can refer to these as env:OPENAI_API_KEY.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - llma-data:/data
+      # Optional seed file, read once at first start:
+      # - ./config.toml:/etc/llm-accounting/config.toml:ro
+    # command: ["llm-accounting", "--config", "/etc/llm-accounting/config.toml"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8787 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ok <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  llma-data:

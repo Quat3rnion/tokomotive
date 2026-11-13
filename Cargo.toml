@@ -3,7 +3,7 @@ name = "llm-accounting"
 version = "0.1.0"
 edition = "2024"
 description = "LLM API proxy that accounts per-model cost, price and profit per user"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 aes-gcm = "0.10"
