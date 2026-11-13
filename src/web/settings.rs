@@ -23,6 +23,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/routes/{name}/delete", post(delete_route))
         .route("/admin/settings", get(settings_page).post(save_settings))
         .route("/admin/settings/password", post(change_password))
+        .route("/admin/settings/mode", post(save_mode))
 }
 
 #[derive(Template)]
@@ -52,51 +53,56 @@ struct ServerForm {
     failure_threshold: String,
     cooldown_secs: String,
     max_attempts: String,
-    mode: String,
+    /// The dashboard changes the mode with its own form. Scripts that still
+    /// send the mode here keep working; without it the mode stays.
+    mode: Option<String>,
     #[serde(default)]
     metrics_token: String,
     clear_metrics_token: Option<String>,
 }
 impl ServerForm {
-    fn parse(&self, mut cfg: Config) -> anyhow::Result<(Config, store::Settings)> {
-        if !matches!(self.mode.as_str(), "full" | "simple") {
-            anyhow::bail!("Choose full or simple mode.");
+    fn parse(&self, mut cfg: Config, mode: &str) -> anyhow::Result<(Config, store::Settings)> {
+        let mode = self.mode.as_deref().unwrap_or(mode);
+        if !matches!(mode, "full" | "simple") {
+            anyhow::bail!("Choose Full Mode or Simple Mode.");
         }
         if let Some(value) = &self.default_markup_percent {
-            cfg.server.default_markup_percent =
-                value.parse().context("Markup must be a number.")?;
+            cfg.server.default_markup_percent = value
+                .trim()
+                .parse()
+                .context("Enter the Markup as a number, for example 20.")?;
         }
         cfg.server.upstream_timeout_secs = self
             .upstream_timeout_secs
             .parse()
-            .context("Timeout must be a positive integer.")?;
+            .context("Enter the upstream timeout as a whole number of seconds, 1 or more.")?;
         if let Some(value) = &self.reserve_output_tokens {
             cfg.server.reserve_output_tokens = value
                 .parse()
-                .context("Reserved tokens must be a non-negative integer.")?;
+                .context("Enter the reserved output tokens as a whole number, 0 or more.")?;
         }
         cfg.server.session_days = self
             .session_days
             .parse()
-            .context("Session days must be a positive integer.")?;
+            .context("Enter the session days as a whole number from 1 to 3650.")?;
         cfg.router.failure_threshold = self
             .failure_threshold
             .parse()
-            .context("Failure threshold must be a positive integer.")?;
+            .context("Enter the failure threshold as a whole number, 1 or more.")?;
         cfg.router.cooldown_secs = self
             .cooldown_secs
             .parse()
-            .context("Cooldown must be a non-negative integer.")?;
+            .context("Enter the cooldown as a whole number of seconds, 0 or more.")?;
         cfg.router.max_attempts = self
             .max_attempts
             .parse()
-            .context("Maximum attempts must be a positive integer.")?;
+            .context("Enter the maximum attempts as a whole number, 1 or more.")?;
         cfg.validate()?;
         let settings = store::Settings {
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             session_days: cfg.server.session_days,
-            mode: self.mode.clone(),
+            mode: mode.to_owned(),
             router: cfg.router.clone(),
             metrics_token: None,
         };
@@ -112,7 +118,7 @@ async fn save_settings(
     let mut cfg = tryr!(runtime(&st).await);
     cfg.server.default_markup_percent = st.catalog().default_markup_bp as f64 / 100.0;
     cfg.server.reserve_output_tokens = st.settings().reserve_output_tokens;
-    let (cfg, mut settings) = match f.parse(cfg) {
+    let (cfg, mut settings) = match f.parse(cfg, &st.settings().mode) {
         Ok(v) => v,
         Err(e) => return form_error(e),
     };
@@ -140,6 +146,34 @@ async fn save_settings(
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
     saved("/admin/settings", "Settings saved.")
+}
+
+#[derive(Deserialize)]
+struct ModeForm {
+    #[serde(default)]
+    mode: String,
+}
+/// Changes only the mode. The page asks for confirmation first.
+async fn save_mode(_: Admin, State(st): State<AppState>, Form(f): Form<ModeForm>) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let message = match f.mode.as_str() {
+        "full" => "Full Mode is on. The Proxy applies Prices, Budgets and Rate Limits.",
+        "simple" => "Simple Mode is on. The Proxy routes requests and records usage only.",
+        _ => return form_error("Choose Full Mode or Simple Mode."),
+    };
+    // Change only the mode in the stored value; the token stays encrypted.
+    let mut settings: store::Settings = tryr!(serde_json::from_str(
+        &tryr!(store::value(&st.db, "runtime_settings").await).unwrap_or_default()
+    ));
+    settings.mode = f.mode;
+    tryr!(
+        sqlx::query("UPDATE settings SET value=? WHERE key='runtime_settings'")
+            .bind(tryr!(serde_json::to_string(&settings)))
+            .execute(&st.db)
+            .await
+    );
+    tryr!(st.reload_settings().await);
+    saved("/admin/settings", message)
 }
 
 #[derive(Deserialize)]
@@ -184,6 +218,8 @@ struct RoutesPage {
     providers: Vec<String>,
     /// Route and Model names offered as Fallback suggestions.
     fallback_names: Vec<String>,
+    /// Upstream model names offered in the Deployment rows.
+    upstream_models: Vec<String>,
 }
 impl RoutesPage {
     /// The Add route form starts with no deployments.
@@ -223,7 +259,16 @@ async fn routes(_: Admin, State(st): State<AppState>) -> Response {
         .collect();
     fallback_names.sort();
     fallback_names.dedup();
+    let mut upstream_models: Vec<String> = cfg
+        .routes
+        .iter()
+        .flat_map(|r| r.deployments.iter().map(|d| d.model.clone()))
+        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
+        .collect();
+    upstream_models.sort();
+    upstream_models.dedup();
     render(RoutesPage {
+        upstream_models,
         base: Base::new(&st),
         routes: tryr!(routes),
         providers: cfg.providers.into_iter().map(|p| p.name).collect(),
@@ -264,7 +309,7 @@ impl RouteForm {
     fn deployments(&self) -> Result<Vec<DeploymentCfg>, &'static str> {
         let rows = self.providers.len();
         if self.models.len() != rows || self.weights.len() != rows {
-            return Err("Each deployment needs a provider, model and weight. Reload the page.");
+            return Err("Each Deployment needs a Provider, a model and a weight. Reload the page.");
         }
         let mut out = Vec::new();
         for ((provider, model), weight) in
@@ -275,7 +320,7 @@ impl RouteForm {
                 continue;
             }
             if provider.is_empty() {
-                return Err("Choose a provider for each deployment.");
+                return Err("Choose a Provider for each Deployment.");
             }
             let weight = if weight.is_empty() {
                 1
@@ -291,7 +336,7 @@ impl RouteForm {
             });
         }
         if out.is_empty() {
-            return Err("Add at least one deployment.");
+            return Err("Add at least one Deployment.");
         }
         Ok(out)
     }
@@ -319,7 +364,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
     };
     let strategy: Strategy = match serde_json::from_value(serde_json::Value::String(f.strategy)) {
         Ok(v) => v,
-        Err(_) => return form_error("Choose priority, round_robin or weighted."),
+        Err(_) => return form_error("Choose the strategy Priority, Round robin or Weighted."),
     };
     let added = old.is_none();
     let route = RouteCfg {
@@ -335,7 +380,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         }
         if name != &route.name && cfg.routes.iter().any(|r| r.fallbacks.contains(name)) {
             return form_error(
-                "This route is used as a fallback. Remove that reference before renaming it.",
+                "Another Route uses this Route as a Fallback. Remove that Fallback before you rename it.",
             );
         }
         cfg.routes.retain(|r| &r.name != name);
@@ -343,6 +388,20 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
     cfg.routes.push(route.clone());
     if let Err(e) = cfg.validate() {
         return form_error(e);
+    }
+    // A Fallback names another Route or a catalog Model (or alias).
+    let catalog = st.catalog();
+    for name in &route.fallbacks {
+        if name == &route.name {
+            return form_error(format!(
+                "Route {name} cannot be its own Fallback. Name another Route or a Model."
+            ));
+        }
+        if !cfg.routes.iter().any(|r| &r.name == name) && catalog.resolve(name).is_none() {
+            return form_error(format!(
+                "Unknown Fallback: {name}. Use the name of another Route or of a Model on the Models page."
+            ));
+        }
     }
     let mut tx = tryr!(st.db.begin().await);
     if let Some(name) = old {
@@ -374,7 +433,9 @@ async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<Str
     let _guard = st.settings_write.lock().await;
     let cfg = tryr!(runtime(&st).await);
     if cfg.routes.iter().any(|r| r.fallbacks.contains(&name)) {
-        return form_error("This route is used as a fallback. Remove that reference first.");
+        return form_error(
+            "Another Route uses this Route as a Fallback. Remove that Fallback first.",
+        );
     }
     tryr!(
         sqlx::query("DELETE FROM routes WHERE name=?")
@@ -396,11 +457,114 @@ struct ProviderView {
     name: String,
     kind: String,
     base_url: String,
-    keys: Vec<String>,
+    keys: Vec<KeyView>,
     auth: String,
-    status: String,
-    usage_status: String,
-    usage: String,
+    /// "API key", "ChatGPT subscription" or "Claude Pro/Max".
+    auth_label: &'static str,
+    status: Option<StatusView>,
+    usage_status: Option<StatusView>,
+    usage: Vec<UsageView>,
+}
+impl ProviderView {
+    fn has_unset_env(&self) -> bool {
+        self.keys.iter().any(|k| k.env_set == Some(false))
+    }
+}
+/// One entry of a Key Pool. Never more than the last 4 characters.
+struct KeyView {
+    /// `env:NAME` or `****abcd`.
+    label: String,
+    /// For `env:NAME`: whether the variable is set and not empty.
+    env_set: Option<bool>,
+}
+/// The state of a subscription or usage login.
+struct StatusView {
+    connected: bool,
+    account: Option<String>,
+    plan: Option<String>,
+    expires: Option<super::views::Stamp>,
+    last_refresh: Option<super::views::Stamp>,
+    last_error: Option<String>,
+}
+struct UsageView {
+    label: String,
+    /// 0 to 100, for `<meter>`.
+    percent: f64,
+    percent_text: String,
+    resets: Option<super::views::Stamp>,
+}
+
+fn last4(plain: &str) -> String {
+    let tail: String = plain
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("****{tail}")
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+fn key_view(st: &AppState, stored: &str) -> anyhow::Result<KeyView> {
+    Ok(match stored.strip_prefix("env:") {
+        Some(env) => KeyView {
+            label: stored.into(),
+            env_set: Some(env_value(env).is_some()),
+        },
+        None => KeyView {
+            label: last4(&st.secret_key.decrypt(stored)?),
+            env_set: None,
+        },
+    })
+}
+
+/// The display text of each Key Pool entry, in the order that the Proxy
+/// uses (unset `env:NAME` references are not in the pool). The Ledger shows
+/// these for the Provider Key index of an entry.
+pub(super) async fn key_labels(
+    st: &AppState,
+) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
+    let mut out = std::collections::HashMap::new();
+    for row in sqlx::query("SELECT name, keys_json FROM providers")
+        .fetch_all(&st.db)
+        .await?
+    {
+        let mut labels = Vec::new();
+        for stored in serde_json::from_str::<Vec<String>>(row.get("keys_json"))? {
+            match stored.strip_prefix("env:") {
+                Some(env) if env_value(env).is_none() => {}
+                Some(_) => labels.push(stored.clone()),
+                None => labels.push(last4(&st.secret_key.decrypt(&stored)?)),
+            }
+        }
+        out.insert(row.get("name"), labels);
+    }
+    Ok(out)
+}
+
+fn status_view(status: crate::oauth::Status) -> StatusView {
+    let stamp = |ms: Option<i64>| ms.and_then(|ms| super::views::stamp_opt(ms.div_euclid(1000)));
+    StatusView {
+        connected: status.connected,
+        account: status.account,
+        plan: status.plan,
+        expires: stamp(status.expires_at),
+        last_refresh: stamp(status.last_refresh),
+        last_error: status.last_error,
+    }
+}
+
+fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
+    match auth {
+        crate::provider::ProviderAuth::ApiKey => "API key",
+        crate::provider::ProviderAuth::Chatgpt => "ChatGPT subscription",
+        crate::provider::ProviderAuth::Claude => "Claude Pro/Max",
+    }
 }
 
 async fn providers(_: Admin, State(st): State<AppState>) -> Response {
@@ -412,68 +576,50 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
     ) {
         let mut keys = Vec::new();
         for value in tryr!(serde_json::from_str::<Vec<String>>(row.get("keys_json"))) {
-            let plain = if let Some(env) = value.strip_prefix("env:") {
-                std::env::var(env).unwrap_or_default()
-            } else {
-                tryr!(st.secret_key.decrypt(&value))
-            };
-            keys.push(format!(
-                "****{}",
-                plain
-                    .chars()
-                    .rev()
-                    .take(4)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<String>()
-            ));
+            keys.push(tryr!(key_view(&st, &value)));
         }
         let kind: ProviderKind = tryr!(serde_json::from_str(row.get("kind")));
         let auth: crate::provider::ProviderAuth = tryr!(serde_json::from_value(serde_json::json!(
             row.get::<String, _>("auth")
         )));
         let name: String = row.get("name");
-        let status = if let Some(flow) = crate::oauth::Flow::from_auth(auth) {
-            status_text(tryr!(st.oauth.status(&name, flow).await))
-        } else {
-            String::new()
+        let status = match crate::oauth::Flow::from_auth(auth) {
+            Some(flow) => Some(status_view(tryr!(st.oauth.status(&name, flow).await))),
+            None => None,
         };
-        let usage_status = if auth == crate::provider::ProviderAuth::Chatgpt {
-            status_text(tryr!(
+        let chatgpt = auth == crate::provider::ProviderAuth::Chatgpt;
+        let usage_status = if chatgpt {
+            Some(status_view(tryr!(
                 st.oauth.status(&name, crate::oauth::Flow::Codex).await
-            ))
+            )))
         } else {
-            String::new()
+            None
         };
-        let usage = if auth == crate::provider::ProviderAuth::Chatgpt {
+        let usage = if chatgpt {
             st.oauth
                 .usage(&name)
                 .await
                 .map(|u| {
                     u.windows
                         .iter()
-                        .map(|w| {
-                            format!(
-                                "{}: {}%; resets {}",
-                                w.label,
-                                w.used_percent,
-                                w.resets_at
-                                    .map(super::views::utc_ms)
-                                    .filter(|s| !s.is_empty())
-                                    .unwrap_or_else(|| "not available".into())
-                            )
+                        .map(|w| UsageView {
+                            label: w.label.clone(),
+                            percent: w.used_percent.clamp(0.0, 100.0),
+                            percent_text: format!("{:.0}%", w.used_percent),
+                            resets: w
+                                .resets_at
+                                .and_then(|ms| super::views::stamp_opt(ms.div_euclid(1000))),
                         })
-                        .collect::<Vec<_>>()
-                        .join("; ")
+                        .collect()
                 })
-                .unwrap_or_else(|| "not available".into())
+                .unwrap_or_default()
         } else {
-            String::new()
+            vec![]
         };
         providers.push(ProviderView {
             name,
             auth: auth.as_str().into(),
+            auth_label: auth_label(auth),
             status,
             usage_status,
             usage,
@@ -495,6 +641,8 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
 #[derive(Deserialize)]
 struct ProviderForm {
     name: String,
+    /// A Subscription Provider has a fixed API format; the form may omit it.
+    #[serde(default)]
     kind: ProviderKind,
     #[serde(default)]
     auth: crate::provider::ProviderAuth,
@@ -533,7 +681,25 @@ async fn update_provider(
 ) -> Response {
     save_provider(admin, st, Some(name), f).await
 }
-async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderForm) -> Response {
+async fn save_provider(
+    _: Admin,
+    st: AppState,
+    old: Option<String>,
+    mut f: ProviderForm,
+) -> Response {
+    use crate::provider::ProviderAuth;
+    f.name = f.name.trim().into();
+    f.base_url = f.base_url.trim().trim_end_matches('/').into();
+    // A Subscription Provider has one fixed address and API format. Accept
+    // the address with /v1, as the Provider documentation often shows it.
+    match f.auth {
+        ProviderAuth::ApiKey => {}
+        ProviderAuth::Chatgpt => f.kind = ProviderKind::Openai,
+        ProviderAuth::Claude => f.kind = ProviderKind::Anthropic,
+    }
+    if f.auth != ProviderAuth::ApiKey {
+        f.base_url = f.base_url.trim_end_matches("/v1").into();
+    }
     let _guard = st.settings_write.lock().await;
     let added = old.is_none();
     let mut cfg = tryr!(runtime(&st).await);
@@ -561,7 +727,7 @@ async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderF
             .iter()
             .any(|m| Some(&m.provider) == old.as_ref())
     {
-        return form_error("This provider is used by a model. Update that model first.");
+        return form_error("A Model uses this Provider. Change that Model first.");
     }
     let _oauth_guard = if let Some(name) = &old {
         Some(st.oauth.provider_write(name).await)
@@ -635,27 +801,6 @@ async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderF
     saved("/admin/providers", &format!("Provider {} {verb}.", f.name))
 }
 
-fn status_text(status: crate::oauth::Status) -> String {
-    let date = |ms: Option<i64>| {
-        ms.map(super::views::utc_ms)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "not available".into())
-    };
-    format!(
-        "{}; account: {}; plan: {}; expires: {}; last refresh: {}; last error: {}",
-        if status.connected {
-            "Connected"
-        } else {
-            "Disconnected"
-        },
-        status.account.as_deref().unwrap_or("not available"),
-        status.plan.as_deref().unwrap_or("not available"),
-        date(status.expires_at),
-        date(status.last_refresh),
-        status.last_error.as_deref().unwrap_or("none")
-    )
-}
-
 async fn delete_provider(
     _: Admin,
     State(st): State<AppState>,
@@ -669,9 +814,7 @@ async fn delete_provider(
         .any(|r| r.deployments.iter().any(|d| d.provider == name))
         || st.catalog().models.iter().any(|m| m.provider == name)
     {
-        return form_error(
-            "This provider is used by a route or model. Remove those references first.",
-        );
+        return form_error("A Route or a Model uses this Provider. Change them first.");
     }
     let _oauth_guard = st.oauth.provider_write(&name).await;
     tryr!(
@@ -775,21 +918,67 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
             "Use Sign in for this Subscription Provider. API-key tests do not apply.",
         );
     }
-    let mut req = st
+    let Some(key) = p.keys.first() else {
+        return form_error(
+            "This Provider has no Provider Key. Add a key, or set its environment variable, and test again.",
+        );
+    };
+    let req = st
         .http()
         .get(url)
         .timeout(std::time::Duration::from_secs(15));
-    if let Some(key) = p.keys.first() {
-        req = match p.kind {
-            ProviderKind::Openai => req.bearer_auth(key),
-            ProviderKind::Anthropic => req
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01"),
-        };
-    }
-    match req.send().await {
-        Ok(r) => Html(format!("<p>Upstream status: {}</p>", r.status().as_u16())).into_response(),
-        Err(_) => form_error("Cannot reach the provider. Check its URL and credentials."),
+    let req = match p.kind {
+        ProviderKind::Openai => req.bearer_auth(key),
+        ProviderKind::Anthropic => req
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+    };
+    let (class, text) = match req.send().await {
+        Err(_) => (
+            "bad",
+            "Cannot reach the Provider. Check the base URL and the network.".to_owned(),
+        ),
+        Ok(r) => test_message(r.status().as_u16()),
+    };
+    Html(format!(
+        "<p><span class=\"tag {class}\">{}</span> {}</p>",
+        match class {
+            "good" => "OK",
+            "warn" => "Warning",
+            _ => "Failed",
+        },
+        esc(&text)
+    ))
+    .into_response()
+}
+
+/// A plain explanation of the status of the Provider's model list.
+fn test_message(code: u16) -> (&'static str, String) {
+    match code {
+        200..=299 => (
+            "good",
+            format!("Connected. The Provider answered {code} and accepted the first Provider Key."),
+        ),
+        401 | 403 => (
+            "bad",
+            format!("The Provider refused the key ({code}). Check the first Provider Key."),
+        ),
+        404 => (
+            "bad",
+            "The Provider answered 404. Check the base URL; use the address without /v1.".into(),
+        ),
+        429 => (
+            "warn",
+            "The Provider answered 429 (rate limited or out of credit). The key is valid, but requests can fail.".into(),
+        ),
+        500..=599 => (
+            "warn",
+            format!("The Provider has a problem ({code}). Try again later."),
+        ),
+        _ => (
+            "warn",
+            format!("The Provider answered {code}. Check the base URL and the Provider Key."),
+        ),
     }
 }
 

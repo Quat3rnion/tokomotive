@@ -3,16 +3,20 @@
 {% block nav_routes %}aria-current="page"{% endblock %}
 {% macro deployment_row(providers, provider, model, weight) %}
 <div class="row deployment">
-  <label>Provider <select name="deployment_provider"><option value="">Choose provider</option>{% for p in providers.iter() %}<option value="{{ p }}"{% if p.as_str() == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
-  <label>Model <input name="deployment_model" value="{{ model }}" class="wide" autocomplete="off" spellcheck="false"></label>
-  <label>Weight <input name="deployment_weight" type="number" min="1" step="1" value="{{ weight }}" inputmode="numeric"></label>
-  <button type="button" class="danger" data-remove hidden aria-label="Remove deployment">Remove</button>
+  <label>Provider <select name="deployment_provider"><option value="">Choose a Provider</option>{% for p in providers.iter() %}<option value="{{ p }}"{% if p.as_str() == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+  <label>Upstream model <input name="deployment_model" value="{{ model }}" class="wide" list="upstream-models" autocomplete="off" spellcheck="false"></label>
+  <label data-weight>Weight <input name="deployment_weight" type="number" min="1" step="1" value="{{ weight }}" inputmode="numeric"></label>
+  <span class="row-tools" data-tools hidden>
+    <button type="button" class="ghost" data-move="-1" aria-label="Move Deployment up">Up</button>
+    <button type="button" class="ghost" data-move="1" aria-label="Move Deployment down">Down</button>
+    <button type="button" class="danger" data-remove aria-label="Remove Deployment">Remove</button>
+  </span>
 </div>
 {% endmacro %}
 {% macro deployments_editor(providers, deployments, spare) %}
 <fieldset class="deployments">
   <legend>Deployments</legend>
-  <p class="muted">In priority order. Weight is used only by the Weighted strategy. A row with no provider and no model is ignored.</p>
+  <p class="muted">The Proxy tries them in this order with the Priority strategy. A row with no Provider and no model is ignored.</p>
   <div data-rows>
   {% for d in deployments.iter() %}{% call deployment_row(providers, d.provider.as_str(), d.model, d.weight) %}{% endfor %}
   {% if spare %}{% call deployment_row(providers, "", "", 1) %}{% else %}<noscript>{% call deployment_row(providers, "", "", 1) %}</noscript>{% endif %}
@@ -20,49 +24,76 @@
   <button type="button" class="ghost" data-add hidden>Add deployment</button>
 </fieldset>
 {% endmacro %}
+{% macro strategy_select(pre, name, strategy) %}
+<div class="field"><label for="{{ pre }}{{ name }}-strategy">Strategy</label><select id="{{ pre }}{{ name }}-strategy" name="strategy" data-strategy aria-describedby="{{ pre }}{{ name }}-strategy-help"><option value="priority"{% if strategy == "priority" %} selected{% endif %}>Priority</option><option value="round_robin"{% if strategy == "round_robin" %} selected{% endif %}>Round robin</option><option value="weighted"{% if strategy == "weighted" %} selected{% endif %}>Weighted</option></select><p class="hint" id="{{ pre }}{{ name }}-strategy-help">Priority uses the first healthy Deployment. Round robin takes turns. Weighted shares by weight.</p></div>
+{% endmacro %}
 {% block content %}
 <h1>Routes</h1>
-<div id="errors"></div>
+<p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
 <datalist id="fallback-names">{% for n in fallback_names %}<option value="{{ n }}">{% endfor %}</datalist>
-{% if providers.is_empty() %}<p class="muted">Add a provider on the <a href="/admin/providers">Providers</a> page before you add a route.</p>{% endif %}
+<datalist id="upstream-models">{% for n in upstream_models %}<option value="{{ n }}">{% endfor %}</datalist>
+{% if providers.is_empty() %}
+<p class="empty">Add a Provider before you add a Route. <a href="/admin/providers">Go to Providers</a></p>
+{% else if routes.is_empty() %}
+<p class="empty">No Routes yet. A Route is optional: clients can also send a Model name or provider/model. Add a Route below to spread requests or to add Fallbacks.</p>
+{% endif %}
 {% for r in routes %}
-<section class="panel">
-<h2>{{ r.name }}</h2>
-<form method="post" action="/admin/routes/{{ r.name }}" hx-post="/admin/routes/{{ r.name }}" hx-target="#errors" class="route-form">
+<section class="panel" id="r-{{ r.name }}" aria-labelledby="r-{{ r.name }}-h">
+<div class="toolbar">
+  <h2 id="r-{{ r.name }}-h">{{ r.name }}</h2>
+  <div class="end"><form class="inline" method="post" action="/admin/routes/{{ r.name }}/delete" data-confirm="Delete Route {{ r.name }}? Clients that send this model name get an error."><button class="danger" aria-label="Delete Route {{ r.name }}">Delete route</button></form></div>
+</div>
+<form method="post" action="/admin/routes/{{ r.name }}" class="route-form" aria-label="Edit Route {{ r.name }}">
   <div class="row">
-  <label>Name <input name="name" value="{{ r.name }}" required></label>
-  <label>Strategy <select name="strategy"><option value="priority" {% if r.strategy == "priority" %}selected{% endif %}>Priority</option><option value="round_robin" {% if r.strategy == "round_robin" %}selected{% endif %}>Round robin</option><option value="weighted" {% if r.strategy == "weighted" %}selected{% endif %}>Weighted</option></select></label>
-  <label>Fallbacks (comma-separated) <input name="fallbacks" value="{{ r.fallbacks }}" list="fallback-names" style="width:340px"></label>
+  <div class="field"><label for="r-{{ r.name }}-name">Name</label><input id="r-{{ r.name }}-name" name="name" value="{{ r.name }}" required autocomplete="off" spellcheck="false"></div>
+  {% call strategy_select("r-", r.name.as_str(), r.strategy.as_str()) %}
+  <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label><input id="r-{{ r.name }}-fb" name="fallbacks" value="{{ r.fallbacks }}" list="fallback-names" autocomplete="off" spellcheck="false" aria-describedby="r-{{ r.name }}-fb-help"><p class="hint" id="r-{{ r.name }}-fb-help">Comma-separated names of other Routes or Models.</p></div>
   </div>
   {% call deployments_editor(providers, r.deployments, false) %}
-  <button>Save route</button>
+  <div class="form-error" role="alert" tabindex="-1"></div>
+  <button aria-label="Save Route {{ r.name }}">Save</button>
 </form>
-<form method="post" action="/admin/routes/{{ r.name }}/delete" hx-post="/admin/routes/{{ r.name }}/delete" hx-target="#errors" style="margin-top:12px" data-confirm="Delete Route {{ r.name }}? Clients that send this model name get an error."><button class="danger">Delete route</button></form>
 </section>
 {% endfor %}
-<section class="panel">
-<h2>Add route</h2>
-<form method="post" action="/admin/routes" hx-post="/admin/routes" hx-target="#errors" class="route-form">
+{% if !providers.is_empty() %}
+<section class="panel" aria-labelledby="add-route-h">
+<h2 id="add-route-h">Add a Route</h2>
+<form method="post" action="/admin/routes" class="route-form">
   <div class="row">
-  <label>Name <input name="name" required></label>
-  <label>Strategy <select name="strategy"><option value="priority">Priority</option><option value="round_robin">Round robin</option><option value="weighted">Weighted</option></select></label>
-  <label>Fallbacks (comma-separated) <input name="fallbacks" list="fallback-names" style="width:340px"></label>
+  <div class="field"><label for="nr-name">Name</label><input id="nr-name" name="name" required autocomplete="off" spellcheck="false" placeholder="fast"></div>
+  {% call strategy_select("nr", "", "priority") %}
+  <div class="field grow"><label for="nr-fb">Fallbacks</label><input id="nr-fb" name="fallbacks" list="fallback-names" autocomplete="off" spellcheck="false" aria-describedby="nr-fb-help"><p class="hint" id="nr-fb-help">Comma-separated names of other Routes or Models. Optional.</p></div>
   </div>
   {% call deployments_editor(providers, self.no_deployments(), true) %}
+  <div class="form-error" role="alert" tabindex="-1"></div>
   <button>Add route</button>
 </form>
 </section>
+{% endif %}
 <template id="deployment-row">{% call deployment_row(providers, "", "", 1) %}</template>
+{% endblock %}
+{% block scripts %}
 <script>
 (() => {
   const blank = document.getElementById('deployment-row');
-  document.querySelectorAll('.route-form fieldset.deployments').forEach(set => {
+  document.querySelectorAll('.route-form').forEach(form => {
+    const set = form.querySelector('fieldset.deployments');
     const rows = set.querySelector('[data-rows]');
     const add = set.querySelector('[data-add]');
+    const strategy = form.querySelector('[data-strategy]');
+    // Weight is used only by the Weighted strategy.
+    const weights = () => rows.querySelectorAll('[data-weight]').forEach(w => { w.hidden = strategy.value !== 'weighted'; });
     const wire = row => {
-      const remove = row.querySelector('[data-remove]');
-      remove.hidden = false;
-      remove.addEventListener('click', () => { row.remove(); add.focus(); });
+      row.querySelector('[data-tools]').hidden = false;
+      row.querySelector('[data-remove]').addEventListener('click', () => { row.remove(); add.focus(); });
+      row.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () => {
+        const up = b.dataset.move === '-1';
+        const other = up ? row.previousElementSibling : row.nextElementSibling;
+        if (!other || !other.classList.contains('deployment')) { toko.say(up ? 'Already first.' : 'Already last.'); return; }
+        if (up) { other.before(row); } else { other.after(row); }
+        b.focus();
+        toko.say(up ? 'Moved up.' : 'Moved down.');
+      }));
     };
     rows.querySelectorAll('.deployment').forEach(wire);
     add.hidden = false;
@@ -70,8 +101,11 @@
       const row = blank.content.firstElementChild.cloneNode(true);
       rows.append(row);
       wire(row);
+      weights();
       row.querySelector('select').focus();
     });
+    strategy.addEventListener('change', weights);
+    weights();
   });
 })();
 </script>

@@ -953,20 +953,80 @@ pub enum LedgerFilter {
 }
 
 pub async fn recent_ledger(db: &Db, filter: LedgerFilter, limit: i64) -> Result<Vec<LedgerRow>> {
-    let cond = match filter {
-        LedgerFilter::All => "1",
-        LedgerFilter::Unpriced => "l.unpriced = 1",
-        LedgerFilter::Estimated => "l.estimated = 1",
-        LedgerFilter::Errors => "l.status >= 400",
-    };
-    Ok(sqlx::query_as(&format!(
+    ledger_page(
+        db,
+        &LedgerQuery {
+            filter,
+            limit,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// One page of the Ledger, newest first. All conditions are optional.
+#[derive(Debug, Clone, Default)]
+pub struct LedgerQuery {
+    pub filter: LedgerFilter,
+    pub user_id: Option<i64>,
+    pub provider: Option<String>,
+    /// Matches the upstream Model or the requested Model name.
+    pub model: Option<String>,
+    /// Inclusive lower bound, Unix milliseconds.
+    pub from_ms: Option<i64>,
+    /// Exclusive upper bound, Unix milliseconds.
+    pub to_ms: Option<i64>,
+    /// Only entries with a smaller id (the next, older page).
+    pub before_id: Option<i64>,
+    pub limit: i64,
+}
+
+pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
+    let mut b = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
             l.image_input, l.image_output, l.provider_key, l.attempts
-         FROM ledger l JOIN users u ON u.id = l.user_id WHERE {cond} ORDER BY l.id DESC LIMIT ?"
-    ))
-    .bind(limit)
+         FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
+    );
+    b.push(match q.filter {
+        LedgerFilter::All => "1",
+        LedgerFilter::Unpriced => "l.unpriced = 1",
+        LedgerFilter::Estimated => "l.estimated = 1",
+        LedgerFilter::Errors => "l.status >= 400",
+    });
+    if let Some(v) = q.user_id {
+        b.push(" AND l.user_id = ").push_bind(v);
+    }
+    if let Some(v) = &q.provider {
+        b.push(" AND l.provider = ").push_bind(v.clone());
+    }
+    if let Some(v) = &q.model {
+        b.push(" AND (l.model = ")
+            .push_bind(v.clone())
+            .push(" OR l.requested_model = ")
+            .push_bind(v.clone())
+            .push(")");
+    }
+    if let Some(v) = q.from_ms {
+        b.push(" AND l.ts_ms >= ").push_bind(v);
+    }
+    if let Some(v) = q.to_ms {
+        b.push(" AND l.ts_ms < ").push_bind(v);
+    }
+    if let Some(v) = q.before_id {
+        b.push(" AND l.id < ").push_bind(v);
+    }
+    b.push(" ORDER BY l.id DESC LIMIT ").push_bind(q.limit);
+    Ok(b.build_query_as().fetch_all(db).await?)
+}
+
+/// The Model names of Unpriced Entries, most frequent first.
+pub async fn unpriced_models(db: &Db) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT IFNULL(model, IFNULL(requested_model, '')) AS m FROM ledger WHERE unpriced = 1
+         GROUP BY m ORDER BY COUNT(*) DESC, m LIMIT 20",
+    )
     .fetch_all(db)
     .await?)
 }

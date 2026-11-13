@@ -1,50 +1,153 @@
 {% extends "base.html" %}
 {% block title %}Providers - Tokomotive{% endblock %}
 {% block nav_providers %}aria-current="page"{% endblock %}
+
+{% macro status_list(s) %}
+<dl class="kv">
+  <div><dt>Status</dt><dd>{% if s.connected %}<span class="tag good">Connected</span>{% else %}<span class="tag warn">Disconnected</span>{% endif %}</dd></div>
+  {% if let Some(v) = s.account %}<div><dt>Account</dt><dd>{{ v }}</dd></div>{% endif %}
+  {% if let Some(v) = s.plan %}<div><dt>Plan</dt><dd>{{ v }}</dd></div>{% endif %}
+  {% if let Some(v) = s.expires %}<div><dt>Access expires</dt><dd><time datetime="{{ v.iso }}">{{ v }}</time></dd></div>{% endif %}
+  {% if let Some(v) = s.last_refresh %}<div><dt>Last refresh</dt><dd><time datetime="{{ v.iso }}">{{ v }}</time></dd></div>{% endif %}
+</dl>
+{% if let Some(e) = s.last_error %}<p class="bad">Last error: {{ e }}</p>{% endif %}
+{% endmacro %}
+
 {% block content %}
 <h1>Providers</h1>
-<div id="errors"></div>
+<p class="muted">A Provider is an upstream API, such as OpenAI or Anthropic. The Proxy sends requests to it with its Provider Keys or a subscription. Clients never see these credentials.</p>
+{% if providers.is_empty() %}<p class="empty">No Providers yet. Add the first one below. Then add Models or a Route, a User and a Virtual Key.</p>{% endif %}
+
 {% for p in providers %}
-<section class="panel">
-  <h2>{{ p.name }}</h2>
-  <form method="post" action="/admin/providers/{{ p.name }}" hx-post="/admin/providers/{{ p.name }}" hx-target="#errors" class="row">
-    <label>Name <input name="name" value="{{ p.name }}" required></label>
-    <label>Kind <select name="kind"><option value="openai" {% if p.kind == "openai" %}selected{% endif %}>OpenAI</option><option value="anthropic" {% if p.kind == "anthropic" %}selected{% endif %}>Anthropic</option></select></label>
-    <input type="hidden" name="auth" value="{{ p.auth }}"><p>Authentication: {{ p.auth }}</p>
-    <label>Base URL <input name="base_url" value="{{ p.base_url }}" required style="width:320px"></label>
-    <button>Save</button>
+<section class="panel provider" id="p-{{ p.name }}" aria-labelledby="p-{{ p.name }}-h">
+  <div class="toolbar">
+    <h2 id="p-{{ p.name }}-h">{{ p.name }} <span class="tag{% if p.auth != "api_key" %} info{% endif %}">{{ p.auth_label }}</span></h2>
+    <div class="end">
+      <form class="inline" method="post" action="/admin/providers/{{ p.name }}/delete" data-confirm="Delete Provider {{ p.name }}? Routes and Models that use it must be changed first. You cannot undo this."><button class="danger" aria-label="Delete Provider {{ p.name }}">Delete provider</button></form>
+    </div>
+  </div>
+
+  <form method="post" action="/admin/providers/{{ p.name }}" class="stack" aria-label="Edit Provider {{ p.name }}">
+    <input type="hidden" name="auth" value="{{ p.auth }}">
+    <div class="row">
+      <div class="field"><label for="p-{{ p.name }}-name">Name</label><input id="p-{{ p.name }}-name" name="name" value="{{ p.name }}" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-name-help"><p class="hint" id="p-{{ p.name }}-name-help">Renaming changes the name that Routes, Models and clients use.</p></div>
+      <div class="field"><label for="p-{{ p.name }}-kind">API format</label>{% if p.auth == "api_key" %}<select id="p-{{ p.name }}-kind" name="kind"><option value="openai"{% if p.kind == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if p.kind == "anthropic" %} selected{% endif %}>Anthropic</option></select>{% else %}<input id="p-{{ p.name }}-kind" value="{% if p.kind == "openai" %}OpenAI{% else %}Anthropic{% endif %}" readonly aria-describedby="p-{{ p.name }}-fixed"><input type="hidden" name="kind" value="{{ p.kind }}">{% endif %}</div>
+      <div class="field grow"><label for="p-{{ p.name }}-url">Base URL</label><input id="p-{{ p.name }}-url" name="base_url" value="{{ p.base_url }}" required{% if p.auth != "api_key" %} readonly aria-describedby="p-{{ p.name }}-fixed"{% endif %} autocomplete="off" spellcheck="false"></div>
+    </div>
+    {% if p.auth != "api_key" %}<p class="hint" id="p-{{ p.name }}-fixed">A {{ p.auth_label }} Provider has a fixed API format and base URL.</p>{% endif %}
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <div><button aria-label="Save Provider {{ p.name }}">Save</button></div>
   </form>
+
   {% if p.auth == "api_key" %}
-  <p class="muted">{{ p.keys.len() }} keys. Saved keys show only their last 4 characters.</p>
-  {% for key in p.keys %}
-  <form method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-post="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-target="#errors" class="inline" data-confirm="Remove Provider Key {{ key }} from {{ p.name }}? Requests stop using it at once."><code>{{ key }}</code><button class="danger">Remove key</button></form>
-  {% endfor %}
-  <form method="post" action="/admin/providers/{{ p.name }}/keys" hx-post="/admin/providers/{{ p.name }}/keys" hx-target="#errors" class="row" style="margin-top:12px">
-    <label>New key or env:NAME <input type="password" name="api_key" required autocomplete="off" style="width:300px"></label><button>Add key</button>
+  <h3>Provider Keys</h3>
+  {% if p.keys.is_empty() %}
+  <p><span class="tag warn">No Provider Key. Requests to this Provider fail.</span></p>
+  {% else %}
+  <p class="muted">{% if p.keys.len() == 1 %}1 Provider Key.{% else %}{{ p.keys.len() }} Provider Keys.{% endif %} The Proxy uses them in turn. Saved keys show only their last 4 characters.</p>
+  <ul class="key-list">
+    {% for key in p.keys %}
+    <li>
+      <span><code>{{ key.label }}</code>{% if let Some(set) = key.env_set %}{% if set %} <span class="tag good">set</span>{% else %} <span class="tag warn">not set</span>{% endif %}{% endif %}</span>
+      <form class="inline" method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" data-confirm="Delete Provider Key {{ key.label }} from {{ p.name }}? Requests stop using it at once."><button class="danger" aria-label="Delete Provider Key {{ key.label }} from {{ p.name }}">Delete key</button></form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if p.has_unset_env() %}<p class="hint">An environment variable that is not set is skipped. Set it before the Proxy starts.</p>{% endif %}
+  {% endif %}
+  <form method="post" action="/admin/providers/{{ p.name }}/keys" class="row" aria-label="Add a Provider Key to {{ p.name }}">
+    <div class="field grow"><label for="p-{{ p.name }}-newkey">New Provider Key or env:NAME</label><input id="p-{{ p.name }}-newkey" type="password" name="api_key" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-newkey-help"><p class="hint" id="p-{{ p.name }}-newkey-help">Paste the key, or write env:NAME to read it from an environment variable.</p></div>
+    <button>Add key</button>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+  </form>
+  <form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="find .test-result" hx-swap="innerHTML" class="row test-form" hx-on::before-request="this.querySelector('.test-result').textContent=''">
+    <button class="ghost" data-busy="Testing..." aria-label="Test Provider {{ p.name }}">Test connection</button>
+    <div class="test-result" role="status"></div>
+    <div class="form-error" role="alert" tabindex="-1"></div>
   </form>
   {% else %}
-  <p>{{ p.status }}</p>
-  <div class="row"><form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="#errors"><button>Sign in</button></form>
-  <form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect" data-confirm="Disconnect {{ p.name }}? Requests to this Provider fail until you sign in again."><button class="danger">Disconnect</button></form></div>
-  {% if p.auth == "chatgpt" %}<h3>Codex plan usage (optional)</h3><p>This login is used only for plan usage, not model requests.</p><p>{{ p.usage_status }}</p><p>Plan usage: {{ p.usage }}</p>
-  <div class="row"><form method="post" action="/admin/providers/{{ p.name }}/usage/start" hx-post="/admin/providers/{{ p.name }}/usage/start" hx-target="#errors"><button>Sign in for usage</button></form>
-  <form method="post" action="/admin/providers/{{ p.name }}/usage/disconnect" data-confirm="Disconnect the usage login of {{ p.name }}? Plan usage is no longer shown."><button class="danger">Disconnect usage login</button></form></div>{% endif %}
-  {% endif %}
-  <div class="row" style="margin-top:12px">
-    <form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="#errors"><button class="ghost" data-busy="Testing...">Test</button></form>
-    <form method="post" action="/admin/providers/{{ p.name }}/delete" hx-post="/admin/providers/{{ p.name }}/delete" hx-target="#errors" data-confirm="Delete Provider {{ p.name }}? Routes and Models that use it must be changed first."><button class="danger">Delete provider</button></form>
+  <h3>Subscription</h3>
+  {% if let Some(s) = p.status %}
+  {% call status_list(s) %}
+  <div class="row">
+    <form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="next .signin" hx-swap="innerHTML"><button{% if s.connected %} class="ghost"{% endif %} data-busy="Starting...">{% if s.connected %}Reconnect{% else %}Sign in{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+    {% if s.connected %}<form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect" data-confirm="Disconnect {{ p.name }}? Requests to this Provider fail until you sign in again."><button class="danger" aria-label="Disconnect {{ p.name }}">Disconnect</button></form>{% endif %}
   </div>
+  <div class="signin"></div>
+  {% endif %}
+
+  {% if p.auth == "chatgpt" %}
+  <details class="usage" id="usage-{{ p.name }}">
+    <summary>Codex plan usage (optional)</summary>
+    <p class="muted">A second login, through Codex, shows the limits of the ChatGPT plan. The Proxy does not use it for model requests.</p>
+    {% if let Some(s) = p.usage_status %}
+    {% call status_list(s) %}
+    {% if p.usage.is_empty() %}
+    <p class="empty">{% if s.connected %}No plan usage data yet. It shows after the next update.{% else %}Sign in for usage to see the plan limits.{% endif %}</p>
+    {% else %}
+    <ul class="meters">
+      {% for w in p.usage %}
+      <li><span id="u-{{ p.name }}-{{ loop.index }}">{{ w.label }}</span> <meter min="0" max="100" value="{{ w.percent }}" aria-labelledby="u-{{ p.name }}-{{ loop.index }}">{{ w.percent_text }}</meter> <span>{{ w.percent_text }} used{% if let Some(r) = w.resets %}, resets <time datetime="{{ r.iso }}">{{ r }}</time>{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <div class="row">
+      <form method="post" action="/admin/providers/{{ p.name }}/usage/start" hx-post="/admin/providers/{{ p.name }}/usage/start" hx-target="next .signin" hx-swap="innerHTML"><button class="ghost" data-busy="Starting...">{% if s.connected %}Reconnect usage login{% else %}Sign in for usage{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+      {% if s.connected %}<form method="post" action="/admin/providers/{{ p.name }}/usage/disconnect" data-confirm="Disconnect the usage login of {{ p.name }}? Plan usage is no longer shown."><button class="danger">Disconnect usage login</button></form>{% endif %}
+    </div>
+    <div class="signin"></div>
+    {% endif %}
+  </details>
+  {% endif %}
+  {% endif %}
 </section>
 {% endfor %}
-<section class="panel">
-<h2>Add provider</h2>
-<form method="post" action="/admin/providers" hx-post="/admin/providers" hx-target="#errors" class="row">
-  <label>Name <input name="name" required></label>
-  <label>Kind <select name="kind"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
-  <label>Authentication <select name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT token sharing (OpenAI)</option><option value="claude">Claude Pro/Max (Anthropic)</option></select></label>
-  <label>Base URL <input name="base_url" required placeholder="https://api.openai.com" style="width:300px"></label>
-  <label>Key or env:NAME <input type="password" name="api_key" autocomplete="off" style="width:220px"></label>
-  <button>Add provider</button>
-</form>
+
+<section class="panel" aria-labelledby="add-provider-h">
+  <h2 id="add-provider-h">Add a Provider</h2>
+  <datalist id="provider-urls"><option value="https://api.openai.com"><option value="https://api.anthropic.com"></datalist>
+  <form method="post" action="/admin/providers" class="stack" id="add-provider">
+    <div class="row">
+      <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" required autocomplete="off" spellcheck="false" placeholder="openai" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Letters, digits, dot, underscore or hyphen.</p></div>
+      <div class="field"><label for="np-auth">Authentication</label><select id="np-auth" name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT subscription</option><option value="claude">Claude Pro/Max</option></select></div>
+      <div class="field"><label for="np-kind">API format</label><select id="np-kind" name="kind"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label for="np-url">Base URL</label><input id="np-url" name="base_url" required list="provider-urls" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com" aria-describedby="np-url-help"><p class="hint" id="np-url-help">The address without /v1. A subscription uses a fixed address.</p></div>
+      <div class="field grow" data-key-field><label for="np-key">Provider Key or env:NAME (optional)</label><input id="np-key" type="password" name="api_key" autocomplete="off" spellcheck="false" aria-describedby="np-key-help"><p class="hint" id="np-key-help">You can add more keys later. A subscription uses Sign in instead.</p></div>
+    </div>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <div><button>Add provider</button></div>
+  </form>
 </section>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  // A subscription has a fixed API format and base URL, and no key field.
+  const form = document.getElementById('add-provider');
+  if (!form) { return; }
+  const auth = form.querySelector('#np-auth');
+  const kind = form.querySelector('#np-kind');
+  const url = form.querySelector('#np-url');
+  const keyField = form.querySelector('[data-key-field]');
+  const fixed = { chatgpt: ['openai', 'https://api.openai.com'], claude: ['anthropic', 'https://api.anthropic.com'] };
+  let auto = '';
+  const sync = () => {
+    const f = fixed[auth.value];
+    keyField.hidden = !!f;
+    url.readOnly = !!f;
+    [...kind.options].forEach(o => { o.disabled = !!f && o.value !== f[0]; });
+    if (f) {
+      kind.value = f[0];
+      url.value = auto = f[1];
+      keyField.querySelector('input').value = '';
+    } else if (auto && url.value === auto) {
+      url.value = auto = '';
+    }
+  };
+  auth.addEventListener('change', sync);
+  sync();
+})();
+</script>
 {% endblock %}
