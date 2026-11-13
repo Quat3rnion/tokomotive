@@ -116,10 +116,189 @@ async fn add_form_marks_subscription_providers_and_suggests_models() {
     a.providers().await;
     a.user("maria").await;
     let html = a.page("/admin/keys").await;
-    assert!(html.contains("A Subscription Provider needs explicit access."));
-    assert!(html.contains("name=\"allowed_providers\" data-search=\"providers\" data-csv"));
+    assert!(html.contains("A Subscription Provider needs a check."));
+    assert!(html.contains("type=\"checkbox\" name=\"allowed_providers\" value=\"claude-max\""));
+    assert!(html.contains("claude-max <span class=\"tag info\">subscription</span>"));
     assert!(html.contains("name=\"allowed_models\" data-search=\"models\" data-csv"));
     assert!(html.contains("<button>Add key</button>"));
+}
+
+#[tokio::test]
+async fn provider_access_uses_checkboxes_through_thirty_and_accepts_both_forms() {
+    let a = app().await;
+    a.providers().await;
+    let user = a.user("maria").await;
+    let (id, _) = db::create_key(&a.st.db, user, "laptop", None)
+        .await
+        .unwrap();
+    for n in 2..30 {
+        let name = format!("provider-{n:02}");
+        assert_eq!(
+            a.post(
+                "/admin/providers",
+                &[
+                    ("name", &name),
+                    ("kind", "openai"),
+                    ("base_url", "http://127.0.0.1:9"),
+                    ("api_key", "fixture")
+                ]
+            )
+            .await
+            .status(),
+            303
+        );
+    }
+    for values in [
+        vec![
+            ("allowed_providers", "openai"),
+            ("allowed_providers", "claude-max"),
+        ],
+        vec![("allowed_providers", "openai, claude-max")],
+    ] {
+        assert_eq!(
+            a.post(&format!("/admin/keys/{id}"), &values).await.status(),
+            303
+        );
+    }
+    let html = a.page("/admin/keys").await;
+    assert_eq!(
+        html.matches("type=\"checkbox\" name=\"allowed_providers\"")
+            .count(),
+        60
+    );
+    assert!(html.contains("value=\"claude-max\" checked"));
+    assert!(!html.contains("name=\"allowed_providers\" data-search="));
+    assert_eq!(
+        a.post(
+            "/admin/providers",
+            &[
+                ("name", "provider-31"),
+                ("kind", "openai"),
+                ("base_url", "http://127.0.0.1:9"),
+                ("api_key", "fixture")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+    let html = a.page("/admin/keys").await;
+    assert!(!html.contains("type=\"checkbox\" name=\"allowed_providers\""));
+    assert!(html.contains("name=\"allowed_providers\" data-search=\"providers\" data-csv"));
+    assert_eq!(
+        a.post(
+            &format!("/admin/keys/{id}"),
+            &[("allowed_providers", "openai, claude-max")]
+        )
+        .await
+        .status(),
+        303
+    );
+    assert_eq!(
+        a.post(
+            &format!("/admin/keys/{id}"),
+            &[
+                ("allowed_providers", "openai"),
+                ("allowed_providers", "claude-max")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+}
+
+#[tokio::test]
+async fn small_team_and_provider_sets_use_selects_with_a_bounded_fallback() {
+    let a = app().await;
+    a.providers().await;
+    a.user("maria").await;
+    let model = db::create_model(&a.st.db, "fixture-model", "openai", &[])
+        .await
+        .unwrap();
+    a.st.reload_catalog().await.unwrap();
+    for n in 0..30 {
+        db::create_team(&a.st.db, &format!("Team {n:02}"))
+            .await
+            .unwrap();
+    }
+    assert!(
+        a.page("/admin/users")
+            .await
+            .contains("<select id=\"new-team\" name=\"team_name\"")
+    );
+    assert!(
+        a.page(&format!("/admin/models/{model}"))
+            .await
+            .contains("<select id=\"t-team\" name=\"team_name\"")
+    );
+    assert!(
+        a.page(&format!("/admin/models/{model}"))
+            .await
+            .contains("<select id=\"m-provider\" name=\"provider\"")
+    );
+    assert!(
+        a.page("/admin/models")
+            .await
+            .contains("<select id=\"new-provider\" name=\"provider\"")
+    );
+    assert!(
+        a.page("/admin/routes")
+            .await
+            .contains("<select name=\"deployment_provider\"")
+    );
+    assert!(
+        a.page("/admin/ledger")
+            .await
+            .contains("<select id=\"lf-provider\" name=\"provider\"")
+    );
+    db::create_team(&a.st.db, "Team 31").await.unwrap();
+    assert!(
+        a.page("/admin/users")
+            .await
+            .contains("<input id=\"new-team\" name=\"team_name\" data-search=\"teams\"")
+    );
+    assert!(
+        a.page(&format!("/admin/models/{model}"))
+            .await
+            .contains("<input id=\"t-team\" name=\"team_name\" data-search=\"teams\"")
+    );
+    // Selects submit exact names, just like the large-set input.
+    assert_eq!(
+        a.post(
+            "/admin/users",
+            &[("name", "select-user"), ("team_name", "Team 00")]
+        )
+        .await
+        .status(),
+        303
+    );
+    assert_eq!(
+        a.post(
+            "/admin/users",
+            &[("name", "input-user"), ("team_name", "Team 31")]
+        )
+        .await
+        .status(),
+        303
+    );
+}
+
+#[tokio::test]
+async fn list_filters_follow_the_heading_and_intro_and_are_not_panels() {
+    let a = app().await;
+    a.providers().await;
+    for path in ["users", "teams", "keys", "models", "routes", "providers"] {
+        let html = a.page(&format!("/admin/{path}")).await;
+        let content = html.split("<h1>").nth(1).unwrap();
+        let intro = content.find("</p>").unwrap();
+        let filter = content.find("aria-label=\"Search by name\"").unwrap();
+        assert!(intro < filter, "{path}: intro must precede search");
+        assert!(
+            html.contains("<form method=\"get\" class=\"row list-filter\""),
+            "{path}: compact toolbar"
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
-<form method="get" class="panel row" aria-label="Search by name">
+<form method="get" class="row list-filter" aria-label="Search by name">
   {% for (name,value) in pager.filters %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-  <div class="field grow"><label for="page-search">Name search</label><input type="search" id="page-search" name="q" value="{{ pager.search }}"></div>
+  <div class="field"><label for="page-search">Name search</label><input type="search" id="page-search" name="q" value="{{ pager.search }}"></div>
   <button>Search</button>
 </form>

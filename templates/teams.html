@@ -3,8 +3,8 @@
 {% block nav_teams %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Teams</h1>
-{% include "search.html" %}
 {% if base.simple %}<p class="muted">A Team groups Users for token metrics.</p>{% else %}<p class="muted">A Team groups Users that are billed together. Set a Team price override on the page of a Model.</p>{% endif %}
+{% include "search.html" %}
 
 <section class="panel" aria-labelledby="add-team-h">
   <h2 id="add-team-h">Add a Team</h2>

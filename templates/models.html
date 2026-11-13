@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% import "rates_fields.html" as f %}
+{% import "control_options.html" as controls %}
 {% block title %}Models - Tokomotive{% endblock %}
 {% block nav_models %}aria-current="page"{% endblock %}
 {% block content %}
-{% include "search.html" %}
 <h1>Models</h1>
 {% if base.simple %}
 <p class="muted">A Model sends a model name to one Provider. Pricing is off in Simple Mode. A Model also matches dated names that start with <code>name-</code>.</p>
@@ -11,6 +11,7 @@
 <p class="muted">A Model sends a model name to one Provider and holds its Cost Card (what the Provider charges you) and Price Card (what Users pay). A Model also matches dated names that start with <code>name-</code>. Requests for a Model with no Cost Card are Unpriced.</p>
 {% endif %}
 
+{% include "search.html" %}
 <h2 id="models-h">All Models</h2>
 {% if models.is_empty() %}
 <p class="panel empty">No Models yet.{% if !base.simple %} Requests are Unpriced until their model name matches a Model with a Cost Card.{% endif %}{% if !providers.is_empty() %} Add one below.{% endif %}</p>
@@ -73,7 +74,7 @@
   <form method="post" action="/admin/models" class="stack">
     <div class="row fill">
       <div class="field"><label for="new-name">Name</label><input id="new-name" name="name" required placeholder="gpt-4o" autocomplete="off" spellcheck="false" aria-describedby="new-name-help"><p class="hint" id="new-name-help">The model name that clients send.</p></div>
-      <div class="field"><label for="new-provider">Provider</label><input id="new-provider" name="provider" data-search="providers" required placeholder="Exact Provider name" autocomplete="off"></div>
+      <div class="field"><label for="new-provider">Provider</label>{% if let Some(options) = provider_choices %}<select id="new-provider" name="provider" required>{% call controls::options(options, "", "Choose a Provider") %}</select>{% else %}<input id="new-provider" name="provider" data-search="providers" required placeholder="Exact Provider name" autocomplete="off">{% endif %}</div>
       <div class="field grow"><label for="new-aliases">Aliases</label><input id="new-aliases" name="aliases" placeholder="4o, gpt-4o-latest" autocomplete="off" spellcheck="false" aria-describedby="new-aliases-help"><p class="hint" id="new-aliases-help">Optional. Comma-separated other names for this Model.</p></div>
     </div>
     {% if !base.simple %}

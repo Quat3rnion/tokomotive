@@ -313,7 +313,11 @@ for older IDs and `after` for newer IDs. New Ledger Entries do not move the
 older pages. Routes and Providers use `page=1`, `page=2` and so on. These are
 small configuration lists; an edit can change their name order.
 
-User, Team, Model, Route and Provider inputs get at most 20 name suggestions.
+Team and Provider controls use selects when there are 30 or fewer choices.
+Provider Access uses checkboxes, with a **subscription** tag for Subscription
+Providers, when there are 30 or fewer Providers. With larger sets, these
+controls use text inputs. User, Team, Model, Route and Provider text inputs
+get at most 20 name suggestions.
 Enter the exact name. Suggestions need JavaScript, but exact-name input does
 not. A User or Team name that does not match shows an error; it does not
 silently select another item. The search endpoints are
@@ -911,10 +915,11 @@ new Provider.
 
 ### Provider Access
 
-Create or edit Provider Access on **Keys**. Enter comma-separated exact
-Provider names in **Allowed Providers**:
+Create or edit Provider Access on **Keys**. With 30 or fewer Providers, use
+the checkboxes. With more Providers, enter comma-separated exact Provider
+names in **Allowed Providers**. The server accepts both forms:
 
-- A blank field means all API-key Providers, but no Subscription Providers.
+- No checks, or a blank field, means all API-key Providers, but no Subscription Providers.
 - A list of names permits only those Providers. Include API-key Providers
   too if the key needs them.
 - Model permissions and Provider Access both apply. A Route's Fallback does

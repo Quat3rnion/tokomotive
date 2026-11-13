@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Virtual Keys - Tokomotive{% endblock %}
 {% block nav_keys %}aria-current="page"{% endblock %}
+{% import "control_options.html" as controls %}
 
 {% block content %}
 <h1>Virtual Keys</h1>
-{% include "search.html" %}
 <p class="muted">A Virtual Key lets one client use the Proxy for one User. Give each client its own key, so that you can revoke it alone.</p>
+{% include "search.html" %}
 
 {% if let Some(k) = new_key %}
 <section class="panel" aria-labelledby="new-key-h" tabindex="-1" data-focus>
@@ -34,8 +35,7 @@
     </div>
     <fieldset aria-describedby="key-access-help">
       <legend>Provider Access</legend>
-      <label>Allowed Providers <input name="allowed_providers" data-search="providers" data-csv autocomplete="off"></label>
-      <p class="hint" id="key-access-help">Comma-separated exact Provider names. Blank allows all API-key Providers. A Subscription Provider needs explicit access.</p>
+      {% call controls::provider_access(provider_choices, "", "key-access-help") %}
     </fieldset>
     {% if !base.simple %}
     <fieldset aria-describedby="key-limits-help">
@@ -78,8 +78,7 @@
       <form method="post" action="/admin/keys/{{ k.id }}" class="stack" aria-label="Edit key {{ k.prefix }}">
         <fieldset>
           <legend>Provider Access for {{ k.prefix }}…</legend>
-          <label>Allowed Providers <input name="allowed_providers" value="{{ k.provider_names }}" data-search="providers" data-csv autocomplete="off"></label>
-          <p class="hint">Comma-separated exact Provider names. Blank allows all API-key Providers.</p>
+          {% call controls::provider_access(provider_choices, k.provider_names.as_str(), "") %}
         </fieldset>
         {% if !base.simple %}
         <fieldset>

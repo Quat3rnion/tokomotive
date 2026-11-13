@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "control_options.html" as controls %}
 {% import "rates_fields.html" as f %}
 {% block title %}{{ name }} - Models - Tokomotive{% endblock %}
 {% block nav_models %}aria-current="page"{% endblock %}
@@ -16,7 +17,7 @@
   <h2 id="model-h">Model</h2>
   <form method="post" action="/admin/models/{{ id }}" class="stack">
     <div class="row fill">
-      <div class="field"><label for="m-provider">Provider</label><input id="m-provider" name="provider" value="{{ provider_name }}" data-search="providers" required autocomplete="off"></div>
+      <div class="field"><label for="m-provider">Provider</label>{% if let Some(options) = provider_choices %}<select id="m-provider" name="provider" required>{% call controls::options(options, provider_name.as_str(), "") %}</select>{% else %}<input id="m-provider" name="provider" value="{{ provider_name }}" data-search="providers" required autocomplete="off">{% endif %}</div>
       <div class="field grow"><label for="m-aliases">Aliases</label><input id="m-aliases" name="aliases" value="{{ aliases }}" autocomplete="off" spellcheck="false" aria-describedby="m-aliases-help"></div>
       <button>Save Model</button>
     </div>
@@ -88,7 +89,7 @@
   {% let pager = self.override_pager %}{% include "pager.html" %}
   <h3 id="team-add-h">Add or change an override</h3>
   <form method="post" action="/admin/models/{{ id }}/team-price" class="stack" data-modes aria-labelledby="team-add-h">
-    <div class="field"><label for="t-team">Team</label><input id="t-team" name="team_name" data-search="teams" required placeholder="Exact Team name" autocomplete="off"></div>
+    <div class="field"><label for="t-team">Team</label>{% if let Some(options) = team_choices %}<select id="t-team" name="team_name" required>{% call controls::options(options, "", "Choose a Team") %}</select>{% else %}<input id="t-team" name="team_name" data-search="teams" required placeholder="Exact Team name" autocomplete="off">{% endif %}</div>
     <fieldset class="choices">
       <legend>How to set the Team Price</legend>
       <div class="opt" data-mode="markup">

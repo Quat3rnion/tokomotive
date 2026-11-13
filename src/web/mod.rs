@@ -843,6 +843,7 @@ async fn users(
 ) -> Response {
     let users = tryr!(db::users_page(&st.db, &q.page, q.team).await);
     let mut page = UsersPage::build(Base::new(&st), &users.items);
+    page.team_choices = tryr!(db::small_choices(&st.db, "teams").await);
     page.pager = Pager::keyset(&uri.to_string(), &q.page, &users);
     render(page)
 }
@@ -1119,6 +1120,7 @@ async fn keys_page(st: &AppState, new_key: Option<String>, q: ListQ, uri: &str) 
         },
     );
     page.pager = pager;
+    page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
     page.revoked_pager = revoked_pager;
     page.pager.label = "Active key pages".into();
     page.revoked_pager.label = "Revoked key pages".into();
@@ -1350,6 +1352,7 @@ async fn models(
         .map(|p| p.name.clone())
         .collect();
     let mut page = ModelsPage::build(Base::new(&st), &selected, cat.default_markup_bp, providers);
+    page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
     page.pager = Pager::keyset(&uri.to_string(), &q.page, &ids);
     render(page)
 }
@@ -1649,6 +1652,8 @@ async fn model_detail(
         &teams.items,
     );
     page.pager = Pager::keyset(&uri.to_string(), &q.page, &history);
+    page.team_choices = tryr!(db::small_choices(&st.db, "teams").await);
+    page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
     page.pager.label = "Card history pages".into();
     page.override_pager = Pager::keyset(&uri.to_string(), &override_q, &teams);
     page.override_pager.label = "Team override pages".into();
@@ -2070,6 +2075,7 @@ async fn ledger(
         vec![]
     };
     let filters = LedgerFilterView {
+        provider_choices: tryr!(db::small_choices(&st.db, "providers").await),
         user: q.user.clone().unwrap_or_default(),
         provider: query.provider.clone().unwrap_or_default(),
         model: query.model.clone().unwrap_or_default(),

@@ -633,7 +633,7 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
     assert_eq!(edit.matches("name=\"deployment_provider\"").count(), 2);
     assert_eq!(edit.matches("name=\"deployment_model\"").count(), 2);
     assert!(
-        edit.contains("name=\"deployment_provider\" value=\"beta\" data-search=\"providers\""),
+        edit.contains("<option value=\"beta\" selected>beta</option>"),
         "{edit}"
     );
     assert!(edit.contains("value=\"upstream-one\""));

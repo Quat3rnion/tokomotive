@@ -1337,6 +1337,31 @@ pub struct Suggestion {
     pub name: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct ControlChoice {
+    pub name: String,
+    pub subscription: bool,
+}
+
+impl ControlChoice {
+    pub fn selected(&self, names: &str) -> bool {
+        names.split(',').any(|name| name.trim() == self.name)
+    }
+}
+
+/// A 31-row probe distinguishes small admin sets without loading a large set.
+pub async fn small_choices(db: &Db, kind: &str) -> Result<Option<Vec<ControlChoice>>> {
+    let sql = match kind {
+        "providers" => {
+            "SELECT name,auth != 'api_key' AS subscription FROM providers ORDER BY name LIMIT 31"
+        }
+        "teams" => "SELECT name,0 AS subscription FROM teams ORDER BY name LIMIT 31",
+        _ => anyhow::bail!("unsupported control choices"),
+    };
+    let choices: Vec<ControlChoice> = sqlx::query_as(sql).fetch_all(db).await?;
+    Ok((choices.len() <= 30).then_some(choices))
+}
+
 /// These are the only accepted tables. Bind the search term, never SQL text.
 pub async fn search_names(db: &Db, kind: &str, q: &str) -> Result<Vec<Suggestion>> {
     let table = match kind {

@@ -131,6 +131,73 @@ impl App {
             token,
         }
     }
+    async fn small() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg: Config = toml::from_str(
+            r#"
+[[providers]]
+name='openai'
+kind='openai'
+base_url='http://127.0.0.1:9'
+api_key='fixture'
+[[providers]]
+name='claude-max'
+kind='anthropic'
+auth='claude'
+base_url='https://api.anthropic.com'
+[[teams]]
+name='research'
+[[teams]]
+name='support'
+[[models]]
+name='gpt-4o'
+provider='openai'
+[models.cost]
+input=1
+output=2
+[[routes]]
+name='fast'
+[[routes.deployments]]
+provider='openai'
+model='gpt-4o'
+"#,
+        )
+        .unwrap();
+        cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
+        let st = tokomotive::init(&cfg, None).await.unwrap();
+        tokomotive::settings::put(&st.db, "admin_password_hash", "fixture-password-hash")
+            .await
+            .unwrap();
+        db::create_session(&st.db, "pagination-session", 1)
+            .await
+            .unwrap();
+        let user = db::create_user(&st.db, "maria.keller", Some(1), None, false)
+            .await
+            .unwrap();
+        db::create_user(&st.db, "jonas.meier", Some(2), None, false)
+            .await
+            .unwrap();
+        let (key, token) = db::create_key(&st.db, user, "laptop", None).await.unwrap();
+        db::update_key_providers(&st.db, key, &["openai".into(), "claude-max".into()])
+            .await
+            .unwrap();
+        db::add_price_card(&st.db, 1, Some(1), &PriceSpec::MarkupBp(1000))
+            .await
+            .unwrap();
+        st.reload_catalog().await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let router = tokomotive::router(st.clone());
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        Self {
+            _dir: dir,
+            st,
+            url,
+            client: reqwest::Client::new(),
+            token,
+        }
+    }
+
     async fn page(&self, path: &str) -> String {
         let response = self
             .client
@@ -956,7 +1023,11 @@ async fn reprice_batches_preserve_atomicity_and_rollup_totals() {
 #[tokio::test]
 #[ignore = "Run manually for Playwright; serves the large fixture until stopped."]
 async fn visual_fixture() {
-    let app = App::large().await;
+    let app = if std::env::var_os("PAGINATION_SMALL").is_some() {
+        App::small().await
+    } else {
+        App::large().await
+    };
     println!("PAGINATION_URL={}", app.url);
     std::future::pending::<()>().await;
 }

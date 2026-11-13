@@ -213,6 +213,7 @@ async fn change_password(
 #[derive(Template)]
 #[template(path = "routes.html")]
 struct RoutesPage {
+    provider_choices: Option<Vec<db::ControlChoice>>,
     pager: Pager,
     base: Base,
     routes: Vec<RouteView>,
@@ -327,6 +328,7 @@ async fn routes(
         .map(|p| p.name)
         .collect();
     render(RoutesPage {
+        provider_choices: tryr!(db::small_choices(&st.db, "providers").await),
         pager,
         base: Base::new(&st),
         routes,

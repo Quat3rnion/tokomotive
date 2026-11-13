@@ -14,9 +14,9 @@
 {% endmacro %}
 
 {% block content %}
-{% include "search.html" %}
 <h1>Providers</h1>
 <p class="muted">A Provider is an upstream API, such as OpenAI or Anthropic. The Proxy sends requests to it with its Provider Keys or a subscription. Clients never see these credentials.</p>
+{% include "search.html" %}
 {% if providers.is_empty() %}<p class="empty">No Providers yet. Add the first one below. Then add Models or a Route, a User and a Virtual Key.</p>{% endif %}
 
 {% for p in providers %}

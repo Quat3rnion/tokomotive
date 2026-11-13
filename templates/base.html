@@ -69,6 +69,8 @@ COPY SHEET (GLOSSARY.md)
     search.html for name search. Inputs with data-search="users|teams|models|
     routes|providers" get at most 20 suggestions; without JS, exact names work.
     Add data-csv for comma-separated names.
+    Use db::small_choices for Teams and Providers: at most 30 choices use
+    selects or Provider Access checkboxes from control_options.html.
 #}<!doctype html>
 <html lang="en">
 <head>
@@ -338,6 +340,9 @@ ul.meters meter { width:12em; vertical-align:middle; }
 }
 /* Browser-default placeholder gray does not meet AA on the field background. */
 input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
+.row.list-filter { gap:var(--sp-2); margin:var(--sp-3) 0 var(--sp-4); }
+.list-filter .field { flex:1 1 12em; max-width:24em; }
+.list-filter .field input[type=search] { width:100%; }
 </style>
 </head>
 <body>
@@ -570,6 +575,7 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   };
   const scan = () => document.querySelectorAll('input[data-search]').forEach(attach);
   scan();
+  document.addEventListener('focusin', e => { if (e.target.matches('input[data-search]')) attach(e.target); });
   document.addEventListener('htmx:load', scan);
 })();
 </script>

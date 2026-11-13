@@ -698,6 +698,7 @@ pub struct UserView {
 #[derive(Template)]
 #[template(path = "users.html")]
 pub struct UsersPage {
+    pub team_choices: Option<Vec<crate::db::ControlChoice>>,
     pub pager: crate::pagination::Pager,
     pub base: Base,
     pub users: Vec<UserView>,
@@ -745,6 +746,7 @@ impl UsersPage {
             })
             .collect();
         UsersPage {
+            team_choices: None,
             pager: Default::default(),
             base,
             users,
@@ -813,6 +815,7 @@ pub struct KeyView {
 #[derive(Template)]
 #[template(path = "keys.html")]
 pub struct KeysPage {
+    pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
     pub revoked_open: bool,
     pub has_users: bool,
     pub pager: crate::pagination::Pager,
@@ -883,6 +886,7 @@ impl KeysPage {
             }
         }
         KeysPage {
+            provider_choices: None,
             revoked_open: false,
             has_users: true,
             pager: Default::default(),
@@ -1021,6 +1025,7 @@ pub struct ModelView {
 #[derive(Template)]
 #[template(path = "models.html")]
 pub struct ModelsPage {
+    pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
     pub pager: crate::pagination::Pager,
     pub base: Base,
     pub models: Vec<ModelView>,
@@ -1038,6 +1043,7 @@ impl ModelsPage {
         providers: Vec<String>,
     ) -> ModelsPage {
         ModelsPage {
+            provider_choices: None,
             pager: Default::default(),
             base,
             models: models
@@ -1094,6 +1100,8 @@ pub struct HistView {
 #[derive(Template)]
 #[template(path = "model.html")]
 pub struct ModelPage {
+    pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
+    pub team_choices: Option<Vec<crate::db::ControlChoice>>,
     pub provider_name: String,
     pub pager: crate::pagination::Pager,
     pub override_pager: crate::pagination::Pager,
@@ -1196,6 +1204,8 @@ impl ModelPage {
             .collect();
         let dollars = |micros: i64| format!("{}", micros as f64 / 1e6);
         ModelPage {
+            provider_choices: None,
+            team_choices: None,
             provider_name: m.provider.clone(),
             pager: Default::default(),
             override_pager: Default::default(),
@@ -1260,6 +1270,7 @@ pub struct LedgerView {
 /// The values of the Ledger filter bar.
 #[derive(Default)]
 pub struct LedgerFilterView {
+    pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
     pub provider: String,
     pub user: String,
     pub model: String,
