@@ -14,10 +14,13 @@
 
 <section class="panel" aria-labelledby="model-h">
   <h2 id="model-h">Model</h2>
-  <form method="post" action="/admin/models/{{ id }}" class="row">
-    <div class="field"><label for="m-provider">Provider</label><select id="m-provider" name="provider">{% for o in provider_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
-    <div class="field grow"><label for="m-aliases">Aliases</label><input id="m-aliases" name="aliases" value="{{ aliases }}" autocomplete="off" spellcheck="false" aria-describedby="m-aliases-help"><p class="hint" id="m-aliases-help">Comma-separated other names for this Model.</p></div>
-    <button>Save Model</button>
+  <form method="post" action="/admin/models/{{ id }}" class="stack">
+    <div class="row fill">
+      <div class="field"><label for="m-provider">Provider</label><select id="m-provider" name="provider">{% for o in provider_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
+      <div class="field grow"><label for="m-aliases">Aliases</label><input id="m-aliases" name="aliases" value="{{ aliases }}" autocomplete="off" spellcheck="false" aria-describedby="m-aliases-help"></div>
+      <button>Save Model</button>
+    </div>
+    <p class="hint" id="m-aliases-help">Comma-separated other names for this Model, for example 4o, gpt-4o-latest.</p>
     <div class="form-error" role="alert" tabindex="-1"></div>
   </form>
 </section>
@@ -47,14 +50,14 @@
       <div class="opt" data-mode="markup">
         <label class="check"><input type="radio" name="mode" value="markup" {% if price_mode == "markup" %}checked{% endif %}> Markup for this Model</label>
         <div class="row">
-          <div class="field"><label for="p-markup">Markup (%)</label><input id="p-markup" name="markup_percent" value="{{ price_markup }}" type="number" step="any" min="-100" inputmode="decimal" placeholder="25" aria-describedby="p-markup-preview" data-preview="p-markup-preview"></div>
+          <div class="field"><label for="p-markup">Markup (%)</label><input id="p-markup" name="markup_percent" value="{{ price_markup }}" type="number" step="any" min="-100" inputmode="decimal" aria-describedby="p-markup-preview" data-preview="p-markup-preview"></div>
           <p class="hint" id="p-markup-preview" aria-live="polite" data-in="{{ cost_in }}" data-out="{{ cost_out }}">Cost Card rates plus this percentage.</p>
         </div>
       </div>
       <div class="opt" data-mode="rates">
         <label class="check"><input type="radio" name="mode" value="rates" {% if price_mode == "rates" %}checked{% endif %}> Explicit rates</label>
         <p class="hint">Fixed rates that do not follow the Cost Card.{% if has_cost %} Start from the Cost Card with the button, then raise the rates.{% endif %}</p>
-        {% if has_cost %}<p><button type="button" class="ghost" data-copy-cost hidden>Copy Cost Card rates</button></p>{% endif %}
+        {% if has_cost %}<p><button type="button" class="ghost" data-copy-cost hidden aria-label="Copy Cost Card rates to the Price Card">Copy Cost Card rates</button></p>{% endif %}
         {% call f::rates_fields(price_rates, "price", "Price") %}
       </div>
     </fieldset>
@@ -93,13 +96,13 @@
       <div class="opt" data-mode="markup">
         <label class="check"><input type="radio" name="mode" value="markup" checked> Markup</label>
         <div class="row">
-          <div class="field"><label for="t-markup">Markup (%)</label><input id="t-markup" name="markup_percent" type="number" step="any" min="-100" inputmode="decimal" placeholder="10" aria-describedby="t-markup-preview" data-preview="t-markup-preview"></div>
+          <div class="field"><label for="t-markup">Markup (%)</label><input id="t-markup" name="markup_percent" type="number" step="any" min="-100" inputmode="decimal" aria-describedby="t-markup-preview" data-preview="t-markup-preview"></div>
           <p class="hint" id="t-markup-preview" aria-live="polite" data-in="{{ cost_in }}" data-out="{{ cost_out }}">Cost Card rates plus this percentage.</p>
         </div>
       </div>
       <div class="opt" data-mode="rates">
         <label class="check"><input type="radio" name="mode" value="rates"> Explicit rates</label>
-        {% if has_cost %}<p><button type="button" class="ghost" data-copy-cost hidden>Copy Cost Card rates</button></p>{% endif %}
+        {% if has_cost %}<p><button type="button" class="ghost" data-copy-cost hidden aria-label="Copy Cost Card rates to the Team override">Copy Cost Card rates</button></p>{% endif %}
         {% call f::rates_fields(blank, "team", "Team Price") %}
       </div>
     </fieldset>
