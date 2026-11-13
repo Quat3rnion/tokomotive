@@ -137,39 +137,59 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
     let mut cfg: Config = toml::from_str("")?;
     cfg.router = settings.router.clone();
     use sqlx::Row;
-    for row in sqlx::query("SELECT * FROM providers ORDER BY name")
-        .fetch_all(db)
-        .await?
-    {
-        let encoded: Vec<String> = serde_json::from_str(row.get("keys_json"))?;
-        let mut keys = Vec::new();
-        for v in encoded {
-            if let Some(env) = v.strip_prefix("env:") {
-                if let Ok(v) = std::env::var(env)
-                    && !v.is_empty()
-                {
-                    keys.push(v);
-                }
-            } else {
-                keys.push(key.decrypt(&v)?);
-            }
+    // Runtime validation needs the full configuration; read its cache in batches.
+    // Dashboard list handlers use their own bounded queries, not this loader.
+    let mut after = String::new();
+    loop {
+        let rows = sqlx::query("SELECT * FROM providers WHERE name>? ORDER BY name LIMIT 200")
+            .bind(&after)
+            .fetch_all(db)
+            .await?;
+        if rows.is_empty() {
+            break;
         }
-        cfg.providers.push(ProviderCfg {
-            name: row.get("name"),
-            kind: serde_json::from_str(row.get("kind"))?,
-            auth: serde_json::from_value(serde_json::json!(row.get::<String, _>("auth")))?,
-            base_url: row.get("base_url"),
-            api_key: None,
-            api_key_env: None,
-            api_keys: keys,
-            api_keys_env: vec![],
-        });
+        for row in rows {
+            after = row.get("name");
+            let encoded: Vec<String> = serde_json::from_str(row.get("keys_json"))?;
+            let mut keys = Vec::new();
+            for v in encoded {
+                if let Some(env) = v.strip_prefix("env:") {
+                    if let Ok(v) = std::env::var(env)
+                        && !v.is_empty()
+                    {
+                        keys.push(v);
+                    }
+                } else {
+                    keys.push(key.decrypt(&v)?);
+                }
+            }
+            cfg.providers.push(ProviderCfg {
+                name: row.get("name"),
+                kind: serde_json::from_str(row.get("kind"))?,
+                auth: serde_json::from_value(serde_json::json!(row.get::<String, _>("auth")))?,
+                base_url: row.get("base_url"),
+                api_key: None,
+                api_key_env: None,
+                api_keys: keys,
+                api_keys_env: vec![],
+            });
+        }
     }
-    for text in sqlx::query_scalar::<_, String>("SELECT config_json FROM routes ORDER BY name")
-        .fetch_all(db)
-        .await?
-    {
-        cfg.routes.push(serde_json::from_str::<RouteCfg>(&text)?);
+    let mut after = String::new();
+    loop {
+        let rows =
+            sqlx::query("SELECT name,config_json FROM routes WHERE name>? ORDER BY name LIMIT 200")
+                .bind(&after)
+                .fetch_all(db)
+                .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            after = row.get("name");
+            cfg.routes
+                .push(serde_json::from_str::<RouteCfg>(row.get("config_json"))?);
+        }
     }
     cfg.validate()?;
     Ok((cfg, settings))

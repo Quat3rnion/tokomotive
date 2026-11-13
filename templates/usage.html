@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Usage - Tokomotive{% endblock %}
+{% block nav_overview %}aria-current="page"{% endblock %}
+{% block content %}
+<h1>Usage by {% if group=="user" %}User{% else if group=="team" %}Team{% else if group=="provider" %}Provider{% else %}Model{% endif %}</h1>
+<p><a href="/admin?range={{ range }}">Back to the Overview</a>. Select a column to change the sort order.</p>
+<form method="get" class="panel row" aria-label="Usage groups">
+  <label>Group <select name="group"><option value="model"{% if group=="model" %} selected{% endif %}>Model</option><option value="user"{% if group=="user" %} selected{% endif %}>User</option><option value="team"{% if group=="team" %} selected{% endif %}>Team</option><option value="provider"{% if group=="provider" %} selected{% endif %}>Provider</option></select></label>
+  <label>Time range <select name="range"><option value="24h"{% if range=="24h" %} selected{% endif %}>24 hours</option><option value="7d"{% if range=="7d" %} selected{% endif %}>7 days</option><option value="30d"{% if range=="30d" %} selected{% endif %}>30 days</option></select></label>
+  <label>Sort by <select name="sort">{% for (label,value) in sort_options %}<option value="{{ value }}"{% if sort==*value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Order <select name="direction"><option value="desc"{% if direction=="desc" %} selected{% endif %}>Descending</option><option value="asc"{% if direction=="asc" %} selected{% endif %}>Ascending</option></select></label>
+  <input type="hidden" name="limit" value="{{ limit }}">
+  <button>Apply</button>
+</form>
+<div class="panel scroll" aria-label="Usage totals">
+<table class="cards-sm usage"><thead><tr>{% for (label,href) in headers %}<th scope="col"><a href="{{ href }}">{{ label }}</a></th>{% endfor %}{% if !base.simple %}{% for (label,href) in money_headers %}<th scope="col"><a href="{{ href }}">{{ label }}</a></th>{% endfor %}{% endif %}</tr></thead>
+<tbody>{% for r in rows %}<tr><th scope="row">{{ r.key }}</th><td data-label="Requests" class="n">{{ r.requests }}</td><td data-label="Errors" class="n">{{ r.errors }}</td><td data-label="Input" class="n">{{ r.input }}</td><td data-label="Output" class="n">{{ r.output }}</td><td data-label="Latency" class="n">{{ r.latency }}</td>{% if !base.simple %}<td data-label="Price" class="n" title="{{ r.price.exact }}">{{ r.price }}</td><td data-label="Cost" class="n" title="{{ r.cost.exact }}">{{ r.cost }}</td><td data-label="Profit" class="n" title="{{ r.profit.exact }}">{{ r.profit }}</td>{% endif %}</tr>{% else %}<tr><td class="empty">No requests in this range.</td></tr>{% endfor %}</tbody></table>
+</div>
+{% include "pager.html" %}
+{% endblock %}

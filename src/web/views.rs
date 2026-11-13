@@ -130,27 +130,6 @@ fn opt_date(ts: Option<i64>) -> Stamp {
     })
 }
 
-#[derive(Clone)]
-pub struct Opt {
-    pub value: String,
-    pub label: String,
-    pub selected: bool,
-}
-
-fn team_opts(teams: &[TeamRow], selected: Option<i64>) -> Vec<Opt> {
-    let mut v = vec![Opt {
-        value: String::new(),
-        label: "No Team".into(),
-        selected: selected.is_none(),
-    }];
-    v.extend(teams.iter().map(|t| Opt {
-        value: t.id.to_string(),
-        label: t.name.clone(),
-        selected: Some(t.id) == selected,
-    }));
-    v
-}
-
 // ------------------------------------------------------------------- pages
 
 /// Data that `base.html` needs on every page.
@@ -301,6 +280,7 @@ pub struct GroupView {
 
 /// One "By ..." table. Image columns show only when a row uses images.
 pub struct GroupTable {
+    pub all_href: String,
     pub id: &'static str,
     pub title: &'static str,
     pub column: &'static str,
@@ -355,7 +335,7 @@ fn all_tokens(t: &Totals) -> i64 {
 }
 
 impl GroupView {
-    fn new(group: &Group) -> GroupView {
+    pub fn new(group: &Group) -> GroupView {
         let key = &group.key;
         let t = &group.t;
         GroupView {
@@ -647,6 +627,16 @@ impl OverviewPage {
             }],
         );
         let table = |id, title, column, rows: &[Group]| GroupTable {
+            all_href: format!(
+                "/admin/usage?group={}&range={}",
+                match column {
+                    "User" => "user",
+                    "Team" => "team",
+                    "Provider" => "provider",
+                    _ => "model",
+                },
+                range.name()
+            ),
             id,
             title,
             column,
@@ -684,10 +674,10 @@ impl OverviewPage {
 // ------------------------------------------------------------------- users
 
 pub struct UserView {
+    pub team_name: String,
     pub id: i64,
     pub name: String,
     pub team: String,
-    pub team_opts: Vec<Opt>,
     /// The Budget for the form, for example "12.5".
     pub budget: String,
     /// The Budget for display, for example "$12.50" or "None".
@@ -708,20 +698,20 @@ pub struct UserView {
 #[derive(Template)]
 #[template(path = "users.html")]
 pub struct UsersPage {
+    pub pager: crate::pagination::Pager,
     pub base: Base,
     pub users: Vec<UserView>,
-    pub team_opts: Vec<Opt>,
 }
 
 impl UsersPage {
-    pub fn build(base: Base, users: &[UserRow], teams: &[TeamRow]) -> UsersPage {
+    pub fn build(base: Base, users: &[UserRow]) -> UsersPage {
         let users = users
             .iter()
             .map(|u| UserView {
+                team_name: u.team.clone().unwrap_or_default(),
                 id: u.id,
                 name: u.name.clone(),
                 team: u.team.clone().unwrap_or_else(|| "No Team".into()),
-                team_opts: team_opts(teams, u.team_id),
                 budget: u
                     .budget_micros
                     .map(crate::pricing::fmt_rate)
@@ -755,9 +745,9 @@ impl UsersPage {
             })
             .collect();
         UsersPage {
+            pager: Default::default(),
             base,
             users,
-            team_opts: team_opts(teams, None),
         }
     }
 }
@@ -765,38 +755,34 @@ impl UsersPage {
 pub struct TeamView {
     pub id: i64,
     pub name: String,
-    pub users: Vec<String>,
-    /// Models with a price override for this Team: (Model id, name).
-    pub overrides: Vec<(i64, String)>,
+    pub user_count: i64,
+    pub override_count: usize,
 }
 
 #[derive(Template)]
 #[template(path = "teams.html")]
 pub struct TeamsPage {
+    pub pager: crate::pagination::Pager,
     pub base: Base,
     pub teams: Vec<TeamView>,
 }
 
 impl TeamsPage {
-    pub fn build(base: Base, teams: &[TeamRow], users: &[UserRow], cat: &Catalog) -> TeamsPage {
+    pub fn build(base: Base, teams: &[TeamRow], cat: &Catalog) -> TeamsPage {
         TeamsPage {
+            pager: Default::default(),
             base,
             teams: teams
                 .iter()
                 .map(|t| TeamView {
                     id: t.id,
                     name: t.name.clone(),
-                    users: users
-                        .iter()
-                        .filter(|u| u.team_id == Some(t.id))
-                        .map(|u| u.name.clone())
-                        .collect(),
-                    overrides: cat
+                    user_count: t.users,
+                    override_count: cat
                         .models
                         .iter()
                         .filter(|m| m.team_price.contains_key(&t.id))
-                        .map(|m| (m.id, m.name.clone()))
-                        .collect(),
+                        .count(),
                 })
                 .collect(),
         }
@@ -805,14 +791,8 @@ impl TeamsPage {
 
 // -------------------------------------------------------------------- keys
 
-/// A Provider in a Provider Access choice.
-pub struct ProviderOpt {
-    pub name: String,
-    pub subscription: bool,
-    pub selected: bool,
-}
-
 pub struct KeyView {
+    pub provider_names: String,
     pub id: i64,
     pub user: String,
     pub prefix: String,
@@ -821,7 +801,6 @@ pub struct KeyView {
     pub models: String,
     /// "All API-key Providers", or the allowed names.
     pub access: String,
-    pub providers: Vec<ProviderOpt>,
     /// "RPM 60, TPM unlimited", or "Unlimited".
     pub limits: String,
     pub created: Stamp,
@@ -834,26 +813,21 @@ pub struct KeyView {
 #[derive(Template)]
 #[template(path = "keys.html")]
 pub struct KeysPage {
+    pub revoked_open: bool,
+    pub has_users: bool,
+    pub pager: crate::pagination::Pager,
+    pub revoked_pager: crate::pagination::Pager,
     pub base: Base,
     pub keys: Vec<KeyView>,
     pub revoked: Vec<KeyView>,
-    pub users: Vec<Opt>,
     pub new_key: Option<String>,
-    pub providers: Vec<ProviderOpt>,
-    /// Model and Route names for the Allowed models suggestions.
-    pub model_names: Vec<String>,
     /// The User name when the list shows the keys of one User.
     pub filter_user: Option<String>,
 }
 
 pub struct KeysData<'a> {
     pub keys: &'a [KeyRow],
-    pub users: &'a [UserRow],
     pub new_key: Option<String>,
-    /// Provider names, with true for a Subscription Provider.
-    pub providers: &'a [(String, bool)],
-    pub model_names: Vec<String>,
-    pub filter: Option<i64>,
 }
 
 fn limit_text(v: Option<i64>) -> String {
@@ -862,35 +836,19 @@ fn limit_text(v: Option<i64>) -> String {
 
 impl KeysPage {
     pub fn build(base: Base, d: KeysData) -> KeysPage {
-        let filter_user = d
-            .filter
-            .and_then(|id| d.users.iter().find(|u| u.id == id))
-            .map(|u| u.name.clone());
         let (mut keys, mut revoked) = (vec![], vec![]);
-        for k in d
-            .keys
-            .iter()
-            .filter(|k| filter_user.as_ref().is_none_or(|u| &k.user == u))
-        {
+        for k in d.keys {
             let selected: Vec<String> = k
                 .allowed_providers
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
             let view = KeyView {
+                provider_names: selected.join(", "),
                 id: k.id,
                 user: k.user.clone(),
                 prefix: k.prefix.clone(),
                 label: k.label.clone(),
-                providers: d
-                    .providers
-                    .iter()
-                    .map(|(name, subscription)| ProviderOpt {
-                        name: name.clone(),
-                        subscription: *subscription,
-                        selected: selected.contains(name),
-                    })
-                    .collect(),
                 access: if selected.is_empty() {
                     "All API-key Providers".into()
                 } else {
@@ -925,30 +883,15 @@ impl KeysPage {
             }
         }
         KeysPage {
+            revoked_open: false,
+            has_users: true,
+            pager: Default::default(),
+            revoked_pager: Default::default(),
             base,
             keys,
             revoked,
-            users: d
-                .users
-                .iter()
-                .map(|u| Opt {
-                    value: u.id.to_string(),
-                    label: u.name.clone(),
-                    selected: Some(u.id) == d.filter,
-                })
-                .collect(),
             new_key: d.new_key,
-            providers: d
-                .providers
-                .iter()
-                .map(|(name, subscription)| ProviderOpt {
-                    name: name.clone(),
-                    subscription: *subscription,
-                    selected: false,
-                })
-                .collect(),
-            model_names: d.model_names,
-            filter_user,
+            filter_user: None,
         }
     }
 }
@@ -1078,6 +1021,7 @@ pub struct ModelView {
 #[derive(Template)]
 #[template(path = "models.html")]
 pub struct ModelsPage {
+    pub pager: crate::pagination::Pager,
     pub base: Base,
     pub models: Vec<ModelView>,
     pub providers: Vec<String>,
@@ -1087,11 +1031,16 @@ pub struct ModelsPage {
 }
 
 impl ModelsPage {
-    pub fn build(base: Base, cat: &Catalog, providers: Vec<String>) -> ModelsPage {
+    pub fn build(
+        base: Base,
+        models: &[&ModelEntry],
+        default_bp: i64,
+        providers: Vec<String>,
+    ) -> ModelsPage {
         ModelsPage {
+            pager: Default::default(),
             base,
-            models: cat
-                .models
+            models: models
                 .iter()
                 .map(|m| {
                     let price = m.price.as_ref().map(|(_, p)| p);
@@ -1102,7 +1051,7 @@ impl ModelsPage {
                         aliases: m.aliases.join(", "),
                         cost: m.cost.as_ref().map(|(_, c)| RatesView::new(c)),
                         price_tag: match price {
-                            None => format!("{} default", signed_percent(cat.default_markup_bp)),
+                            None => format!("{} default", signed_percent(default_bp)),
                             Some(PriceSpec::MarkupBp(bp)) => signed_percent(*bp),
                             Some(PriceSpec::Rates(_)) => "Explicit rates".into(),
                         },
@@ -1110,14 +1059,14 @@ impl ModelsPage {
                             Some(PriceSpec::Rates(r)) => {
                                 format!("Explicit rates: {}", rates_line(&r.base))
                             }
-                            _ => describe_price(price, cat.default_markup_bp),
+                            _ => describe_price(price, default_bp),
                         },
                         overrides: m.team_price.len(),
                     }
                 })
                 .collect(),
             providers,
-            default_markup: bp_percent(cat.default_markup_bp),
+            default_markup: bp_percent(default_bp),
             blank: RatesView::default(),
         }
     }
@@ -1145,10 +1094,12 @@ pub struct HistView {
 #[derive(Template)]
 #[template(path = "model.html")]
 pub struct ModelPage {
+    pub provider_name: String,
+    pub pager: crate::pagination::Pager,
+    pub override_pager: crate::pagination::Pager,
     pub base: Base,
     pub id: i64,
     pub name: String,
-    pub provider_opts: Vec<Opt>,
     pub aliases: String,
     /// The current Cost Card, or an empty form when there is none.
     pub cost: RatesView,
@@ -1169,7 +1120,6 @@ pub struct ModelPage {
     /// An empty rates form for the Team override.
     pub blank: RatesView,
     pub overrides: Vec<OverrideView>,
-    pub team_opts: Vec<Opt>,
     pub history: Vec<HistView>,
 }
 
@@ -1180,7 +1130,6 @@ impl ModelPage {
         default_bp: i64,
         history: &[CardHistoryRow],
         teams: &[TeamRow],
-        providers: Vec<String>,
     ) -> ModelPage {
         let cost = m.cost.as_ref().map(|(_, c)| c);
         let price = m.price.as_ref().map(|(_, p)| p);
@@ -1196,23 +1145,18 @@ impl ModelPage {
             };
             rates_line(&now.base)
         });
-        let mut overrides: Vec<OverrideView> = m
-            .team_price
+        let overrides: Vec<OverrideView> = teams
             .iter()
-            .map(|(tid, (_, spec))| OverrideView {
-                team_id: *tid,
-                team: teams
-                    .iter()
-                    .find(|t| t.id == *tid)
-                    .map(|t| t.name.clone())
-                    .unwrap_or_else(|| format!("team {tid}")),
+            .filter_map(|t| m.team_price.get(&t.id).map(|(_, spec)| (t, spec)))
+            .map(|(team, spec)| OverrideView {
+                team_id: team.id,
+                team: team.name.clone(),
                 desc: match spec {
                     PriceSpec::Rates(r) => format!("Explicit rates: {}", rates_line(&r.base)),
                     _ => describe_price(Some(spec), default_bp),
                 },
             })
             .collect();
-        overrides.sort_by(|a, b| a.team.cmp(&b.team));
         let history = history
             .iter()
             .map(|h| {
@@ -1252,17 +1196,12 @@ impl ModelPage {
             .collect();
         let dollars = |micros: i64| format!("{}", micros as f64 / 1e6);
         ModelPage {
+            provider_name: m.provider.clone(),
+            pager: Default::default(),
+            override_pager: Default::default(),
             base,
             id: m.id,
             name: m.name.clone(),
-            provider_opts: providers
-                .into_iter()
-                .map(|p| Opt {
-                    selected: p == m.provider,
-                    label: p.clone(),
-                    value: p,
-                })
-                .collect(),
             aliases: m.aliases.join(", "),
             cost: cost.map(RatesView::new).unwrap_or_default(),
             has_cost: cost.is_some(),
@@ -1276,14 +1215,6 @@ impl ModelPage {
             cost_out: cost.map(|c| dollars(c.base.output)).unwrap_or_default(),
             blank: RatesView::default(),
             overrides,
-            team_opts: teams
-                .iter()
-                .map(|t| Opt {
-                    value: t.id.to_string(),
-                    label: t.name.clone(),
-                    selected: false,
-                })
-                .collect(),
             history,
         }
     }
@@ -1329,9 +1260,8 @@ pub struct LedgerView {
 /// The values of the Ledger filter bar.
 #[derive(Default)]
 pub struct LedgerFilterView {
-    pub users: Vec<Opt>,
-    pub providers: Vec<Opt>,
-    pub models: Vec<String>,
+    pub provider: String,
+    pub user: String,
     pub model: String,
     pub from: String,
     pub to: String,
@@ -1342,6 +1272,7 @@ pub struct LedgerFilterView {
 #[derive(Template)]
 #[template(path = "ledger.html")]
 pub struct LedgerPage {
+    pub pager: crate::pagination::Pager,
     pub base: Base,
     pub rows: Vec<LedgerView>,
     pub filter: &'static str,
@@ -1353,8 +1284,6 @@ pub struct LedgerPage {
     pub tab_errors: String,
     /// A message about the filter values, for example a bad date.
     pub error: Option<String>,
-    pub older: Option<String>,
-    pub newest: Option<String>,
     pub page_size: i64,
     pub unpriced_models: Vec<String>,
 }

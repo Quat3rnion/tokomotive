@@ -3,6 +3,7 @@
 {% block nav_teams %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Teams</h1>
+{% include "search.html" %}
 {% if base.simple %}<p class="muted">A Team groups Users for token metrics.</p>{% else %}<p class="muted">A Team groups Users that are billed together. Set a Team price override on the page of a Model.</p>{% endif %}
 
 <section class="panel" aria-labelledby="add-team-h">
@@ -22,8 +23,8 @@
   {% for t in teams %}
   <tr id="t{{ t.id }}">
     <th scope="row"><span class="name">{{ t.name }}</span></th>
-    <td data-label="Users" class="wrap">{% if t.users.is_empty() %}<span class="muted">None</span>{% else %}{{ t.users.len() }}: {{ t.users.join(", ") }}{% endif %}</td>
-    {% if !base.simple %}<td data-label="Price overrides" class="wrap">{% for (id, name) in t.overrides %}<a href="/admin/models/{{ id }}">{{ name }}</a>{% if !loop.last %}, {% endif %}{% else %}<span class="muted">None</span>{% endfor %}</td>{% endif %}
+    <td data-label="Users" class="wrap"><a href="/admin/users?team={{ t.id }}">{{ t.user_count }} {% if t.user_count == 1 %}User{% else %}Users{% endif %}</a></td>
+    {% if !base.simple %}<td data-label="Price overrides" class="wrap"><a href="/admin/models?team={{ t.id }}">{{ t.override_count }} overrides</a></td>{% endif %}
     <td><div class="actions">
       <button type="button" class="ghost" data-toggle="edit-t{{ t.id }}" aria-expanded="false" aria-controls="edit-t{{ t.id }}" aria-label="Edit Team {{ t.name }}">Edit</button>
       <form class="inline" method="post" action="/admin/teams/{{ t.id }}/delete" data-confirm="Delete Team {{ t.name }}? This works only for a Team with no Users, overrides or Ledger Entries."><button class="danger" aria-label="Delete Team {{ t.name }}">Delete</button></form>
@@ -45,4 +46,5 @@
   </tbody>
 </table>
 </div>
+{% include "pager.html" %}
 {% endblock %}

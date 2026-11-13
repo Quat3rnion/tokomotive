@@ -14,6 +14,7 @@
 {% endmacro %}
 
 {% block content %}
+{% include "search.html" %}
 <h1>Providers</h1>
 <p class="muted">A Provider is an upstream API, such as OpenAI or Anthropic. The Proxy sends requests to it with its Provider Keys or a subscription. Clients never see these credentials.</p>
 {% if providers.is_empty() %}<p class="empty">No Providers yet. Add the first one below. Then add Models or a Route, a User and a Virtual Key.</p>{% endif %}
@@ -49,12 +50,13 @@
     {% for key in p.keys %}
     <li>
       <span><code>{{ key.label }}</code>{% if let Some(set) = key.env_set %}{% if set %} <span class="tag good">set</span>{% else %} <span class="tag warn">not set</span>{% endif %}{% endif %}</span>
-      <form class="inline" method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" data-confirm="Delete Provider Key {{ key.label }} from {{ p.name }}? Requests stop using it at once."><button class="danger" aria-label="Delete Provider Key {{ key.label }} from {{ p.name }}">Delete key</button></form>
+      <form class="inline" method="post" action="/admin/providers/{{ p.name }}/keys/{{ key.index }}/delete" data-confirm="Delete Provider Key {{ key.label }} from {{ p.name }}? Requests stop using it at once."><button class="danger" aria-label="Delete Provider Key {{ key.label }} from {{ p.name }}">Delete key</button></form>
     </li>
     {% endfor %}
   </ul>
   {% if p.has_unset_env() %}<p class="hint">An environment variable that is not set is skipped. Set it before the Proxy starts.</p>{% endif %}
   {% endif %}
+  {% let pager = p.key_pager %}{% include "pager.html" %}
   <form method="post" action="/admin/providers/{{ p.name }}/keys" class="row" aria-label="Add a Provider Key to {{ p.name }}">
     <div class="field wide-key"><label for="p-{{ p.name }}-newkey">New Provider Key or env:NAME</label><input id="p-{{ p.name }}-newkey" type="password" name="api_key" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-newkey-help"><p class="hint" id="p-{{ p.name }}-newkey-help">Paste the key, or write env:NAME to read it from an environment variable.</p></div>
     <button aria-label="Add the Provider Key to {{ p.name }}">Add key</button>
@@ -120,6 +122,7 @@
     <div><button>Add provider</button></div>
   </form>
 </section>
+{% include "pager.html" %}
 {% endblock %}
 {% block scripts %}
 <script>

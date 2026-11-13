@@ -116,8 +116,9 @@ async fn add_form_marks_subscription_providers_and_suggests_models() {
     a.providers().await;
     a.user("maria").await;
     let html = a.page("/admin/keys").await;
-    assert!(html.contains("claude-max <span class=\"tag info\">subscription</span>"));
-    assert!(html.contains("<datalist id=\"model-names\">"));
+    assert!(html.contains("A Subscription Provider needs explicit access."));
+    assert!(html.contains("name=\"allowed_providers\" data-search=\"providers\" data-csv"));
+    assert!(html.contains("name=\"allowed_models\" data-search=\"models\" data-csv"));
     assert!(html.contains("<button>Add key</button>"));
 }
 
@@ -210,6 +211,6 @@ async fn user_filter_lists_their_keys_and_preselects_them() {
     let html = a.page(&format!("/admin/keys?user={jonas}")).await;
     assert!(html.contains("jonas-laptop"));
     assert!(!html.contains("maria-laptop"));
-    assert!(html.contains(&format!("<option value=\"{jonas}\" selected>")));
+    assert!(html.contains("name=\"user_name\" value=\"jonas\" data-search=\"users\""));
     assert!(html.contains("href=\"/admin/keys\""), "link to all keys");
 }

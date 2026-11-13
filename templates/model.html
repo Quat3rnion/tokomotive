@@ -16,7 +16,7 @@
   <h2 id="model-h">Model</h2>
   <form method="post" action="/admin/models/{{ id }}" class="stack">
     <div class="row fill">
-      <div class="field"><label for="m-provider">Provider</label><select id="m-provider" name="provider">{% for o in provider_opts %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="m-provider">Provider</label><input id="m-provider" name="provider" value="{{ provider_name }}" data-search="providers" required autocomplete="off"></div>
       <div class="field grow"><label for="m-aliases">Aliases</label><input id="m-aliases" name="aliases" value="{{ aliases }}" autocomplete="off" spellcheck="false" aria-describedby="m-aliases-help"></div>
       <button>Save Model</button>
     </div>
@@ -74,9 +74,9 @@
     <thead><tr><th scope="col">Team</th><th scope="col">Price</th><th scope="col"><span class="vh">Actions</span></th></tr></thead>
     <tbody>
     {% for o in overrides %}
-    <tr><th scope="row">{{ o.team }}</th><td data-label="Price">{{ o.desc }}</td><td><div class="actions">
+    <tr id="override-{{ o.team_id }}"><th scope="row">{{ o.team }}</th><td data-label="Price">{{ o.desc }}</td><td><div class="actions">
       <form class="inline" method="post" action="/admin/models/{{ id }}/team-price" data-confirm="Remove the override for Team {{ o.team }}? Its Users then pay the Model Price.">
-        <input type="hidden" name="team_id" value="{{ o.team_id }}"><input type="hidden" name="mode" value="default">
+        <input type="hidden" name="team_name" value="{{ o.team }}"><input type="hidden" name="mode" value="default">
         <button class="danger" aria-label="Remove the override for Team {{ o.team }}">Remove</button>
       </form></div></td></tr>
     {% else %}
@@ -85,12 +85,10 @@
     </tbody>
   </table>
   </div>
+  {% let pager = self.override_pager %}{% include "pager.html" %}
   <h3 id="team-add-h">Add or change an override</h3>
-  {% if team_opts.is_empty() %}
-  <p class="empty">No Teams yet. <a href="/admin/teams">Add a Team</a> to give it its own Price.</p>
-  {% else %}
   <form method="post" action="/admin/models/{{ id }}/team-price" class="stack" data-modes aria-labelledby="team-add-h">
-    <div class="field"><label for="t-team">Team</label><select id="t-team" name="team_id">{% for o in team_opts %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="t-team">Team</label><input id="t-team" name="team_name" data-search="teams" required placeholder="Exact Team name" autocomplete="off"></div>
     <fieldset class="choices">
       <legend>How to set the Team Price</legend>
       <div class="opt" data-mode="markup">
@@ -109,7 +107,6 @@
     <div class="form-error" role="alert" tabindex="-1"></div>
     <button>Save Team override</button>
   </form>
-  {% endif %}
 </section>
 
 <h2 id="history-h">Card history</h2>
@@ -118,7 +115,7 @@
   <thead><tr><th scope="col">Version</th><th scope="col">Card</th><th scope="col">Applies to</th><th scope="col">Rates or Markup</th><th scope="col">Added (UTC)</th></tr></thead>
   <tbody>
   {% for h in history %}
-  <tr><th scope="row">#{{ h.id }}</th><td data-label="Card">{{ h.kind }}</td><td data-label="Applies to">{{ h.scope }}</td>
+   <tr id="card-{{ h.id }}"><th scope="row">#{{ h.id }}</th><td data-label="Card">{{ h.kind }}</td><td data-label="Applies to">{{ h.scope }}</td>
     <td data-label="Rates or Markup">{% if let Some(r) = h.rates %}{% call rates_list(r) %}{% else %}{{ h.desc }}{% endif %}</td>
     <td data-label="Added (UTC)"><time datetime="{{ h.created.iso }}">{{ h.created.short }}</time></td></tr>
   {% else %}
@@ -127,6 +124,7 @@
   </tbody>
 </table>
 </div>
+{% let pager = self.pager %}{% include "pager.html" %}
 {% endif %}
 {% endblock %}
 

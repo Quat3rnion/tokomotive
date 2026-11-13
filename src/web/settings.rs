@@ -213,13 +213,10 @@ async fn change_password(
 #[derive(Template)]
 #[template(path = "routes.html")]
 struct RoutesPage {
+    pager: Pager,
     base: Base,
     routes: Vec<RouteView>,
     providers: Vec<String>,
-    /// Route and Model names offered as Fallback suggestions.
-    fallback_names: Vec<String>,
-    /// Upstream model names offered in the Deployment rows.
-    upstream_models: Vec<String>,
 }
 impl RoutesPage {
     /// The Add route form starts with no deployments.
@@ -228,51 +225,112 @@ impl RoutesPage {
     }
 }
 struct RouteView {
+    deployment_pager: Pager,
+    deployment_offset: i64,
+    deployment_count: usize,
     name: String,
     strategy: String,
     deployments: Vec<DeploymentCfg>,
     fallbacks: String,
 }
 
-async fn routes(_: Admin, State(st): State<AppState>) -> Response {
-    let cfg = tryr!(runtime(&st).await);
-    let routes = cfg
-        .routes
-        .iter()
-        .map(|r| -> anyhow::Result<RouteView> {
-            Ok(RouteView {
-                name: r.name.clone(),
-                strategy: serde_json::to_value(r.strategy)?
-                    .as_str()
-                    .unwrap_or("priority")
-                    .into(),
-                deployments: r.deployments.clone(),
-                fallbacks: r.fallbacks.join(", "),
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>();
-    let mut fallback_names: Vec<String> = cfg
-        .routes
-        .iter()
-        .map(|r| r.name.clone())
-        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
+#[derive(Deserialize)]
+struct RoutesQ {
+    #[serde(flatten)]
+    page: PageQuery,
+    deployments_page: Option<i64>,
+    deployments_route: Option<String>,
+}
+
+async fn routes(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(query): Query<RoutesQ>,
+) -> Response {
+    let q = query.page;
+    let deployment_q = PageQuery {
+        page: query.deployments_page,
+        limit: Some(50),
+        ..Default::default()
+    };
+    // Routes are small editable configuration records; offset is not used on logs.
+    let records: Vec<String> = tryr!(sqlx::query_scalar("SELECT json_set(config_json,'$.deployments',json('[]')) FROM routes WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        .bind(&q.q).bind(q.limit()+1).bind(q.offset()).fetch_all(&st.db).await);
+    let pager = Pager::offset(&uri.to_string(), &q, records.len());
+    let records = records
+        .into_iter()
+        .take(q.limit() as usize)
+        .map(|text| serde_json::from_str::<RouteCfg>(&text))
+        .collect::<Result<Vec<_>, _>>();
+    let records = tryr!(records);
+    let mut routes = Vec::new();
+    for (index, r) in records.into_iter().enumerate() {
+        let deployment_q = if query
+            .deployments_route
+            .as_ref()
+            .map_or(index == 0, |name| name == &r.name)
+        {
+            deployment_q.clone()
+        } else {
+            PageQuery {
+                limit: Some(50),
+                ..Default::default()
+            }
+        };
+        let deployments:Vec<String>=tryr!(sqlx::query_scalar("SELECT j.value FROM routes r,json_each(r.config_json,'$.deployments') j WHERE r.name=? ORDER BY CAST(j.key AS INTEGER) LIMIT 51 OFFSET ?")
+            .bind(&r.name).bind(deployment_q.offset()).fetch_all(&st.db).await);
+        let mut deployment_pager =
+            Pager::offset(&uri.to_string(), &deployment_q, deployments.len());
+        deployment_pager.label = format!("Deployments of {}", r.name);
+        let n = deployment_q.page.unwrap_or(1).max(1);
+        deployment_pager.next = deployment_pager.next.map(|_| {
+            crate::pagination::link(
+                &uri.to_string(),
+                &[
+                    ("deployments_page", Some(n.saturating_add(1).to_string())),
+                    ("deployments_route", Some(r.name.clone())),
+                ],
+            )
+        });
+        deployment_pager.prev = deployment_pager.prev.map(|_| {
+            crate::pagination::link(
+                &uri.to_string(),
+                &[
+                    ("deployments_page", Some((n - 1).to_string())),
+                    ("deployments_route", Some(r.name.clone())),
+                ],
+            )
+        });
+        let deployments = tryr!(
+            deployments
+                .into_iter()
+                .take(50)
+                .map(|text| serde_json::from_str::<DeploymentCfg>(&text))
+                .collect::<Result<Vec<_>, _>>()
+        );
+        routes.push(RouteView {
+            deployment_pager,
+            deployment_offset: deployment_q.offset(),
+            deployment_count: deployments.len(),
+            name: r.name.clone(),
+            strategy: tryr!(serde_json::to_value(r.strategy))
+                .as_str()
+                .unwrap_or("priority")
+                .into(),
+            deployments,
+            fallbacks: r.fallbacks.join(", "),
+        });
+    }
+    let providers = tryr!(db::search_names(&st.db, "providers", "").await)
+        .into_iter()
+        .map(|p| p.name)
         .collect();
-    fallback_names.sort();
-    fallback_names.dedup();
-    let mut upstream_models: Vec<String> = cfg
-        .routes
-        .iter()
-        .flat_map(|r| r.deployments.iter().map(|d| d.model.clone()))
-        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
-        .collect();
-    upstream_models.sort();
-    upstream_models.dedup();
     render(RoutesPage {
-        upstream_models,
+        pager,
         base: Base::new(&st),
-        routes: tryr!(routes),
-        providers: cfg.providers.into_iter().map(|p| p.name).collect(),
-        fallback_names,
+        routes,
+        providers,
     })
 }
 
@@ -280,6 +338,8 @@ async fn routes(_: Admin, State(st): State<AppState>) -> Response {
 /// `deployment_provider`, `deployment_model` and `deployment_weight` fields.
 #[derive(Default)]
 struct RouteForm {
+    deployment_offset: String,
+    deployment_count: String,
     name: String,
     strategy: String,
     fallbacks: String,
@@ -292,6 +352,8 @@ impl RouteForm {
         let mut f = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
+                "deployment_offset" => f.deployment_offset = value,
+                "deployment_count" => f.deployment_count = value,
                 "name" => f.name = value,
                 "strategy" => f.strategy = value,
                 "fallbacks" => f.fallbacks = value,
@@ -335,7 +397,7 @@ impl RouteForm {
                 weight,
             });
         }
-        if out.is_empty() {
+        if out.is_empty() && self.deployment_count.is_empty() {
             return Err("Add at least one Deployment.");
         }
         Ok(out)
@@ -367,7 +429,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         Err(_) => return form_error("Choose the strategy Priority, Round robin or Weighted."),
     };
     let added = old.is_none();
-    let route = RouteCfg {
+    let mut route = RouteCfg {
         name: f.name,
         strategy,
         deployments,
@@ -375,8 +437,27 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
     };
     let mut cfg = tryr!(runtime(&st).await);
     if let Some(name) = &old {
-        if !cfg.routes.iter().any(|r| &r.name == name) {
+        let Some(original) = cfg.routes.iter().find(|r| &r.name == name) else {
             return form_error("Route not found.");
+        };
+        if !f.deployment_offset.is_empty() || !f.deployment_count.is_empty() {
+            let window = f
+                .deployment_offset
+                .parse::<usize>()
+                .ok()
+                .zip(f.deployment_count.parse::<usize>().ok())
+                .filter(|(offset, count)| {
+                    *count <= 50
+                        && offset
+                            .checked_add(*count)
+                            .is_some_and(|end| end <= original.deployments.len())
+                });
+            let Some((offset, count)) = window else {
+                return form_error("The Deployment page changed. Reload the Route and try again.");
+            };
+            let mut all = original.deployments.clone();
+            all.splice(offset..offset + count, route.deployments);
+            route.deployments = all;
         }
         if name != &route.name && cfg.routes.iter().any(|r| r.fallbacks.contains(name)) {
             return form_error(
@@ -450,10 +531,12 @@ async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<Str
 #[derive(Template)]
 #[template(path = "providers.html")]
 struct ProvidersPage {
+    pager: Pager,
     base: Base,
     providers: Vec<ProviderView>,
 }
 struct ProviderView {
+    key_pager: Pager,
     name: String,
     kind: String,
     base_url: String,
@@ -472,6 +555,7 @@ impl ProviderView {
 }
 /// One entry of a Key Pool. Never more than the last 4 characters.
 struct KeyView {
+    index: i64,
     /// `env:NAME` or `****abcd`.
     label: String,
     /// For `env:NAME`: whether the variable is set and not empty.
@@ -510,13 +594,15 @@ fn env_value(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-fn key_view(st: &AppState, stored: &str) -> anyhow::Result<KeyView> {
+fn key_view(st: &AppState, stored: &str, index: i64) -> anyhow::Result<KeyView> {
     Ok(match stored.strip_prefix("env:") {
         Some(env) => KeyView {
+            index,
             label: stored.into(),
             env_set: Some(env_value(env).is_some()),
         },
         None => KeyView {
+            index,
             label: last4(&st.secret_key.decrypt(stored)?),
             env_set: None,
         },
@@ -528,21 +614,49 @@ fn key_view(st: &AppState, stored: &str) -> anyhow::Result<KeyView> {
 /// these for the Provider Key index of an entry.
 pub(super) async fn key_labels(
     st: &AppState,
-) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
+    rows: &[db::LedgerRow],
+) -> anyhow::Result<std::collections::HashMap<(String, i64), String>> {
     let mut out = std::collections::HashMap::new();
-    for row in sqlx::query("SELECT name, keys_json FROM providers")
-        .fetch_all(&st.db)
-        .await?
-    {
-        let mut labels = Vec::new();
-        for stored in serde_json::from_str::<Vec<String>>(row.get("keys_json"))? {
-            match stored.strip_prefix("env:") {
-                Some(env) if env_value(env).is_none() => {}
-                Some(_) => labels.push(stored.clone()),
-                None => labels.push(last4(&st.secret_key.decrypt(&stored)?)),
-            }
+    let mut needed = std::collections::BTreeMap::<&str, std::collections::BTreeSet<i64>>::new();
+    for row in rows {
+        if let Some(index) = row.provider_key {
+            needed.entry(&row.provider).or_default().insert(index);
         }
-        out.insert(row.get("name"), labels);
+    }
+    for (provider, indices) in needed {
+        let max = indices.last().copied().unwrap_or(0);
+        let (mut offset, mut index) = (0, 0);
+        loop {
+            let stored:Vec<String> = sqlx::query_scalar("SELECT j.value FROM providers p,json_each(p.keys_json) j WHERE p.name=? ORDER BY CAST(j.key AS INTEGER) LIMIT 200 OFFSET ?")
+                .bind(provider).bind(offset).fetch_all(&st.db).await?;
+            let n = stored.len();
+            for value in stored {
+                if value
+                    .strip_prefix("env:")
+                    .is_some_and(|env| env_value(env).is_none())
+                {
+                    continue;
+                }
+                if indices.contains(&index) {
+                    out.insert(
+                        (provider.to_owned(), index),
+                        if value.starts_with("env:") {
+                            value
+                        } else {
+                            last4(&st.secret_key.decrypt(&value)?)
+                        },
+                    );
+                }
+                index += 1;
+                if index > max {
+                    break;
+                }
+            }
+            if n < 200 || index > max {
+                break;
+            }
+            offset += 200;
+        }
     }
     Ok(out)
 }
@@ -567,16 +681,74 @@ fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
     }
 }
 
-async fn providers(_: Admin, State(st): State<AppState>) -> Response {
+#[derive(Deserialize)]
+struct ProvidersQ {
+    #[serde(flatten)]
+    page: PageQuery,
+    pool_page: Option<i64>,
+    pool_provider: Option<String>,
+}
+
+async fn providers(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(query): Query<ProvidersQ>,
+) -> Response {
+    let q = query.page;
+    let pool_q = PageQuery {
+        page: query.pool_page,
+        limit: Some(50),
+        ..Default::default()
+    };
     let mut providers = Vec::new();
-    for row in tryr!(
-        sqlx::query("SELECT * FROM providers ORDER BY name")
+    let records = tryr!(
+        sqlx::query("SELECT name,kind,auth,base_url FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+            .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
-    ) {
+    );
+    // Providers are admin-sized, mutable configuration rows, not an append log.
+    let pager = Pager::offset(&uri.to_string(), &q, records.len());
+    for (index, row) in records.into_iter().take(q.limit() as usize).enumerate() {
+        let pool_q = if query
+            .pool_provider
+            .as_ref()
+            .map_or(index == 0, |name| name == row.get::<&str, _>("name"))
+        {
+            pool_q.clone()
+        } else {
+            PageQuery {
+                limit: Some(50),
+                ..Default::default()
+            }
+        };
         let mut keys = Vec::new();
-        for value in tryr!(serde_json::from_str::<Vec<String>>(row.get("keys_json"))) {
-            keys.push(tryr!(key_view(&st, &value)));
+        let key_rows=tryr!(sqlx::query("SELECT CAST(j.key AS INTEGER) AS idx,j.value FROM providers p,json_each(p.keys_json) j WHERE p.name=? ORDER BY CAST(j.key AS INTEGER) LIMIT 51 OFFSET ?")
+            .bind(row.get::<String,_>("name")).bind(pool_q.offset()).fetch_all(&st.db).await);
+        let mut key_pager = Pager::offset(&uri.to_string(), &pool_q, key_rows.len());
+        key_pager.label = format!("Provider Keys of {}", row.get::<String, _>("name"));
+        let pool_page = pool_q.page.unwrap_or(1).max(1);
+        key_pager.next = key_pager.next.map(|_| {
+            crate::pagination::link(
+                &uri.to_string(),
+                &[
+                    ("pool_page", Some(pool_page.saturating_add(1).to_string())),
+                    ("pool_provider", Some(row.get("name"))),
+                ],
+            )
+        });
+        key_pager.prev = key_pager.prev.map(|_| {
+            crate::pagination::link(
+                &uri.to_string(),
+                &[
+                    ("pool_page", Some((pool_page - 1).to_string())),
+                    ("pool_provider", Some(row.get("name"))),
+                ],
+            )
+        });
+        for key in key_rows.into_iter().take(50) {
+            keys.push(tryr!(key_view(&st, key.get("value"), key.get("idx"))));
         }
         let kind: ProviderKind = tryr!(serde_json::from_str(row.get("kind")));
         let auth: crate::provider::ProviderAuth = tryr!(serde_json::from_value(serde_json::json!(
@@ -617,6 +789,7 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
             vec![]
         };
         providers.push(ProviderView {
+            key_pager,
             name,
             auth: auth.as_str().into(),
             auth_label: auth_label(auth),
@@ -633,6 +806,7 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
         });
     }
     render(ProvidersPage {
+        pager,
         base: Base::new(&st),
         providers,
     })

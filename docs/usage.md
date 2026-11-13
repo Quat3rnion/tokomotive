@@ -152,6 +152,32 @@ Anthropic format. `provider/model` names are not listed, but they work. An
 unknown `{id}` gets HTTP 404. These requests do not count against Rate Limits and
 do not make Ledger Entries.
 
+Lists use Model names in ascending order. A Route replaces a catalog Model
+with the same name. Provider Access also limits the names in the list.
+
+For the Anthropic format, send `anthropic-version` and these query parameters:
+
+| Parameter | Function |
+| --- | --- |
+| `limit` | Rows per page. Default 50. The server limits the value to 1 through 200. |
+| `after_id` | Names after this ID. Use the `last_id` of the previous response. |
+| `before_id` | Names before this ID. Use the `first_id` to go back. |
+
+Do not send both cursor parameters. The response has `data`, `has_more`,
+`first_id` and `last_id`. Empty pages have null IDs. With `before_id`,
+`has_more` refers to earlier names. IDs keep the same order in both directions.
+
+```sh
+curl "$PROXY/v1/models?limit=50&after_id=gpt-4o" \
+  -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01"
+```
+
+The OpenAI format has `object: "list"` and `data`, without cursor fields.
+The server returns at most 1,000 permitted names and writes a warning to the
+log if more names are available. OpenAI list requests ignore the paging
+parameters. Use the Anthropic format to get names after this cap.
+`GET /v1/models/{id}` can still get one permitted name beyond the cap.
+
 ### Examples with curl
 
 Chat Completions:
@@ -223,6 +249,8 @@ Routes in your dashboard, or a `provider/model` name.
 | `/v1/models`, `/v1/models/{id}`         | GET      | Lists the permitted Models and Routes. Needs a Virtual Key.       |
 | `/v1/*`                                 | any      | The Proxy. Needs a Virtual Key.                                   |
 | `/admin`                                | GET      | Overview page.                                                    |
+| `/admin/usage`                          | GET      | Paged usage groups with column sorting.                           |
+| `/admin/search/{kind}`                  | GET      | At most 20 name suggestions. See "Pages and name search".          |
 | `/admin/login`                          | GET, POST | Login page and login form (field `password`).                    |
 | `/admin/logout`                         | POST     | Ends the session.                                                 |
 | `/admin/users`                          | GET, POST | Users page. POST adds a User.                                    |
@@ -265,6 +293,50 @@ of at least 8 characters. Then log in. See "Dashboard password" in
 
 A login stays valid for `server.session_days` days (default 7) and survives a
 restart. Select **Log out** to end the session. All dashboard times are UTC.
+
+### Pages and name search
+
+List pages show 50 rows by default. The Ledger shows 100. Use **Next** and
+**Previous** below a list. The links keep the current filters. You can save
+the address to open the same page later. `limit` sets the page size; the
+server limits it to 1 through 200. The page shows **Showing N**, not a total
+that needs a separate count query.
+
+Users, Teams, Keys, Models, Routes and Providers have **Name search**. Search
+matches part of a name. On Keys, it matches the label or the User name.
+The `q` parameter keeps the search text. For example:
+`/admin/users?q=maria&limit=25`.
+
+Users, Teams, Keys and Models use fixed row IDs for paging. Their `after` and
+`before` parameters are cursors, not page numbers. The Ledger uses `before`
+for older IDs and `after` for newer IDs. New Ledger Entries do not move the
+older pages. Routes and Providers use `page=1`, `page=2` and so on. These are
+small configuration lists; an edit can change their name order.
+
+User, Team, Model, Route and Provider inputs get at most 20 name suggestions.
+Enter the exact name. Suggestions need JavaScript, but exact-name input does
+not. A User or Team name that does not match shows an error; it does not
+silently select another item. The search endpoints are
+`/admin/search/users?q=`, `/admin/search/teams?q=`, `/admin/search/models?q=`,
+`/admin/search/routes?q=` and `/admin/search/providers?q=`. They require an
+Operator login and return JSON with `id` and `name`. Model suggestions include
+Route names. Comma-separated inputs search the name after the last comma.
+
+Revoked keys stay collapsed by default and have a separate pager. A link to
+another revoked-key page opens that section. Their
+cursors are `revoked_after` and `revoked_before`. Team member counts link to
+the paged Users list with `team=ID`. Team override counts link to the paged
+Models list with the same filter. The Keys filter accepts `user=NAME` or a
+valid User ID.
+
+On a Model page, Card history shows 20 rows, newest first. Team overrides
+show 20 rows with `overrides_after` and `overrides_before` cursors. These
+two pagers are independent. Provider Key Pools and Route Deployments show
+50 rows each. Their page parameters are `pool_page` and `deployments_page`.
+The links also set `pool_provider` or `deployments_route` to identify the
+configuration array. They use offset pages because these arrays are editable. A
+Route save changes only the Deployments on the current page; it keeps the
+Deployments on other pages.
 
 ### Providers, Routes and Settings
 
@@ -367,6 +439,17 @@ The page shows the totals for a time range.
   tokens for each Token Class, Price, Cost, Profit, margin, average latency, average
   time to first token and output tokens each second.
 
+Each table shows the top 10 groups by requests. **Show all** opens a paged
+view, for example `/admin/usage?group=model&range=24h`. Valid groups are
+`model`, `provider`, `user` and `team`. Select a column heading to sort, or
+use **Sort by** and **Order** in the filter form. These controls also work
+on a narrow screen and without JavaScript.
+The `sort` parameter accepts `key`, `requests`, `errors`, `input`, `output`,
+`latency`, `price_micros`, `cost_micros` and `profit`. `direction` is `asc`
+or `desc`. The defaults are `requests` and `desc`. Names break equal ranks.
+The view uses `page` and `limit`. Its offset can change as new usage changes
+the ranks. Simple Mode hides money columns and does not sort by money.
+
 The margin is Profit divided by Price. The page shows `-` when the Price is 0.
 
 The table **By model** uses the name of the matched Model. A dated name such as
@@ -434,7 +517,7 @@ Rate Limit state is local to one process and resets when the process restarts.
 
 To create a Virtual Key:
 
-1. Select the User.
+1. Enter the exact User name.
 2. Enter a label (optional).
 3. Enter the allowed Models as a comma list, for example
    `gpt-4o, claude-sonnet-5-5`. Leave the field empty to allow all Models.
@@ -473,8 +556,8 @@ Tasks on the list page:
   Settings page shows the value and links here.
 - **Add a Model**: enter the name, the Provider and the aliases
   (comma-separated). In Full Mode, you can also enter the Cost Card rates and the
-  Context Tiers. Then select **Add Model**. The Provider list holds the
-  Providers saved in the dashboard. If there are no Providers, the page shows a
+   Context Tiers. Then select **Add Model**. Enter the exact Provider name.
+   If there are no Providers, the page shows a
   link to the Providers page instead of the form.
 
 Rules for the Cost Card when you add a Model:
@@ -522,7 +605,7 @@ Markup field shows the resulting Input and Output Price.
 
 Team overrides:
 
-1. Select the Team.
+1. Enter the exact Team name.
 2. Select **Markup** and enter a percentage, or select **Explicit rates** and
    enter the rates. The fields start empty.
 3. Select **Save Team override**.
@@ -561,7 +644,7 @@ Team name), the rates or the Markup, and the time it was added (UTC).
 ### Ledger
 
 The **Ledger** page shows the newest Ledger Entries, 100 on each page. Select
-**Older entries** to see the next page. Use the tabs to filter them:
+**Next** to see older entries. Use the tabs to filter them:
 
 | Tab           | Shows                                              |
 | ------------- | -------------------------------------------------- |
@@ -579,12 +662,14 @@ save the address:
 | Parameter  | Value                                                    |
 | ---------- | -------------------------------------------------------- |
 | `filter`   | `unpriced`, `estimated` or `errors`.                     |
-| `user`     | The id of the User.                                      |
+| `user`     | The exact User name, or a valid User ID.                  |
 | `provider` | The name of the Provider.                                |
 | `model`    | The upstream or the requested Model name.                |
 | `from`     | The first day, `YYYY-MM-DD`.                             |
 | `to`       | The last day, `YYYY-MM-DD`. The day is included.         |
 | `before`   | Show only entries with a smaller number (the next page). |
+| `after`    | Show the previous page of entries with larger IDs.       |
+| `limit`    | Rows per page. Default 100. Maximum 200.                 |
 
 The columns are the time, the User, the Model and Provider, the status, the
 flags, the input and output tokens, the Price, the Cost and the latency.
@@ -800,7 +885,7 @@ restriction. Codex plan usage uses a private route that can stop without notice.
    step within 10 minutes. Start again if the attempt expires or fails.
 6. Check **Connected**, the account, the plan, the expiry and the last error.
    Account or plan metadata can show **not available** if the issuer omits it.
-7. Open **Keys**. Select this Provider in **Provider Access** for each Virtual
+7. Open **Keys**. Enter this Provider name in **Provider Access** for each Virtual
    Key that needs it. Select any API-key Providers that the same key must use.
 8. Add Models or Routes that use this Provider. Send the usual client requests.
    Chat Completions and Messages Translation works with subscription auth too.
@@ -826,10 +911,11 @@ new Provider.
 
 ### Provider Access
 
-Create or edit Provider Access on **Keys** with the Provider checkboxes:
+Create or edit Provider Access on **Keys**. Enter comma-separated exact
+Provider names in **Allowed Providers**:
 
-- No selection means all API-key Providers, but no Subscription Providers.
-- A selection means only the selected Providers. Include API-key Providers
+- A blank field means all API-key Providers, but no Subscription Providers.
+- A list of names permits only those Providers. Include API-key Providers
   too if the key needs them.
 - Model permissions and Provider Access both apply. A Route's Fallback does
   not bypass Provider Access. The `provider/model` prefix cannot bypass it.

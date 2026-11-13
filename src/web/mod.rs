@@ -7,7 +7,7 @@ mod views;
 
 use askama::Template;
 use axum::Router;
-use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
+use axum::extract::{FromRequest, FromRequestParts, OriginalUri, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::percent_to_bp;
 use crate::db::{self, LedgerFilter};
+use crate::pagination::{PageQuery, Pager};
 use crate::pricing::{CardRates, ContextTier, PriceSpec, Rates, parse_usd};
 use crate::ratelimit::Limits;
 use crate::state::AppState;
@@ -65,6 +66,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/models/{id}/team-price", post(set_team_price))
         .route("/admin/settings/markup", post(set_settings))
         .route("/admin/ledger", get(ledger))
+        .route("/admin/usage", get(usage))
+        .route("/admin/search/{kind}", get(search))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
         .merge(oauth::router())
@@ -635,7 +638,7 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
         keys,
         requests,
     };
-    render(OverviewPage::build(
+    let mut page = OverviewPage::build(
         Base::new(&st),
         range,
         OverviewData {
@@ -649,15 +652,199 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
             estimated,
             setup,
         },
-    ))
+    );
+    let (attempts, retried): (i64, i64) = tryr!(
+        sqlx::query_as(
+            "SELECT IFNULL(SUM(attempts),0),IFNULL(SUM(attempts>1),0) FROM ledger WHERE ts_ms>=?"
+        )
+        .bind(since * 1000)
+        .fetch_one(&st.db)
+        .await
+    );
+    for (label, value) in &mut page.more {
+        if *label == "Attempts" {
+            *value = int(attempts);
+        }
+        if *label == "Retried requests" {
+            *value = int(retried);
+        }
+    }
+    render(page)
+}
+
+#[derive(Deserialize, Default)]
+struct UsageQ {
+    #[serde(flatten)]
+    page: PageQuery,
+    group: Option<String>,
+    range: Option<String>,
+    sort: Option<String>,
+    direction: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "usage.html")]
+struct UsagePage {
+    base: Base,
+    pager: Pager,
+    rows: Vec<GroupView>,
+    group: String,
+    range: String,
+    sort: String,
+    direction: &'static str,
+    limit: i64,
+    sort_options: Vec<(&'static str, &'static str)>,
+    headers: Vec<(&'static str, String)>,
+    money_headers: Vec<(&'static str, String)>,
+}
+
+async fn usage(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<UsageQ>,
+) -> Response {
+    let base = Base::new(&st);
+    let group = q.group.as_deref().unwrap_or("model");
+    let range = q.range.as_deref().unwrap_or("24h");
+    let mut columns = vec![
+        ("Name", "key"),
+        ("Requests", "requests"),
+        ("Errors", "errors"),
+        ("Input", "input"),
+        ("Output", "output"),
+        ("Latency", "latency"),
+    ];
+    if !base.simple {
+        columns.extend([
+            ("Price", "price_micros"),
+            ("Cost", "cost_micros"),
+            ("Profit", "profit"),
+        ]);
+    }
+    let requested_sort = q.sort.as_deref().unwrap_or("requests");
+    let sort = columns
+        .iter()
+        .find_map(|(_, column)| (*column == requested_sort).then_some(*column))
+        .unwrap_or("requests");
+    let mut rows = tryr!(
+        db::usage_page(
+            &st.db,
+            Range::parse(Some(range)).since(),
+            group,
+            sort,
+            q.direction.as_deref() == Some("asc"),
+            &q.page
+        )
+        .await
+    );
+    let pager = Pager::offset(&uri.to_string(), &q.page, rows.len());
+    rows.truncate(q.page.limit() as usize);
+    let header = |(label, column): (&'static str, &str)| {
+        let direction = if sort == column && q.direction.as_deref() != Some("asc") {
+            "asc"
+        } else {
+            "desc"
+        };
+        (
+            label,
+            crate::pagination::link(
+                &uri.to_string(),
+                &[
+                    ("page", None),
+                    ("sort", Some(column.into())),
+                    ("direction", Some(direction.into())),
+                ],
+            ),
+        )
+    };
+    render(UsagePage {
+        base,
+        pager,
+        rows: rows.iter().map(GroupView::new).collect(),
+        group: group.into(),
+        range: range.into(),
+        sort: sort.into(),
+        direction: if q.direction.as_deref() == Some("asc") {
+            "asc"
+        } else {
+            "desc"
+        },
+        limit: q.page.limit(),
+        headers: columns.iter().take(6).copied().map(header).collect(),
+        money_headers: columns.iter().skip(6).copied().map(header).collect(),
+        sort_options: columns,
+    })
 }
 
 // ------------------------------------------------------------------ users
 
-async fn users(_: Admin, State(st): State<AppState>) -> Response {
-    let users = tryr!(db::list_users(&st.db).await);
-    let teams = tryr!(db::list_teams(&st.db).await);
-    render(UsersPage::build(Base::new(&st), &users, &teams))
+#[derive(Default, Deserialize)]
+struct ListQ {
+    #[serde(flatten)]
+    page: PageQuery,
+    team: Option<i64>,
+    user: Option<String>,
+    revoked_after: Option<i64>,
+    revoked_before: Option<i64>,
+    overrides_after: Option<i64>,
+    overrides_before: Option<i64>,
+}
+
+async fn search(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(kind): Path<String>,
+    Query(q): Query<PageQuery>,
+) -> Response {
+    if !matches!(
+        kind.as_str(),
+        "users" | "teams" | "models" | "routes" | "providers"
+    ) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut names = tryr!(db::search_names(&st.db, &kind, &q.q).await);
+    if kind == "models" {
+        names.extend(tryr!(db::search_names(&st.db, "routes", &q.q).await));
+        names.sort_by(|a, b| a.name.cmp(&b.name));
+        names.dedup_by(|a, b| a.name == b.name);
+        names.truncate(20);
+    }
+    axum::Json(names).into_response()
+}
+
+async fn chosen_id(
+    st: &AppState,
+    kind: &str,
+    value: &str,
+    optional: bool,
+    exact_name: bool,
+) -> Result<Option<i64>, Response> {
+    if optional && value.trim().is_empty() {
+        return Ok(None);
+    }
+    let id = db::resolve_name(&st.db, kind, value, !exact_name)
+        .await
+        .map_err(internal)?;
+    id.map(Some).ok_or_else(|| {
+        bad(format!(
+            "No {} matches this name. Enter an exact name from the {} page.",
+            if kind == "teams" { "Team" } else { "User" },
+            if kind == "teams" { "Teams" } else { "Users" }
+        ))
+    })
+}
+
+async fn users(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<ListQ>,
+) -> Response {
+    let users = tryr!(db::users_page(&st.db, &q.page, q.team).await);
+    let mut page = UsersPage::build(Base::new(&st), &users.items);
+    page.pager = Pager::keyset(&uri.to_string(), &q.page, &users);
+    render(page)
 }
 
 #[derive(Deserialize)]
@@ -666,16 +853,13 @@ struct UserForm {
     name: String,
     #[serde(default)]
     team_id: String,
+    team_name: Option<String>,
     #[serde(default)]
     budget_usd: String,
     monthly: Option<String>,
     disabled: Option<String>,
     #[serde(flatten)]
     limits: LimitsForm,
-}
-
-fn team_id(s: &str) -> Option<i64> {
-    s.parse().ok()
 }
 
 async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserForm>) -> Response {
@@ -691,15 +875,20 @@ async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserFor
         Ok(l) => l,
         Err(r) => return r,
     };
-    if let Err(e) = db::create_user_with_limits(
-        &st.db,
-        name,
-        team_id(&f.team_id),
-        budget,
-        f.monthly.is_some(),
-        limits,
+    let team = match chosen_id(
+        &st,
+        "teams",
+        f.team_name.as_deref().unwrap_or(&f.team_id),
+        true,
+        f.team_name.is_some(),
     )
     .await
+    {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
+    if let Err(e) =
+        db::create_user_with_limits(&st.db, name, team, budget, f.monthly.is_some(), limits).await
     {
         if is_unique_violation(&e) {
             return bad(format!("A User named {name} already exists."));
@@ -730,6 +919,18 @@ async fn update_user(
         };
         Some((budget, limits))
     };
+    let team = match chosen_id(
+        &st,
+        "teams",
+        f.team_name.as_deref().unwrap_or(&f.team_id),
+        true,
+        f.team_name.is_some(),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
     let mut tx = tryr!(st.db.begin().await);
     // A blank name keeps the current name.
     let name = f.name.trim();
@@ -748,7 +949,7 @@ async fn update_user(
     }
     tryr!(
         sqlx::query("UPDATE users SET team_id=?, disabled=? WHERE id=?")
-            .bind(team_id(&f.team_id))
+            .bind(team)
             .bind(f.disabled.is_some())
             .bind(id)
             .execute(&mut *tx)
@@ -779,15 +980,16 @@ async fn update_user(
 
 // ------------------------------------------------------------------ teams
 
-async fn teams(_: Admin, State(st): State<AppState>) -> Response {
-    let teams = tryr!(db::list_teams(&st.db).await);
-    let users = tryr!(db::list_users(&st.db).await);
-    render(TeamsPage::build(
-        Base::new(&st),
-        &teams,
-        &users,
-        &st.catalog(),
-    ))
+async fn teams(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<PageQuery>,
+) -> Response {
+    let teams = tryr!(db::teams_page(&st.db, &q).await);
+    let mut page = TeamsPage::build(Base::new(&st), &teams.items, &st.catalog());
+    page.pager = Pager::keyset(&uri.to_string(), &q, &teams);
+    render(page)
 }
 
 #[derive(Deserialize)]
@@ -872,49 +1074,79 @@ async fn delete_team(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) 
 
 // ------------------------------------------------------------------- keys
 
-async fn keys_page(st: &AppState, new_key: Option<String>, filter: Option<i64>) -> Response {
-    let keys = tryr!(db::list_keys(&st.db).await);
-    let users = tryr!(db::list_users(&st.db).await);
-    let table = st.router_table();
-    let providers: Vec<(String, bool)> = table
-        .providers
-        .iter()
-        .map(|p| {
-            (
-                p.name.clone(),
-                p.auth != crate::provider::ProviderAuth::ApiKey,
-            )
-        })
-        .collect();
-    let mut model_names: Vec<String> = table
-        .routes
-        .iter()
-        .map(|r| r.name.clone())
-        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
-        .collect();
-    model_names.sort();
-    model_names.dedup();
-    render(KeysPage::build(
+async fn keys_page(st: &AppState, new_key: Option<String>, q: ListQ, uri: &str) -> Response {
+    let filter = match q.user.as_deref() {
+        Some(v) if !v.is_empty() => match chosen_id(st, "users", v, false, false).await {
+            Ok(id) => id,
+            Err(r) => return r,
+        },
+        _ => None,
+    };
+    let active = tryr!(db::keys_page(&st.db, &q.page, filter, false).await);
+    let revoked_q = PageQuery {
+        after: q.revoked_after,
+        before: q.revoked_before,
+        ..q.page.clone()
+    };
+    let revoked = tryr!(db::keys_page(&st.db, &revoked_q, filter, true).await);
+    let pager = Pager::keyset(uri, &q.page, &active);
+    let mut revoked_pager = Pager::keyset(uri, &revoked_q, &revoked);
+    revoked_pager.next = revoked.next.map(|id| {
+        crate::pagination::link(
+            uri,
+            &[
+                ("revoked_before", None),
+                ("revoked_after", Some(id.to_string())),
+            ],
+        )
+    });
+    revoked_pager.prev = revoked.prev.map(|id| {
+        crate::pagination::link(
+            uri,
+            &[
+                ("revoked_after", None),
+                ("revoked_before", Some(id.to_string())),
+            ],
+        )
+    });
+    let mut keys = active.items;
+    keys.extend(revoked.items);
+    let mut page = KeysPage::build(
         Base::new(st),
         KeysData {
             keys: &keys,
-            users: &users,
             new_key,
-            providers: &providers,
-            model_names,
-            filter,
         },
-    ))
+    );
+    page.pager = pager;
+    page.revoked_pager = revoked_pager;
+    page.pager.label = "Active key pages".into();
+    page.revoked_pager.label = "Revoked key pages".into();
+    page.revoked_open = q.revoked_after.is_some() || q.revoked_before.is_some();
+    page.filter_user = match filter {
+        Some(id) => tryr!(
+            sqlx::query_scalar("SELECT name FROM users WHERE id=?")
+                .bind(id)
+                .fetch_optional(&st.db)
+                .await
+        ),
+        None => None,
+    };
+    page.has_users = tryr!(
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users)")
+            .fetch_one(&st.db)
+            .await
+    );
+    render(page)
 }
 
-#[derive(Deserialize, Default)]
-struct KeysQ {
-    user: Option<String>,
-}
-
-async fn keys(_: Admin, State(st): State<AppState>, Query(q): Query<KeysQ>) -> Response {
-    let filter = q.user.as_deref().and_then(|u| u.parse().ok());
-    keys_page(&st, None, filter).await
+async fn keys(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<ListQ>,
+) -> Response {
+    keys_page(&st, None, q, &uri.to_string()).await
 }
 
 /// Checks Allowed models: each name must be a Route, a catalog Model (or
@@ -956,15 +1188,28 @@ async fn create_key(
     let access: Vec<String> = pairs
         .iter()
         .filter(|(k, _)| k == "allowed_providers")
-        .map(|(_, v)| v.clone())
+        .flat_map(|(_, v)| csv(v))
         .collect();
     if let Err(r) = validate_provider_access(&st, &access) {
         return r;
     }
     let fields: std::collections::HashMap<_, _> = pairs.into_iter().collect();
-    let user_id = match fields.get("user_id").and_then(|s| s.parse().ok()) {
-        Some(id) => id,
-        None => return bad("Choose a User. Add a User first if the list is empty."),
+    let user_id = match chosen_id(
+        &st,
+        "users",
+        fields
+            .get("user_name")
+            .or_else(|| fields.get("user_id"))
+            .map(String::as_str)
+            .unwrap_or_default(),
+        false,
+        fields.contains_key("user_name"),
+    )
+    .await
+    {
+        Ok(Some(id)) => id,
+        Ok(None) => unreachable!(),
+        Err(r) => return r,
     };
     let f = KeyForm {
         user_id,
@@ -991,7 +1236,7 @@ async fn create_key(
     let (id, key) =
         tryr!(db::create_key_with_limits(&st.db, f.user_id, f.label.trim(), allowed, limits).await);
     tryr!(db::update_key_providers(&st.db, id, &access).await);
-    keys_page(&st, Some(key), None).await
+    keys_page(&st, Some(key), ListQ::default(), "/admin/keys").await
 }
 
 fn validate_provider_access(st: &AppState, access: &[String]) -> Result<(), Response> {
@@ -1015,7 +1260,7 @@ async fn update_key(
     let access: Vec<String> = pairs
         .iter()
         .filter(|(k, _)| k == "allowed_providers")
-        .map(|(_, v)| v.clone())
+        .flat_map(|(_, v)| csv(v))
         .collect();
     if let Err(r) = validate_provider_access(&st, &access) {
         return r;
@@ -1052,7 +1297,7 @@ async fn update_key_providers(
     let access: Vec<String> = pairs
         .into_iter()
         .filter(|(k, _)| k == "allowed_providers")
-        .map(|(_, v)| v)
+        .flat_map(|(_, v)| csv(&v))
         .collect();
     if let Err(r) = validate_provider_access(&st, &access) {
         return r;
@@ -1082,15 +1327,31 @@ async fn revoke_key(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -
 
 // ----------------------------------------------------------------- models
 
-async fn models(_: Admin, State(st): State<AppState>) -> Response {
+async fn models(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<ListQ>,
+) -> Response {
+    let ids = tryr!(db::model_ids_page(&st.db, &q.page, q.team).await);
     let cat = st.catalog();
-    let providers: Vec<String> = st
+    let wanted: std::collections::HashSet<_> = ids.items.iter().copied().collect();
+    let mut selected: Vec<_> = cat
+        .models
+        .iter()
+        .filter(|m| wanted.contains(&m.id))
+        .collect();
+    selected.sort_by_key(|m| m.id);
+    let providers = st
         .router_table()
         .providers
         .iter()
+        .take(1)
         .map(|p| p.name.clone())
         .collect();
-    render(ModelsPage::build(Base::new(&st), &cat, providers))
+    let mut page = ModelsPage::build(Base::new(&st), &selected, cat.default_markup_bp, providers);
+    page.pager = Pager::keyset(&uri.to_string(), &q.page, &ids);
+    render(page)
 }
 
 /// Form fields for one set of rates plus Context Tiers.
@@ -1355,7 +1616,13 @@ async fn create_model(
     saved(&format!("/admin/models/{id}"), &message)
 }
 
-async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
+async fn model_detail(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    OriginalUri(uri): OriginalUri,
+    Query(mut q): Query<ListQ>,
+) -> Response {
     let cat = st.catalog();
     let Some(m) = cat.models.iter().find(|m| m.id == id) else {
         return page_error_with(
@@ -1365,22 +1632,45 @@ async fn model_detail(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
             ("/admin/models", "Go to Models"),
         );
     };
-    let history = tryr!(db::card_history(&st.db, id).await);
-    let teams = tryr!(db::list_teams(&st.db).await);
-    let providers: Vec<String> = st
-        .router_table()
-        .providers
-        .iter()
-        .map(|p| p.name.clone())
-        .collect();
-    render(ModelPage::build(
+    q.page.limit = Some(20);
+    let history = tryr!(db::history_page(&st.db, id, &q.page).await);
+    let override_q = PageQuery {
+        after: q.overrides_after,
+        before: q.overrides_before,
+        limit: Some(20),
+        ..Default::default()
+    };
+    let teams = tryr!(db::override_teams_page(&st.db, id, &override_q).await);
+    let mut page = ModelPage::build(
         Base::new(&st),
         m,
         cat.default_markup_bp,
-        &history,
-        &teams,
-        providers,
-    ))
+        &history.items,
+        &teams.items,
+    );
+    page.pager = Pager::keyset(&uri.to_string(), &q.page, &history);
+    page.pager.label = "Card history pages".into();
+    page.override_pager = Pager::keyset(&uri.to_string(), &override_q, &teams);
+    page.override_pager.label = "Team override pages".into();
+    page.override_pager.next = teams.next.map(|id| {
+        crate::pagination::link(
+            &uri.to_string(),
+            &[
+                ("overrides_before", None),
+                ("overrides_after", Some(id.to_string())),
+            ],
+        )
+    });
+    page.override_pager.prev = teams.prev.map(|id| {
+        crate::pagination::link(
+            &uri.to_string(),
+            &[
+                ("overrides_after", None),
+                ("overrides_before", Some(id.to_string())),
+            ],
+        )
+    });
+    render(page)
 }
 
 #[derive(Deserialize)]
@@ -1459,6 +1749,7 @@ struct PriceForm {
     mode: String,
     #[serde(default)]
     team_id: String,
+    team_name: Option<String>,
     #[serde(default)]
     markup_percent: String,
     #[serde(flatten)]
@@ -1550,8 +1841,18 @@ async fn set_team_price(
     Path(id): Path<i64>,
     Form(f): Form<PriceForm>,
 ) -> Response {
-    let Some(team) = team_id(&f.team_id) else {
-        return bad("Choose a Team.");
+    let team = match chosen_id(
+        &st,
+        "teams",
+        f.team_name.as_deref().unwrap_or(&f.team_id),
+        false,
+        f.team_name.is_some(),
+    )
+    .await
+    {
+        Ok(Some(id)) => id,
+        Ok(None) => unreachable!(),
+        Err(r) => return r,
     };
     let spec = match f.spec() {
         Ok(s) => s,
@@ -1622,6 +1923,8 @@ struct LedgerQ {
     from: Option<String>,
     to: Option<String>,
     before: Option<String>,
+    after: Option<i64>,
+    limit: Option<i64>,
 }
 
 /// Ledger Entries per page.
@@ -1651,6 +1954,9 @@ impl LedgerQ {
                     q.append_pair(k, v);
                 }
             }
+            if let Some(limit) = self.limit {
+                q.append_pair("limit", &limit.clamp(1, 200).to_string());
+            }
             if let Some(b) = before {
                 q.append_pair("before", &b.to_string());
             }
@@ -1668,7 +1974,12 @@ fn day_ms(s: &str) -> Option<i64> {
     Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis())
 }
 
-async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) -> Response {
+async fn ledger(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<LedgerQ>,
+) -> Response {
     let base = Base::new(&st);
     let (filter, name) = match some_text(&q.filter) {
         None | Some("all") => (LedgerFilter::All, "all"),
@@ -1691,7 +2002,22 @@ async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) 
         }
     };
     let (from_ms, to_ms) = (date(&q.from, false), date(&q.to, true));
-    let user_id = some_text(&q.user).and_then(|u| u.parse().ok());
+    let user_id = match chosen_id(
+        &st,
+        "users",
+        some_text(&q.user).unwrap_or_default(),
+        true,
+        false,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(_) => {
+            error = Some("No User matches this name. Enter an exact User name.".into());
+            Some(-1)
+        }
+    };
+    let limit = q.limit.unwrap_or(LEDGER_PAGE).clamp(1, 200);
     let query = db::LedgerQuery {
         filter,
         user_id,
@@ -1700,63 +2026,52 @@ async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) 
         from_ms,
         to_ms,
         before_id: some_text(&q.before).and_then(|b| b.parse().ok()),
-        limit: LEDGER_PAGE + 1,
+        after_id: q.after,
+        limit: limit + 1,
     };
-    let mut rows = tryr!(db::ledger_page(&st.db, &query).await);
-    let more = rows.len() as i64 > LEDGER_PAGE;
-    rows.truncate(LEDGER_PAGE as usize);
-    let labels = tryr!(settings::key_labels(&st).await);
-    let key_label = |provider: &str, index: i64| {
-        labels
-            .get(provider)
-            .and_then(|keys| keys.get(usize::try_from(index).ok()?))
-            .cloned()
-    };
-    let users = tryr!(db::list_users(&st.db).await);
-    let table = st.router_table();
-    let mut providers: Vec<String> = table.providers.iter().map(|p| p.name.clone()).collect();
-    if let Some(p) = &query.provider
-        && !providers.contains(p)
-    {
-        providers.push(p.clone());
+    let mut rows = tryr!(db::ledger_window(&st.db, &query).await);
+    let more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    if q.after.is_some() {
+        rows.reverse();
     }
-    let mut models: Vec<String> = table
-        .routes
-        .iter()
-        .map(|r| r.name.clone())
-        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
-        .collect();
-    models.sort();
-    models.dedup();
-    let opt = |value: String, label: String, selected: bool| Opt {
-        value,
-        label,
-        selected,
+    let next = if q.after.is_some() || more {
+        rows.last().map(|r| {
+            crate::pagination::link(
+                &uri.to_string(),
+                &[("after", None), ("before", Some(r.id.to_string()))],
+            )
+        })
+    } else {
+        None
     };
-    let mut user_opts = vec![opt(String::new(), "All Users".into(), user_id.is_none())];
-    user_opts.extend(
-        users
-            .iter()
-            .map(|u| opt(u.id.to_string(), u.name.clone(), Some(u.id) == user_id)),
-    );
-    let mut provider_opts = vec![opt(
-        String::new(),
-        "All Providers".into(),
-        query.provider.is_none(),
-    )];
-    provider_opts.extend(providers.into_iter().map(|p| {
-        let selected = query.provider.as_deref() == Some(p.as_str());
-        opt(p.clone(), p, selected)
-    }));
+    let prev = if q.after.is_some() && more || q.after.is_none() && query.before_id.is_some() {
+        rows.first().map(|r| {
+            crate::pagination::link(
+                &uri.to_string(),
+                &[("before", None), ("after", Some(r.id.to_string()))],
+            )
+        })
+    } else {
+        None
+    };
+    let pager = Pager {
+        label: "Ledger pages".into(),
+        next,
+        prev,
+        shown: rows.len(),
+        ..Default::default()
+    };
+    let labels = tryr!(settings::key_labels(&st, &rows).await);
+    let key_label = |provider: &str, index: i64| labels.get(&(provider.to_owned(), index)).cloned();
     let unpriced_models = if filter == LedgerFilter::Unpriced {
         tryr!(db::unpriced_models(&st.db).await)
     } else {
         vec![]
     };
     let filters = LedgerFilterView {
-        users: user_opts,
-        providers: provider_opts,
-        models,
+        user: q.user.clone().unwrap_or_default(),
+        provider: query.provider.clone().unwrap_or_default(),
         model: query.model.clone().unwrap_or_default(),
         from: some_text(&q.from).unwrap_or_default().to_owned(),
         to: some_text(&q.to).unwrap_or_default().to_owned(),
@@ -1767,6 +2082,7 @@ async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) 
             || some_text(&q.to).is_some(),
     };
     render(LedgerPage {
+        pager,
         rows: rows
             .iter()
             .map(|r| LedgerView::build(r, &key_label))
@@ -1778,11 +2094,7 @@ async fn ledger(_: Admin, State(st): State<AppState>, Query(q): Query<LedgerQ>) 
         tab_estimated: q.link("estimated", None),
         tab_errors: q.link("errors", None),
         error,
-        older: more
-            .then(|| rows.last().map(|r| q.link(name, Some(r.id))))
-            .flatten(),
-        newest: query.before_id.map(|_| q.link(name, None)),
-        page_size: LEDGER_PAGE,
+        page_size: limit,
         unpriced_models,
         base,
     })

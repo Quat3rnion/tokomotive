@@ -3,8 +3,8 @@
 {% block nav_routes %}aria-current="page"{% endblock %}
 {% macro deployment_row(providers, provider, model, weight) %}
 <div class="row deployment">
-  <label>Provider <select name="deployment_provider"><option value="">Choose a Provider</option>{% for p in providers.iter() %}<option value="{{ p }}"{% if p.as_str() == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
-  <label>Upstream model <input name="deployment_model" value="{{ model }}" class="wide" list="upstream-models" autocomplete="off" spellcheck="false"></label>
+  <label>Provider <input name="deployment_provider" value="{{ provider }}" data-search="providers" placeholder="Exact Provider name" autocomplete="off"></label>
+  <label>Upstream model <input name="deployment_model" value="{{ model }}" class="wide" data-search="models" autocomplete="off" spellcheck="false"></label>
   <label data-weight>Weight <input name="deployment_weight" type="number" min="1" step="1" value="{{ weight }}" inputmode="numeric"></label>
   <span class="row-tools" data-tools hidden>
     <button type="button" class="ghost" data-move="-1" aria-label="Move Deployment up">Up</button>
@@ -29,9 +29,8 @@
 {% endmacro %}
 {% block content %}
 <h1>Routes</h1>
+{% include "search.html" %}
 <p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
-<datalist id="fallback-names">{% for n in fallback_names %}<option value="{{ n }}">{% endfor %}</datalist>
-<datalist id="upstream-models">{% for n in upstream_models %}<option value="{{ n }}">{% endfor %}</datalist>
 {% if providers.is_empty() %}
 <p class="empty">Add a Provider before you add a Route. <a href="/admin/providers">Go to Providers</a></p>
 {% else if routes.is_empty() %}
@@ -44,12 +43,15 @@
   <div class="end"><form class="inline" method="post" action="/admin/routes/{{ r.name }}/delete" data-confirm="Delete Route {{ r.name }}? Clients that send this model name get an error."><button class="danger" aria-label="Delete Route {{ r.name }}">Delete route</button></form></div>
 </div>
 <form method="post" action="/admin/routes/{{ r.name }}" class="route-form" aria-label="Edit Route {{ r.name }}">
+  <input type="hidden" name="deployment_offset" value="{{ r.deployment_offset }}">
+  <input type="hidden" name="deployment_count" value="{{ r.deployment_count }}">
   <div class="row">
   <div class="field"><label for="r-{{ r.name }}-name">Name</label><input id="r-{{ r.name }}-name" name="name" value="{{ r.name }}" required autocomplete="off" spellcheck="false"></div>
   {% call strategy_select("r-", r.name.as_str(), r.strategy.as_str()) %}
-  <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label><input id="r-{{ r.name }}-fb" name="fallbacks" value="{{ r.fallbacks }}" list="fallback-names" autocomplete="off" spellcheck="false" aria-describedby="r-{{ r.name }}-fb-help"><p class="hint" id="r-{{ r.name }}-fb-help">Comma-separated names of other Routes or Models.</p></div>
+  <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label><input id="r-{{ r.name }}-fb" name="fallbacks" value="{{ r.fallbacks }}" data-search="models" data-csv autocomplete="off" spellcheck="false" aria-describedby="r-{{ r.name }}-fb-help"><p class="hint" id="r-{{ r.name }}-fb-help">Comma-separated names of other Routes or Models.</p></div>
   </div>
   {% call deployments_editor(providers, r.deployments, false) %}
+  {% let pager = r.deployment_pager %}{% include "pager.html" %}
   <div class="form-error" role="alert" tabindex="-1"></div>
   <button aria-label="Save Route {{ r.name }}">Save</button>
 </form>
@@ -62,7 +64,7 @@
   <div class="row">
   <div class="field"><label for="nr-name">Name</label><input id="nr-name" name="name" required autocomplete="off" spellcheck="false" placeholder="fast"></div>
   {% call strategy_select("nr", "", "priority") %}
-  <div class="field grow"><label for="nr-fb">Fallbacks</label><input id="nr-fb" name="fallbacks" list="fallback-names" autocomplete="off" spellcheck="false" aria-describedby="nr-fb-help"><p class="hint" id="nr-fb-help">Comma-separated names of other Routes or Models. Optional.</p></div>
+  <div class="field grow"><label for="nr-fb">Fallbacks</label><input id="nr-fb" name="fallbacks" data-search="models" data-csv autocomplete="off" spellcheck="false" aria-describedby="nr-fb-help"><p class="hint" id="nr-fb-help">Comma-separated names of other Routes or Models. Optional.</p></div>
   </div>
   {% call deployments_editor(providers, self.no_deployments(), true) %}
   <div class="form-error" role="alert" tabindex="-1"></div>
@@ -71,6 +73,7 @@
 </section>
 {% endif %}
 <template id="deployment-row">{% call deployment_row(providers, "", "", 1) %}</template>
+{% include "pager.html" %}
 {% endblock %}
 {% block scripts %}
 <script>

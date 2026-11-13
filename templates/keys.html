@@ -2,16 +2,9 @@
 {% block title %}Virtual Keys - Tokomotive{% endblock %}
 {% block nav_keys %}aria-current="page"{% endblock %}
 
-{% macro access_checks(providers) %}
-{% if providers.is_empty() %}
-<p class="empty">No Providers yet. <a href="/admin/providers">Add a Provider</a> so that keys can send requests.</p>
-{% else %}
-<div class="checks">{% for p in providers %}<label class="check"><input type="checkbox" name="allowed_providers" value="{{ p.name }}"{% if p.selected %} checked{% endif %}> {{ p.name }}{% if p.subscription %} <span class="tag info">subscription</span>{% endif %}</label>{% endfor %}</div>
-{% endif %}
-{% endmacro %}
-
 {% block content %}
 <h1>Virtual Keys</h1>
+{% include "search.html" %}
 <p class="muted">A Virtual Key lets one client use the Proxy for one User. Give each client its own key, so that you can revoke it alone.</p>
 
 {% if let Some(k) = new_key %}
@@ -30,20 +23,19 @@
 
 <section class="panel" aria-labelledby="add-key-h">
   <h2 id="add-key-h">Add a Virtual Key</h2>
-  {% if users.is_empty() %}
+  {% if !has_users %}
   <p class="empty">Add a User before you add a Virtual Key. <a href="/admin/users">Go to Users</a></p>
   {% else %}
-  <datalist id="model-names">{% for n in model_names %}<option value="{{ n }}">{% endfor %}</datalist>
   <form method="post" action="/admin/keys" class="stack">
     <div class="row">
-      <div class="field"><label for="key-user">User</label><select id="key-user" name="user_id" required>{% for u in users %}<option value="{{ u.value }}"{% if u.selected %} selected{% endif %}>{{ u.label }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="key-user">User</label><input id="key-user" name="user_name"{% if let Some(u) = filter_user %} value="{{ u }}"{% endif %} data-search="users" required placeholder="Exact User name" autocomplete="off"></div>
       <div class="field"><label for="key-label">Label</label><input id="key-label" name="label" placeholder="laptop" aria-describedby="key-label-help"><p class="hint" id="key-label-help">Where the key is used.</p></div>
-      <div class="field grow"><label for="key-models">Allowed models</label><input id="key-models" name="allowed_models" list="model-names" placeholder="gpt-4o, claude-sonnet-5-5" autocomplete="off" spellcheck="false" aria-describedby="key-models-help"><p class="hint" id="key-models-help">Comma-separated Model or Route names, or provider/model. Empty allows all.</p></div>
+      <div class="field grow"><label for="key-models">Allowed models</label><input id="key-models" name="allowed_models" data-search="models" data-csv placeholder="gpt-4o, claude-sonnet-5-5" autocomplete="off" spellcheck="false" aria-describedby="key-models-help"><p class="hint" id="key-models-help">Comma-separated Model or Route names, or provider/model. Empty allows all.</p></div>
     </div>
     <fieldset aria-describedby="key-access-help">
       <legend>Provider Access</legend>
-      {% call access_checks(providers.as_slice()) %}
-      <p class="hint" id="key-access-help">No check allows all API-key Providers. A Subscription Provider needs a check. With checks, only the checked Providers are allowed.</p>
+      <label>Allowed Providers <input name="allowed_providers" data-search="providers" data-csv autocomplete="off"></label>
+      <p class="hint" id="key-access-help">Comma-separated exact Provider names. Blank allows all API-key Providers. A Subscription Provider needs explicit access.</p>
     </fieldset>
     {% if !base.simple %}
     <fieldset aria-describedby="key-limits-help">
@@ -86,8 +78,8 @@
       <form method="post" action="/admin/keys/{{ k.id }}" class="stack" aria-label="Edit key {{ k.prefix }}">
         <fieldset>
           <legend>Provider Access for {{ k.prefix }}…</legend>
-          {% call access_checks(k.providers.as_slice()) %}
-          <p class="hint">No check allows all API-key Providers. A Subscription Provider needs a check.</p>
+          <label>Allowed Providers <input name="allowed_providers" value="{{ k.provider_names }}" data-search="providers" data-csv autocomplete="off"></label>
+          <p class="hint">Comma-separated exact Provider names. Blank allows all API-key Providers.</p>
         </fieldset>
         {% if !base.simple %}
         <fieldset>
@@ -104,14 +96,15 @@
     </div></td>
   </tr>
   {% else %}
-  <tr><td colspan="{% if base.simple %}7{% else %}8{% endif %}" class="empty">No active keys.{% if !users.is_empty() %} Add one above.{% endif %}</td></tr>
+  <tr><td colspan="{% if base.simple %}7{% else %}8{% endif %}" class="empty">No active keys. Add a User, then add a Virtual Key above.</td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+{% include "pager.html" %}
 
 {% if !revoked.is_empty() %}
-<details class="panel" id="revoked-keys">
+<details class="panel" id="revoked-keys"{% if revoked_open %} open{% endif %}>
   <summary>Revoked keys ({{ revoked.len() }})</summary>
   <p class="muted">Revoked keys cannot be used or changed. They stay for the Ledger.</p>
   <div class="scroll">
@@ -119,13 +112,14 @@
     <thead><tr><th scope="col">Key</th><th scope="col">User</th><th scope="col">Created (UTC)</th><th scope="col">Last used (UTC)</th><th scope="col">Revoked (UTC)</th></tr></thead>
     <tbody>
     {% for k in revoked %}
-    <tr class="revoked"><th scope="row"><code>{{ k.prefix }}…</code>{% if !k.label.is_empty() %}<span class="sub">{{ k.label }}</span>{% endif %}</th>
+    <tr class="revoked" id="rk{{ k.id }}"><th scope="row"><code>{{ k.prefix }}…</code>{% if !k.label.is_empty() %}<span class="sub">{{ k.label }}</span>{% endif %}</th>
       <td><span class="trunc" title="{{ k.user }}">{{ k.user }}</span></td>
       <td><time datetime="{{ k.created.iso }}">{{ k.created.short }}</time></td><td>{{ k.last_used.short }}</td><td><time datetime="{{ k.revoked.iso }}">{{ k.revoked.short }}</time></td></tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
+  {% let pager = revoked_pager %}{% include "pager.html" %}
 </details>
 {% endif %}
 {% endblock %}

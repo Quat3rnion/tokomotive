@@ -65,6 +65,10 @@ COPY SHEET (GLOSSARY.md)
 - Write "comma-separated", "API format" (not Kind), "API key",
   "ChatGPT subscription", "Claude Pro/Max".
 - Times are UTC and say so.
+12. Paging: include pager.html with a `pager` from pagination::Pager. Include
+    search.html for name search. Inputs with data-search="users|teams|models|
+    routes|providers" get at most 20 suggestions; without JS, exact names work.
+    Add data-csv for comma-separated names.
 #}<!doctype html>
 <html lang="en">
 <head>
@@ -332,6 +336,8 @@ ul.meters meter { width:12em; vertical-align:middle; }
 @media (max-width: 720px) {
   table.cards-sm td.flags:empty { display:none; }
 }
+/* Browser-default placeholder gray does not meet AA on the field background. */
+input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 </style>
 </head>
 <body>
@@ -529,5 +535,43 @@ ul.meters meter { width:12em; vertical-align:middle; }
 })();
 </script>
 {% block scripts %}{% endblock %}
+<script>
+(() => {
+  let serial = 0;
+  const attach = input => {
+    if (input.dataset.suggestions) return;
+    input.dataset.suggestions = 'true';
+    const list = document.createElement('datalist');
+    list.id = `suggestions-${++serial}`;
+    input.setAttribute('list', list.id);
+    input.after(list);
+    let timer, request;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      if (request) request.abort();
+      const value = input.value;
+      const parts = input.hasAttribute('data-csv') ? value.split(',') : [value];
+      const term = parts.pop().trim();
+      timer = setTimeout(async () => {
+        request = new AbortController();
+        try {
+          const response = await fetch(`/admin/search/${input.dataset.search}?q=${encodeURIComponent(term)}`, {signal:request.signal});
+          if (!response.ok) return;
+          const rows = await response.json();
+          if (input.value !== value) return;
+          list.replaceChildren(...rows.slice(0,20).map(row => {
+            const option = document.createElement('option');
+            option.value = [...parts, row.name].join(', ');
+            return option;
+          }));
+        } catch (e) { if (e.name !== 'AbortError') list.replaceChildren(); }
+      }, 180);
+    });
+  };
+  const scan = () => document.querySelectorAll('input[data-search]').forEach(attach);
+  scan();
+  document.addEventListener('htmx:load', scan);
+})();
+</script>
 </body>
 </html>

@@ -330,7 +330,7 @@ async fn price_card_and_team_override_forms_are_not_prefilled_with_cost() {
 
     let team = forms(&html, &format!("/admin/models/{id}/team-price"));
     let add = team.last().unwrap();
-    assert!(add.contains("name=\"team_id\""));
+    assert!(add.contains("name=\"team_name\""));
     assert!(!add.contains("value=\"0.10\""), "{add}");
     assert!(!add.contains(">100000"), "{add}");
 }

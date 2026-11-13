@@ -633,7 +633,7 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
     assert_eq!(edit.matches("name=\"deployment_provider\"").count(), 2);
     assert_eq!(edit.matches("name=\"deployment_model\"").count(), 2);
     assert!(
-        edit.contains("<option value=\"beta\" selected>beta</option>"),
+        edit.contains("name=\"deployment_provider\" value=\"beta\" data-search=\"providers\""),
         "{edit}"
     );
     assert!(edit.contains("value=\"upstream-one\""));
@@ -644,8 +644,7 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
         edit.find("upstream-one") < edit.find("upstream-two"),
         "order kept"
     );
-    assert!(page.contains("<datalist id=\"fallback-names\">"));
-    assert!(page.contains("<option value=\"rows\">"));
+    assert!(page.contains("name=\"fallbacks\" value=\"\" data-search=\"models\" data-csv"));
     task.abort();
     upstream_task.abort();
 }

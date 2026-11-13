@@ -12,6 +12,7 @@ use sqlx::{FromRow, Row, SqlitePool};
 
 use crate::catalog::{Catalog, ModelEntry, Quote};
 use crate::config::{Config, percent_to_bp, usd_to_micros};
+use crate::pagination::{Page, PageQuery};
 use crate::pricing::{CardRates, PriceSpec};
 use crate::ratelimit::Limits;
 use crate::usage::Usage;
@@ -107,7 +108,7 @@ pub async fn seed(db: &Db, cfg: &Config) -> Result<()> {
                 continue;
             };
             let has: Option<i64> = sqlx::query_scalar(
-                "SELECT id FROM cards WHERE model_id = ? AND team_id = ? AND kind = 'price'",
+                "SELECT id FROM cards WHERE model_id = ? AND team_id = ? AND kind = 'price' LIMIT 1",
             )
             .bind(model_id)
             .bind(team_id)
@@ -161,13 +162,23 @@ pub async fn seed(db: &Db, cfg: &Config) -> Result<()> {
 }
 
 async fn team_ids(db: &Db) -> Result<HashMap<String, i64>> {
-    let rows = sqlx::query("SELECT id, name FROM teams")
-        .fetch_all(db)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| (r.get::<String, _>("name"), r.get::<i64, _>("id")))
-        .collect())
+    // Seed-only lookup. Read in bounded batches; routing setup may retain all ids.
+    let mut out = HashMap::new();
+    let mut after = 0;
+    loop {
+        let rows = sqlx::query("SELECT id,name FROM teams WHERE id>? ORDER BY id LIMIT 200")
+            .bind(after)
+            .fetch_all(db)
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for r in rows {
+            after = r.get("id");
+            out.insert(r.get("name"), after);
+        }
+    }
+    Ok(out)
 }
 
 async fn model_id(db: &Db, name: &str) -> Result<Option<i64>> {
@@ -180,50 +191,77 @@ async fn model_id(db: &Db, name: &str) -> Result<Option<i64>> {
 // ----------------------------------------------------------------- catalog
 
 pub async fn load_catalog(db: &Db) -> Result<Catalog> {
-    let models = sqlx::query("SELECT id, name, provider, aliases FROM models ORDER BY name")
+    // The router needs the full resident catalog, but database reads are bounded.
+    // Dashboard list handlers use model_ids_page rather than reloading this cache.
+    let mut after = 0;
+    let mut entries = Vec::new();
+    loop {
+        let models = sqlx::query(
+            "SELECT id,name,provider,aliases FROM models WHERE id>? ORDER BY id LIMIT 200",
+        )
+        .bind(after)
         .fetch_all(db)
         .await?;
-    let mut entries: Vec<ModelEntry> = models
-        .into_iter()
-        .map(|r| ModelEntry {
-            id: r.get("id"),
-            name: r.get("name"),
-            provider: r.get("provider"),
-            aliases: serde_json::from_str(&r.get::<String, _>("aliases")).unwrap_or_default(),
-            cost: None,
-            price: None,
-            team_price: HashMap::new(),
-        })
-        .collect();
+        if models.is_empty() {
+            break;
+        }
+        after = models.last().expect("nonempty").get("id");
+        entries.extend(
+            models
+                .into_iter()
+                .map(|r| ModelEntry {
+                    id: r.get("id"),
+                    name: r.get("name"),
+                    provider: r.get("provider"),
+                    aliases: serde_json::from_str(&r.get::<String, _>("aliases"))
+                        .unwrap_or_default(),
+                    cost: None,
+                    price: None,
+                    team_price: HashMap::new(),
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
     let index: HashMap<i64, usize> = entries.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
 
     // Current card per (model, team, kind) = highest id.
-    let cards = sqlx::query(
-        "SELECT c.id, c.model_id, c.team_id, c.kind, c.spec FROM cards c
-         JOIN (SELECT MAX(id) AS id FROM cards GROUP BY model_id, IFNULL(team_id, -1), kind) cur ON cur.id = c.id",
-    )
-    .fetch_all(db)
-    .await?;
-    for r in cards {
-        let Some(&i) = index.get(&r.get::<i64, _>("model_id")) else {
-            continue;
-        };
-        let id: i64 = r.get("id");
-        let spec: String = r.get("spec");
-        let team: Option<i64> = r.get("team_id");
-        match (r.get::<String, _>("kind").as_str(), team) {
-            ("cost", _) => entries[i].cost = Some((id, serde_json::from_str(&spec)?)),
-            // A "null" price spec marks a removed Price Card.
-            ("price", None) => {
-                entries[i].price =
-                    serde_json::from_str::<Option<PriceSpec>>(&spec)?.map(|p| (id, p))
-            }
-            ("price", Some(t)) => {
-                if let Some(p) = serde_json::from_str::<Option<PriceSpec>>(&spec)? {
-                    entries[i].team_price.insert(t, (id, p));
+    let mut after = 0;
+    loop {
+        let cards = sqlx::query(
+            "SELECT c.id,c.model_id,c.team_id,c.kind,c.spec FROM cards c
+             WHERE c.id>? AND c.id=(SELECT MAX(c2.id) FROM cards c2
+               WHERE c2.model_id=c.model_id AND c2.team_id IS c.team_id AND c2.kind=c.kind)
+             ORDER BY c.id LIMIT 200",
+        )
+        .bind(after)
+        .fetch_all(db)
+        .await?;
+        if cards.is_empty() {
+            break;
+        }
+        for r in cards {
+            after = r.get("id");
+            let Some(&i) = index.get(&r.get::<i64, _>("model_id")) else {
+                continue;
+            };
+            let id: i64 = r.get("id");
+            let spec: String = r.get("spec");
+            let team: Option<i64> = r.get("team_id");
+            match (r.get::<String, _>("kind").as_str(), team) {
+                ("cost", _) => entries[i].cost = Some((id, serde_json::from_str(&spec)?)),
+                // A "null" price spec marks a removed Price Card.
+                ("price", None) => {
+                    entries[i].price =
+                        serde_json::from_str::<Option<PriceSpec>>(&spec)?.map(|p| (id, p))
                 }
+                ("price", Some(t)) => {
+                    if let Some(p) = serde_json::from_str::<Option<PriceSpec>>(&spec)? {
+                        entries[i].team_price.insert(t, (id, p));
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     Ok(Catalog {
@@ -654,38 +692,49 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
 /// Price Unpriced Entries that now match a Model with a Cost Card (ADR 0002
 /// exception). Returns the number of entries priced.
 pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
-    let rows = sqlx::query(
+    let mut after = 0_i64;
+    let mut n = 0;
+    let mut tx = db.begin().await?;
+    // Keep the existing all-or-nothing save without retaining all rows or hours.
+    // A connection-local table is created and dropped in this transaction.
+    sqlx::query("CREATE TEMP TABLE reprice_hours(hour INTEGER PRIMARY KEY)")
+        .execute(&mut *tx)
+        .await?;
+    loop {
+        let rows = sqlx::query(
         "SELECT id, ts_ms, user_id, team_id, requested_model, model, input, output, cache_read, cache_write_5m, cache_write_1h,
             image_input, image_output, subscription
-         FROM ledger WHERE unpriced = 1",
+         FROM ledger WHERE unpriced = 1 AND id>? ORDER BY id LIMIT 200",
     )
-    .fetch_all(db)
+    .bind(after)
+    .fetch_all(&mut *tx)
     .await?;
-    let mut tx = db.begin().await?;
-    let mut hours = std::collections::BTreeSet::new();
-    let mut n = 0;
-    for r in rows {
-        let usage = Usage {
-            input: r.get("input"),
-            output: r.get("output"),
-            cache_read: r.get("cache_read"),
-            cache_write_5m: r.get("cache_write_5m"),
-            cache_write_1h: r.get("cache_write_1h"),
-            image_input: r.get("image_input"),
-            image_output: r.get("image_output"),
-        };
-        let model: Option<String> = r
-            .get::<Option<String>, _>("model")
-            .or(r.get("requested_model"));
-        let mut q = catalog.quote(model.as_deref(), r.get("team_id"), &usage);
-        if r.get::<bool, _>("subscription") {
-            q.cost_micros = 0;
-            q.cost_card_id = None;
+        if rows.is_empty() {
+            break;
         }
-        if q.unpriced {
-            continue;
-        }
-        sqlx::query(
+        for r in rows {
+            after = r.get("id");
+            let usage = Usage {
+                input: r.get("input"),
+                output: r.get("output"),
+                cache_read: r.get("cache_read"),
+                cache_write_5m: r.get("cache_write_5m"),
+                cache_write_1h: r.get("cache_write_1h"),
+                image_input: r.get("image_input"),
+                image_output: r.get("image_output"),
+            };
+            let model: Option<String> = r
+                .get::<Option<String>, _>("model")
+                .or(r.get("requested_model"));
+            let mut q = catalog.quote(model.as_deref(), r.get("team_id"), &usage);
+            if r.get::<bool, _>("subscription") {
+                q.cost_micros = 0;
+                q.cost_card_id = None;
+            }
+            if q.unpriced {
+                continue;
+            }
+            sqlx::query(
             "UPDATE ledger SET model_id = ?, cost_micros = ?, price_micros = ?, cost_card_id = ?, price_card_id = ?, unpriced = 0 WHERE id = ?",
         )
         .bind(q.model_id)
@@ -696,12 +745,32 @@ pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
         .bind(r.get::<i64, _>("id"))
         .execute(&mut *tx)
         .await?;
-        hours.insert(r.get::<i64, _>("ts_ms") / 1000 / 3600 * 3600);
-        n += 1;
+            sqlx::query("INSERT OR IGNORE INTO reprice_hours(hour) VALUES(?)")
+                .bind(r.get::<i64, _>("ts_ms") / 1000 / 3600 * 3600)
+                .execute(&mut *tx)
+                .await?;
+            n += 1;
+        }
     }
-    for h in hours {
-        rebuild_rollup_hour(&mut tx, h).await?;
+    let mut after_hour = i64::MIN;
+    loop {
+        let hours: Vec<i64> = sqlx::query_scalar(
+            "SELECT hour FROM reprice_hours WHERE hour>? ORDER BY hour LIMIT 200",
+        )
+        .bind(after_hour)
+        .fetch_all(&mut *tx)
+        .await?;
+        if hours.is_empty() {
+            break;
+        }
+        for hour in hours {
+            rebuild_rollup_hour(&mut tx, hour).await?;
+            after_hour = hour;
+        }
     }
+    sqlx::query("DROP TABLE reprice_hours")
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(n)
 }
@@ -778,7 +847,7 @@ pub struct Bucket {
 /// Totals per bucket (bucket size in seconds, a multiple of 3600).
 pub async fn series(db: &Db, since_s: i64, bucket_s: i64) -> Result<Vec<Bucket>> {
     Ok(sqlx::query_as(&format!(
-        "SELECT (hour / ?1) * ?1 AS bucket, {TOTALS_COLS} FROM rollup_hourly WHERE hour >= ?2 GROUP BY bucket ORDER BY bucket"
+         "SELECT (hour / ?1) * ?1 AS bucket, {TOTALS_COLS} FROM rollup_hourly WHERE hour >= ?2 GROUP BY bucket ORDER BY bucket LIMIT 200"
     ))
     .bind(bucket_s)
     .bind(since_s)
@@ -820,6 +889,57 @@ pub async fn by_provider(db: &Db, since_s: i64) -> Result<Vec<Group>> {
 // Only callers above supply the grouping expression. The Ledger holds Provider
 // and attempt data that the hourly rollup does not retain.
 async fn grouped_ledger(db: &Db, since_s: i64, key: &str, group: &str) -> Result<Vec<Group>> {
+    grouped_page(db, since_s, key, group, "requests", "DESC", 10, 0).await
+}
+
+pub async fn usage_page(
+    db: &Db,
+    since_s: i64,
+    group: &str,
+    sort: &str,
+    ascending: bool,
+    q: &PageQuery,
+) -> Result<Vec<Group>> {
+    let (key, group) = match group {
+        "user" => ("u.name", "u.id"),
+        "team" => ("IFNULL(t.name, '(no team)')", "u.team_id"),
+        "provider" => ("l.provider", "l.provider"),
+        _ => (
+            "COALESCE(m.name, l.model, l.requested_model, '')",
+            "COALESCE(m.name, l.model, l.requested_model, '')",
+        ),
+    };
+    let sort = match sort {
+        "key" | "errors" | "input" | "output" | "cost_micros" | "price_micros" | "attempts"
+        | "retried" => sort,
+        "latency" => "(latency_ms_sum * 1.0 / requests)",
+        "profit" => "(price_micros - cost_micros)",
+        _ => "requests",
+    };
+    grouped_page(
+        db,
+        since_s,
+        key,
+        group,
+        sort,
+        if ascending { "ASC" } else { "DESC" },
+        q.limit() + 1,
+        q.offset(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn grouped_page(
+    db: &Db,
+    since_s: i64,
+    key: &str,
+    group: &str,
+    sort: &str,
+    direction: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Group>> {
     Ok(sqlx::query_as(&format!(
         "SELECT {key} AS key, COUNT(*) AS requests, SUM(l.status >= 400) AS errors,
             SUM(l.input) AS input, SUM(l.output) AS output, SUM(l.cache_read) AS cache_read,
@@ -828,11 +948,13 @@ async fn grouped_ledger(db: &Db, since_s: i64, key: &str, group: &str) -> Result
             SUM(l.cost_micros) AS cost_micros, SUM(l.price_micros) AS price_micros,
             SUM(l.latency_ms) AS latency_ms_sum, IFNULL(SUM(l.ttft_ms),0) AS ttft_ms_sum,
             COUNT(l.ttft_ms) AS ttft_count, SUM(l.attempts) AS attempts, SUM(l.attempts > 1) AS retried
-         FROM ledger l JOIN users u ON u.id = l.user_id LEFT JOIN teams t ON t.id = u.team_id
+         FROM ledger l INDEXED BY ledger_ts JOIN users u ON u.id = l.user_id LEFT JOIN teams t ON t.id = u.team_id
          LEFT JOIN models m ON m.id = l.model_id
-         WHERE l.ts_ms >= ? * 1000 GROUP BY {group} ORDER BY price_micros DESC"
+           WHERE l.ts_ms >= ? * 1000 GROUP BY {group} ORDER BY {sort} {direction}, key ASC, {group} ASC LIMIT ? OFFSET ?"
     ))
     .bind(since_s)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(db)
     .await?)
 }
@@ -859,7 +981,7 @@ pub async fn list_users(db: &Db) -> Result<Vec<UserRow>> {
             (SELECT IFNULL(SUM(price_micros), 0) FROM rollup_hourly r WHERE r.user_id = u.id
                AND r.hour >= CASE WHEN u.budget_monthly THEN ? ELSE 0 END) AS period_spend,
             (SELECT COUNT(*) FROM virtual_keys k WHERE k.user_id = u.id AND k.revoked_at IS NULL) AS keys
-         FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name",
+         FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name LIMIT 200",
     )
     .bind(month)
     .fetch_all(db)
@@ -875,7 +997,7 @@ pub struct TeamRow {
 
 pub async fn list_teams(db: &Db) -> Result<Vec<TeamRow>> {
     Ok(sqlx::query_as(
-        "SELECT t.id, t.name, (SELECT COUNT(*) FROM users u WHERE u.team_id = t.id) AS users FROM teams t ORDER BY t.name",
+        "SELECT t.id, t.name, (SELECT COUNT(*) FROM users u WHERE u.team_id = t.id) AS users FROM teams t ORDER BY t.name LIMIT 200",
     )
     .fetch_all(db)
     .await?)
@@ -899,7 +1021,7 @@ pub struct KeyRow {
 pub async fn list_keys(db: &Db) -> Result<Vec<KeyRow>> {
     Ok(sqlx::query_as(
         "SELECT k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.allowed_providers, k.revoked_at, k.last_used_at, k.created_at, k.rpm_limit, k.tpm_limit
-         FROM virtual_keys k JOIN users u ON u.id = k.user_id ORDER BY k.revoked_at IS NOT NULL, u.name, k.id",
+         FROM virtual_keys k JOIN users u ON u.id = k.user_id ORDER BY k.revoked_at IS NOT NULL, u.name, k.id LIMIT 200",
     )
     .fetch_all(db)
     .await?)
@@ -965,7 +1087,7 @@ pub async fn recent_ledger(db: &Db, filter: LedgerFilter, limit: i64) -> Result<
 }
 
 /// One page of the Ledger, newest first. All conditions are optional.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LedgerQuery {
     pub filter: LedgerFilter,
     pub user_id: Option<i64>,
@@ -978,10 +1100,34 @@ pub struct LedgerQuery {
     pub to_ms: Option<i64>,
     /// Only entries with a smaller id (the next, older page).
     pub before_id: Option<i64>,
+    pub after_id: Option<i64>,
     pub limit: i64,
 }
 
+impl Default for LedgerQuery {
+    fn default() -> Self {
+        Self {
+            filter: LedgerFilter::All,
+            user_id: None,
+            provider: None,
+            model: None,
+            from_ms: None,
+            to_ms: None,
+            before_id: None,
+            after_id: None,
+            limit: 100,
+        }
+    }
+}
+
 pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
+    let mut bounded = q.clone();
+    bounded.limit = q.limit.clamp(1, 200);
+    ledger_window(db, &bounded).await
+}
+
+/// One extra row is private lookahead, never rendered or returned in an API list.
+pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
     let mut b = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
@@ -990,7 +1136,7 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
     );
     b.push(match q.filter {
-        LedgerFilter::All => "1",
+        LedgerFilter::All => "l.id > 0",
         LedgerFilter::Unpriced => "l.unpriced = 1",
         LedgerFilter::Estimated => "l.estimated = 1",
         LedgerFilter::Errors => "l.status >= 400",
@@ -1017,7 +1163,15 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
     if let Some(v) = q.before_id {
         b.push(" AND l.id < ").push_bind(v);
     }
-    b.push(" ORDER BY l.id DESC LIMIT ").push_bind(q.limit);
+    if let Some(v) = q.after_id {
+        b.push(" AND l.id > ").push_bind(v);
+    }
+    b.push(if q.after_id.is_some() {
+        " ORDER BY l.id ASC LIMIT "
+    } else {
+        " ORDER BY l.id DESC LIMIT "
+    })
+    .push_bind(q.limit.clamp(1, 201));
     Ok(b.build_query_as().fetch_all(db).await?)
 }
 
@@ -1063,10 +1217,158 @@ pub struct CardHistoryRow {
 pub async fn card_history(db: &Db, model_id: i64) -> Result<Vec<CardHistoryRow>> {
     Ok(sqlx::query_as(
         "SELECT c.id, t.name AS team, c.kind, c.spec, c.created_at FROM cards c LEFT JOIN teams t ON t.id = c.team_id
-         WHERE c.model_id = ? ORDER BY c.id DESC",
+         WHERE c.model_id = ? ORDER BY c.id DESC LIMIT 20",
     )
     .bind(model_id)
     .fetch_all(db)
+    .await?)
+}
+
+/// Append-heavy tables use immutable ids, not names that an Operator can edit.
+pub async fn users_page(db: &Db, q: &PageQuery, team: Option<i64>) -> Result<Page<UserRow>> {
+    let mut b = sqlx::QueryBuilder::new(
+        "SELECT u.id, u.name, u.team_id, t.name AS team, u.budget_micros, u.budget_monthly, u.disabled, u.rpm_limit, u.tpm_limit,
+        (SELECT IFNULL(SUM(price_micros),0) FROM rollup_hourly r WHERE r.user_id=u.id AND r.hour >= CASE WHEN u.budget_monthly THEN ");
+    b.push_bind(budget_period_start(true)).push(
+        " ELSE 0 END) AS period_spend,
+        (SELECT COUNT(*) FROM virtual_keys k WHERE k.user_id=u.id AND k.revoked_at IS NULL) AS keys
+        FROM users u LEFT JOIN teams t ON t.id=u.team_id WHERE instr(lower(u.name),lower(",
+    );
+    b.push_bind(q.q.clone()).push(")) > 0");
+    if let Some(t) = team {
+        b.push(" AND u.team_id=").push_bind(t);
+    }
+    q.keyset(&mut b, "u.id");
+    Ok(Page::new(
+        b.build_query_as().fetch_all(db).await?,
+        q,
+        |r: &UserRow| r.id,
+    ))
+}
+
+pub async fn teams_page(db: &Db, q: &PageQuery) -> Result<Page<TeamRow>> {
+    let mut b = sqlx::QueryBuilder::new(
+        "SELECT t.id,t.name,(SELECT COUNT(*) FROM users u WHERE u.team_id=t.id) AS users FROM teams t WHERE instr(lower(t.name),lower(",
+    );
+    b.push_bind(q.q.clone()).push(")) > 0");
+    q.keyset(&mut b, "t.id");
+    Ok(Page::new(
+        b.build_query_as().fetch_all(db).await?,
+        q,
+        |r: &TeamRow| r.id,
+    ))
+}
+
+pub async fn keys_page(
+    db: &Db,
+    q: &PageQuery,
+    user: Option<i64>,
+    revoked: bool,
+) -> Result<Page<KeyRow>> {
+    let mut b = sqlx::QueryBuilder::new(
+        "SELECT k.id,u.name AS user,k.prefix,k.label,k.allowed_models,k.allowed_providers,k.revoked_at,k.last_used_at,k.created_at,k.rpm_limit,k.tpm_limit FROM virtual_keys k JOIN users u ON u.id=k.user_id WHERE ",
+    );
+    b.push(if revoked {
+        "k.revoked_at IS NOT NULL"
+    } else {
+        "k.revoked_at IS NULL"
+    });
+    if let Some(u) = user {
+        b.push(" AND k.user_id=").push_bind(u);
+    }
+    b.push(" AND (instr(lower(k.label),lower(")
+        .push_bind(q.q.clone())
+        .push(")) > 0 OR instr(lower(u.name),lower(")
+        .push_bind(q.q.clone())
+        .push(")) > 0)");
+    q.keyset(&mut b, "k.id");
+    Ok(Page::new(
+        b.build_query_as().fetch_all(db).await?,
+        q,
+        |r: &KeyRow| r.id,
+    ))
+}
+
+pub async fn override_teams_page(db: &Db, model: i64, q: &PageQuery) -> Result<Page<TeamRow>> {
+    let mut b = sqlx::QueryBuilder::new(
+        "SELECT t.id,t.name,0 AS users FROM teams t WHERE EXISTS(SELECT 1 FROM cards c WHERE c.team_id=t.id AND c.model_id=",
+    );
+    b.push_bind(model).push(" AND c.kind='price' AND c.spec!='null' AND c.id=(SELECT MAX(c2.id) FROM cards c2 WHERE c2.team_id=t.id AND c2.model_id=c.model_id AND c2.kind='price'))");
+    q.keyset(&mut b, "t.id");
+    Ok(Page::new(
+        b.build_query_as().fetch_all(db).await?,
+        q,
+        |r: &TeamRow| r.id,
+    ))
+}
+
+pub async fn history_page(db: &Db, model: i64, q: &PageQuery) -> Result<Page<CardHistoryRow>> {
+    let mut b = sqlx::QueryBuilder::new(
+        "SELECT c.id,t.name AS team,c.kind,c.spec,c.created_at FROM cards c LEFT JOIN teams t ON t.id=c.team_id WHERE c.model_id=",
+    );
+    b.push_bind(model);
+    q.keyset_desc(&mut b, "c.id");
+    Ok(Page::new(
+        b.build_query_as().fetch_all(db).await?,
+        q,
+        |r: &CardHistoryRow| r.id,
+    ))
+}
+
+pub async fn model_ids_page(db: &Db, q: &PageQuery, team: Option<i64>) -> Result<Page<i64>> {
+    let mut b =
+        sqlx::QueryBuilder::new("SELECT m.id FROM models m WHERE instr(lower(m.name),lower(");
+    b.push_bind(q.q.clone()).push(")) > 0");
+    if let Some(t) = team {
+        b.push(" AND EXISTS(SELECT 1 FROM cards c WHERE c.model_id=m.id AND c.team_id=").push_bind(t)
+            .push(" AND c.kind='price' AND c.spec!='null' AND c.id=(SELECT MAX(c2.id) FROM cards c2 WHERE c2.model_id=c.model_id AND c2.team_id=c.team_id AND c2.kind='price'))");
+    }
+    q.keyset(&mut b, "m.id");
+    Ok(Page::new(
+        b.build_query_scalar().fetch_all(db).await?,
+        q,
+        |id| *id,
+    ))
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct Suggestion {
+    pub id: i64,
+    pub name: String,
+}
+
+/// These are the only accepted tables. Bind the search term, never SQL text.
+pub async fn search_names(db: &Db, kind: &str, q: &str) -> Result<Vec<Suggestion>> {
+    let table = match kind {
+        "users" => "users",
+        "teams" => "teams",
+        "providers" => "providers",
+        "routes" => "routes",
+        _ => "models",
+    };
+    let id = if matches!(table, "providers" | "routes") {
+        "rowid"
+    } else {
+        "id"
+    };
+    Ok(sqlx::query_as(&format!("SELECT {id} AS id,name FROM {table} WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT 20"))
+        .bind(q).fetch_all(db).await?)
+}
+
+/// Prefer an exact name; legacy numeric form values remain valid only if the id exists.
+pub async fn resolve_name(db: &Db, kind: &str, value: &str, allow_id: bool) -> Result<Option<i64>> {
+    let table = if kind == "teams" { "teams" } else { "users" };
+    Ok(sqlx::query_scalar(&format!(
+        "SELECT id FROM {table} WHERE name=? OR id=? ORDER BY name=? DESC LIMIT 1"
+    ))
+    .bind(value.trim())
+    .bind(if allow_id {
+        value.trim().parse::<i64>().ok()
+    } else {
+        None
+    })
+    .bind(value.trim())
+    .fetch_optional(db)
     .await?)
 }
 

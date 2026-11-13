@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
@@ -161,8 +161,19 @@ async fn authenticate(
     }
 }
 
-pub async fn list_models(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    models_response(st, headers, None).await
+#[derive(Default, serde::Deserialize)]
+pub struct ModelsQuery {
+    limit: Option<i64>,
+    after_id: Option<String>,
+    before_id: Option<String>,
+}
+
+pub async fn list_models(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ModelsQuery>,
+) -> Response {
+    models_response(st, headers, None, q).await
 }
 
 pub async fn get_model(
@@ -170,10 +181,15 @@ pub async fn get_model(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    models_response(st, headers, Some(id)).await
+    models_response(st, headers, Some(id), ModelsQuery::default()).await
 }
 
-async fn models_response(st: AppState, headers: HeaderMap, id: Option<String>) -> Response {
+async fn models_response(
+    st: AppState,
+    headers: HeaderMap,
+    id: Option<String>,
+    q: ModelsQuery,
+) -> Response {
     let anthropic = headers.contains_key("anthropic-version");
     let auth = match authenticate(&st, &headers, anthropic).await {
         Ok(a) => a,
@@ -181,17 +197,65 @@ async fn models_response(st: AppState, headers: HeaderMap, id: Option<String>) -
     };
     let catalog = st.catalog();
     let table = st.router_table();
-    let mut models = std::collections::BTreeMap::new();
-    for model in &catalog.models {
-        models.insert(model.name.clone(), model.provider.clone());
+    if anthropic && q.after_id.is_some() && q.before_id.is_some() {
+        return formatted_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "Use after_id or before_id, not both.",
+            true,
+        );
     }
-    for route in &table.routes {
-        models.insert(route.name.clone(), "router".to_owned());
+    let limit = if id.is_some() {
+        1
+    } else if anthropic {
+        q.limit.unwrap_or(50).clamp(1, 200) as usize
+    } else {
+        1000
+    };
+    let reverse = anthropic && q.before_id.is_some();
+    let mut models = std::collections::BTreeMap::new();
+    let mut count = 0;
+    // Routing snapshots are already resident. Keep only one bounded response window.
+    for (name, owner) in catalog
+        .models
+        .iter()
+        .filter(|m| !table.routes.iter().any(|r| r.name == m.name))
+        .map(|m| (&m.name, m.provider.as_str()))
+        .chain(table.routes.iter().map(|r| (&r.name, "router")))
+    {
+        if id.as_ref().is_some_and(|id| id != name)
+            || anthropic && q.after_id.as_ref().is_some_and(|after| name <= after)
+            || anthropic && q.before_id.as_ref().is_some_and(|before| name >= before)
+            || !table.allowed(&catalog, &auth.allowed_models, Some(name))
+            || !table
+                .reachable_providers(&catalog, name)
+                .iter()
+                .any(|p| provider_allowed(&auth, p))
+        {
+            continue;
+        }
+        count += 1;
+        models.insert(name.clone(), owner.to_owned());
+        if models.len() > limit + 1 {
+            if reverse {
+                models.pop_first();
+            } else {
+                models.pop_last();
+            }
+        }
+    }
+    if !anthropic && id.is_none() && count > 1000 {
+        tracing::warn!(count, cap = 1000, "OpenAI Model list exceeds server cap");
+    }
+    let has_more = models.len() > limit;
+    if has_more {
+        if reverse {
+            models.pop_first();
+        } else {
+            models.pop_last();
+        }
     }
     let data: Vec<Value> = models.into_iter()
-        .filter(|(name, _)| table.allowed(&catalog, &auth.allowed_models, Some(name))
-            && table.reachable_providers(&catalog,name)
-                .iter().any(|p| provider_allowed(&auth,p)))
         .map(|(name, owner)| {
             if anthropic {
                 json!({"type":"model", "id":name, "display_name":name, "created_at":"1970-01-01T00:00:00Z"})
@@ -211,7 +275,7 @@ async fn models_response(st: AppState, headers: HeaderMap, id: Option<String>) -
         };
     }
     if anthropic {
-        axum::Json(json!({"first_id": data.first().map(|m| &m["id"]), "last_id": data.last().map(|m| &m["id"]), "data":data, "has_more":false})).into_response()
+        axum::Json(json!({"first_id": data.first().map(|m| &m["id"]), "last_id": data.last().map(|m| &m["id"]), "data":data, "has_more":has_more})).into_response()
     } else {
         axum::Json(json!({"object":"list", "data":data})).into_response()
     }

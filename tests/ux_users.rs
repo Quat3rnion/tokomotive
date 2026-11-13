@@ -175,7 +175,10 @@ async fn teams_list_members_and_overrides_and_can_be_renamed() {
     a.user("maria", Some(team)).await;
     let html = a.page("/admin/teams").await;
     assert!(html.contains("<table class=\"teams cards-sm\">"), "{html}");
-    assert!(html.contains("maria"));
+    assert!(html.contains(&format!("href=\"/admin/users?team={team}\">1 User</a>")));
+    assert!(html.contains(&format!(
+        "href=\"/admin/models?team={team}\">0 overrides</a>"
+    )));
     assert!(html.contains("aria-label=\"Edit Team research\""));
     let r = a
         .post(&format!("/admin/teams/{team}"), &[("name", "science")])

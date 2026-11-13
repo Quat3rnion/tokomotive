@@ -266,7 +266,7 @@ async fn ledger_pages_to_older_entries() {
         .page(&format!("/admin/ledger?provider=openai&before={}", ids[1]))
         .await;
     assert!(html.contains(">m0<") && !html.contains(">m1<"));
-    assert!(html.contains("Newest entries"));
+    assert!(html.contains("rel=\"prev\">Previous</a>"));
 }
 
 #[tokio::test]
