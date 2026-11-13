@@ -344,7 +344,16 @@ async fn overview_usage_and_configuration_lists_are_bounded() {
             .unwrap();
         assert_eq!(section.matches("<tr><th scope=\"row\">").count(), 10);
         let all = walk_usage(&a, group).await;
-        assert_eq!(all.len(), 251);
+        let prefix = match group {
+            "model" => "model-",
+            "provider" => "provider-",
+            "user" => "User ",
+            _ => "Team ",
+        };
+        assert_eq!(
+            all,
+            BTreeSet::from_iter((0..251).map(|n| format!("{prefix}{n:03}")))
+        );
     }
     let sorted = a
         .page("/admin/usage?group=user&range=24h&sort=input&direction=desc&limit=3")
@@ -370,18 +379,36 @@ async fn overview_usage_and_configuration_lists_are_bounded() {
         ("providers", "<section class=\"panel provider\" id=\"p-"),
     ] {
         let mut all = 0;
+        let mut names = BTreeSet::new();
+        let mut previous = None;
         let mut url = format!("/admin/{path}");
         loop {
             let html = a.page(&url).await;
             let n = html.matches(marker).count();
             assert!(n <= 50, "{path}: {n}");
             all += n;
+            let current = section_names(&html, marker);
+            for name in &current {
+                assert!(names.insert(name.clone()), "duplicate {name}");
+            }
+            if let Some(expected) = previous {
+                let prev = page_link(&html, "prev").expect("configuration Previous link");
+                assert_eq!(section_names(&a.page(&prev).await, marker), expected);
+            }
             match page_link(&html, "next") {
-                Some(next) => url = next,
+                Some(next) => {
+                    previous = Some(current);
+                    url = next;
+                }
                 None => break,
             }
         }
         assert_eq!(all, 251, "{path}");
+        let prefix = path.strip_suffix('s').unwrap();
+        assert_eq!(
+            names,
+            BTreeSet::from_iter((0..251).map(|n| format!("{prefix}-{n:03}")))
+        );
         assert_eq!(
             a.page(&format!("/admin/{path}?limit=100000"))
                 .await
@@ -491,6 +518,13 @@ async fn nested_configuration_lists_are_paged_without_losing_hidden_rows() {
     assert!(!second.contains("/keys/0/delete"));
 }
 
+fn section_names(html: &str, marker: &str) -> Vec<String> {
+    html.split(marker)
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap().to_owned())
+        .collect()
+}
+
 fn usage_names(html: &str) -> Vec<String> {
     html.split("<tr><th scope=\"row\">")
         .skip(1)
@@ -501,15 +535,23 @@ fn usage_names(html: &str) -> Vec<String> {
 async fn walk_usage(a: &App, group: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut url = format!("/admin/usage?group={group}&range=24h&sort=key&direction=asc");
+    let mut previous = None;
     loop {
         let html = a.page(&url).await;
         let names = usage_names(&html);
         assert!(names.len() <= 50);
-        for name in names {
-            assert!(found.insert(name));
+        for name in &names {
+            assert!(found.insert(name.clone()));
+        }
+        if let Some(expected) = previous {
+            let prev = page_link(&html, "prev").expect("Usage Previous link");
+            assert_eq!(usage_names(&a.page(&prev).await), expected);
         }
         match page_link(&html, "next") {
-            Some(next) => url = next,
+            Some(next) => {
+                previous = Some(names);
+                url = next;
+            }
             None => return found,
         }
     }
