@@ -23,6 +23,13 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Issues Virtual Keys to Users. The Provider Keys stay on the server.
 - Uses a Key Pool for each Provider. After a 429, a 5xx or a connection error,
   the Proxy tries the next key before it sends data to the client.
+- Routes a client model name to several Deployments with priority,
+  round-robin or weighted selection, Fallbacks and Circuit Breakers.
+- Supports `provider/model` names when no Route or catalog Model matches.
+  The Provider prefix is removed before the upstream request. Models without
+  cards still have usage recorded as Unpriced Entries.
+- Lists permitted Routes and catalog Models at `GET /v1/models` and
+  `GET /v1/models/{id}`, in OpenAI or Anthropic format.
 - Rejects requests with HTTP 402 when the Budget of the User does not cover the
   worst-case Price of the request (the Reservation).
 - Shows requests, tokens, latency, time to first token, Cost, Price and Profit
@@ -66,6 +73,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
    The request appears on the **Ledger** page.
 
 The Proxy accepts the Virtual Key in `Authorization: Bearer` or in `x-api-key`.
+An allowed Route also permits its Fallbacks. Route and router settings come
+from TOML; restart the Proxy after changes.
 Docker is also available. See [INSTALL.md](INSTALL.md).
 
 ## Documentation
@@ -82,7 +91,6 @@ Docker is also available. See [INSTALL.md](INSTALL.md).
 
 ## Limits
 
-- The Proxy does not fall back to a different Provider or Model.
 - The Proxy does not record usage for audio. It forwards these requests and
   records them as Unpriced Entries.
 - The Proxy reads the Model name from a JSON request body only. A multipart

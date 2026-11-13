@@ -12,7 +12,8 @@ use tokio::sync::Notify;
 use crate::catalog::Catalog;
 use crate::config::Config;
 use crate::db::{self, Db};
-use crate::provider::{Endpoint, ProviderKind};
+use crate::provider::ProviderKind;
+use crate::routing::RouterTable;
 
 #[derive(Debug, Clone)]
 pub struct Provider {
@@ -72,7 +73,9 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub db: Db,
     pub http: reqwest::Client,
-    pub providers: Vec<Provider>,
+    router_table: RwLock<Arc<RouterTable>>,
+    pub(crate) circuits: Mutex<HashMap<(String, String), crate::routing::Circuit>>,
+    pub(crate) route_next: Mutex<HashMap<String, usize>>,
     pub admin_password: Option<String>,
     pub metrics_token: Option<String>,
     pub session_days: i64,
@@ -93,17 +96,7 @@ impl std::ops::Deref for AppState {
 
 impl AppState {
     pub async fn new(cfg: &Config, db: Db, metrics: Option<PrometheusHandle>) -> Result<AppState> {
-        let providers = cfg
-            .providers
-            .iter()
-            .map(|p| {
-                let keys = p.keys();
-                if keys.is_empty() {
-                    tracing::warn!(provider = %p.name, "no API key is set for this provider");
-                }
-                Provider::new(&p.name, p.kind, &p.base_url, keys)
-            })
-            .collect();
+        let router_table = RouterTable::from_config(cfg);
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(cfg.server.upstream_timeout_secs))
             .connect_timeout(Duration::from_secs(15))
@@ -112,7 +105,9 @@ impl AppState {
         Ok(AppState(Arc::new(Inner {
             db,
             http,
-            providers,
+            router_table: RwLock::new(Arc::new(router_table)),
+            circuits: Mutex::new(HashMap::new()),
+            route_next: Mutex::new(HashMap::new()),
             admin_password: cfg.admin_password(),
             metrics_token: cfg.metrics_token(),
             session_days: cfg.server.session_days.max(1),
@@ -135,31 +130,18 @@ impl AppState {
         Ok(())
     }
 
-    /// Choose the Provider: the Model's Provider, else the one that speaks the
-    /// endpoint, else Anthropic when the client sent `anthropic-version`, else
-    /// the first OpenAI-compatible Provider.
-    pub fn pick_provider(
-        &self,
-        catalog: &Catalog,
-        model: Option<&str>,
-        endpoint: Endpoint,
-        anthropic_hint: bool,
-    ) -> Option<Provider> {
-        if let Some(name) = model.and_then(|m| catalog.provider_for(m))
-            && let Some(p) = self.providers.iter().find(|p| p.name == name)
-        {
-            return Some(p.clone());
+    pub fn router_table(&self) -> Arc<RouterTable> {
+        self.router_table.read().expect("router table").clone()
+    }
+
+    pub fn set_router_table(&self, mut table: RouterTable) {
+        let mut current = self.router_table.write().expect("router table");
+        for provider in &mut table.providers {
+            if let Some(old) = current.providers.iter().find(|p| p.name == provider.name) {
+                provider.next = old.next.clone();
+            }
         }
-        let kind = endpoint.native_kind().unwrap_or(if anthropic_hint {
-            ProviderKind::Anthropic
-        } else {
-            ProviderKind::Openai
-        });
-        self.providers
-            .iter()
-            .find(|p| p.kind == kind)
-            .or(self.providers.first())
-            .cloned()
+        *current = Arc::new(table);
     }
 
     /// Reserve `amount` of a User's Budget if `spent` plus all open
