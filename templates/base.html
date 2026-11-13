@@ -134,7 +134,10 @@ caption { text-align:left; color:var(--muted); font-size:12px; padding-bottom:va
   background-image:linear-gradient(to right, var(--panel) 30%, transparent), linear-gradient(to left, var(--panel) 30%, transparent), radial-gradient(farthest-side at 0 50%, rgba(147,197,253,.28), transparent), radial-gradient(farthest-side at 100% 50%, rgba(147,197,253,.28), transparent);
   background-position:left center, right center, left center, right center; background-repeat:no-repeat;
   background-size:40px 100%, 40px 100%, 14px 100%, 14px 100%; background-attachment:local, local, scroll, scroll; }
-.scroll > table th:first-child, .scroll > table td:first-child:not([colspan]) { position:sticky; left:0; z-index:1; background:var(--panel); box-shadow:inset -1px 0 0 var(--line); min-width:10ch; max-width:24ch; white-space:normal; overflow-wrap:anywhere; }
+.scroll > table th:first-child, .scroll > table td:first-child:not([colspan]) { position:sticky; left:0; z-index:1; background:var(--panel); box-shadow:inset -1px 0 0 var(--line); min-width:min(18ch, 40vw); max-width:28ch; white-space:normal; overflow-wrap:break-word; }
+/* Long lists in a cell wrap instead of widening the table. */
+td.wrap { white-space:normal; min-width:16ch; max-width:40ch; }
+td.n a, td.wrap a { display:inline-block; min-width:24px; min-height:24px; line-height:24px; }
 .panel.scroll table { font-size:13px; }
 
 input, select, textarea, button { font:inherit; color:var(--text); }
@@ -176,6 +179,7 @@ label.choice span span { display:block; color:var(--muted); font-size:13px; }
 .field .hint { max-width:36em; }
 .checks { display:flex; flex-wrap:wrap; gap:0 var(--sp-4); }
 .stack > fieldset { align-self:stretch; }
+.stack > label.check { align-self:flex-start; }
 .trunc { display:inline-block; max-width:24ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
 tbody th { color:var(--text); font-weight:400; font-size:inherit; }
 td .sub, th .sub { display:block; max-width:20ch; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:12px; }
@@ -257,6 +261,8 @@ details > summary { cursor:pointer; color:var(--link); min-height:24px; }
   table.cards-sm tr { padding:var(--sp-2) 0; border-bottom:1px solid var(--line); }
   table.cards-sm td, table.cards-sm tbody th, .scroll > table.cards-sm tbody th:first-child { position:static; border:0; padding:2px 0; white-space:normal; box-shadow:none; min-width:0; max-width:none; }
   table.cards-sm tbody th { font-weight:600; padding-bottom:var(--sp-1); }
+  table.cards-sm td.n { text-align:left; }
+  table.cards-sm .sub { display:inline; margin-left:var(--sp-1); }
   table.cards-sm td[data-label]::before { content:attr(data-label); display:inline-block; min-width:9.5em; color:var(--muted); font-size:12px; }
   table.cards-sm .actions { justify-content:flex-start; margin-top:var(--sp-2); }
   table.cards-sm tr.edit-row { padding:0 0 var(--sp-2); }
