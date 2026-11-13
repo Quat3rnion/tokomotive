@@ -48,6 +48,12 @@ form.inline { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; 
 .row label input { width:110px; }
 .row label.check { flex-direction:row; align-items:center; gap:6px; align-self:center; color:var(--text); font-size:14px; }
 .row label.check input { width:auto; }
+.row label input.wide { width:220px; }
+fieldset.deployments { border:0; padding:0; margin:12px 0; min-width:0; }
+fieldset.deployments legend { padding:0; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+fieldset.deployments > .muted { margin:4px 0 8px; font-size:12px; }
+.deployment { margin-bottom:8px; }
+.deployment select { min-width:160px; }
 .panel.scroll table { font-size:13px; }
 .tabs a { margin-right:12px; text-decoration:none; color:var(--muted); }
 .tabs a.on { color:var(--text); border-bottom:2px solid var(--accent); }

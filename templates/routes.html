@@ -1,10 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Routes - LLM Accounting{% endblock %}
 {% block nav_routes %}class="on"{% endblock %}
+{% macro deployment_row(providers, provider, model, weight) %}
+<div class="row deployment">
+  <label>Provider <select name="deployment_provider"><option value="">Choose provider</option>{% for p in providers.iter() %}<option value="{{ p }}"{% if p.as_str() == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+  <label>Model <input name="deployment_model" value="{{ model }}" class="wide" autocomplete="off" spellcheck="false"></label>
+  <label>Weight <input name="deployment_weight" type="number" min="1" step="1" value="{{ weight }}" inputmode="numeric"></label>
+  <button type="button" class="danger" data-remove hidden aria-label="Remove deployment">Remove</button>
+</div>
+{% endmacro %}
+{% macro deployments_editor(providers, deployments, spare) %}
+<fieldset class="deployments">
+  <legend>Deployments</legend>
+  <p class="muted">In priority order. Weight is used only by the Weighted strategy. A row with no provider and no model is ignored.</p>
+  <div data-rows>
+  {% for d in deployments.iter() %}{% call deployment_row(providers, d.provider.as_str(), d.model, d.weight) %}{% endfor %}
+  {% if spare %}{% call deployment_row(providers, "", "", 1) %}{% else %}<noscript>{% call deployment_row(providers, "", "", 1) %}</noscript>{% endif %}
+  </div>
+  <button type="button" class="ghost" data-add hidden>Add deployment</button>
+</fieldset>
+{% endmacro %}
 {% block content %}
 <h1>Routes</h1>
 <div id="errors"></div>
-<datalist id="provider-names">{% for p in providers %}<option value="{{ p }}">{% endfor %}</datalist>
+<datalist id="fallback-names">{% for n in fallback_names %}<option value="{{ n }}">{% endfor %}</datalist>
+{% if providers.is_empty() %}<p class="muted">Add a provider on the <a href="/admin/providers">Providers</a> page before you add a route.</p>{% endif %}
 {% for r in routes %}
 <section class="panel">
 <h2>{{ r.name }}</h2>
@@ -12,10 +32,9 @@
   <div class="row">
   <label>Name <input name="name" value="{{ r.name }}" required></label>
   <label>Strategy <select name="strategy"><option value="priority" {% if r.strategy == "priority" %}selected{% endif %}>Priority</option><option value="round_robin" {% if r.strategy == "round_robin" %}selected{% endif %}>Round robin</option><option value="weighted" {% if r.strategy == "weighted" %}selected{% endif %}>Weighted</option></select></label>
-  <label>Fallbacks (comma-separated) <input name="fallbacks" value="{{ r.fallbacks }}" style="width:340px"></label>
+  <label>Fallbacks (comma-separated) <input name="fallbacks" value="{{ r.fallbacks }}" list="fallback-names" style="width:340px"></label>
   </div>
-  <p class="muted">Deployments, in priority order. Each weight must be positive.</p>
-  <textarea name="deployments" rows="3" aria-label="Deployment JSON">{{ r.deployments }}</textarea>
+  {% call deployments_editor(providers, r.deployments, false) %}
   <button>Save route</button>
 </form>
 <form method="post" action="/admin/routes/{{ r.name }}/delete" hx-post="/admin/routes/{{ r.name }}/delete" hx-target="#errors" style="margin-top:12px"><button class="danger">Delete route</button></form>
@@ -27,36 +46,33 @@
   <div class="row">
   <label>Name <input name="name" required></label>
   <label>Strategy <select name="strategy"><option value="priority">Priority</option><option value="round_robin">Round robin</option><option value="weighted">Weighted</option></select></label>
-  <label>Fallbacks (comma-separated) <input name="fallbacks" style="width:340px"></label>
+  <label>Fallbacks (comma-separated) <input name="fallbacks" list="fallback-names" style="width:340px"></label>
   </div>
-  <p class="muted">Deployments, in priority order.</p>
-  <textarea name="deployments" rows="3" aria-label="Deployment JSON">[]</textarea>
+  {% call deployments_editor(providers, self.no_deployments(), true) %}
   <button>Add route</button>
 </form>
 </section>
+<template id="deployment-row">{% call deployment_row(providers, "", "", 1) %}</template>
 <script>
-document.querySelectorAll('.route-form').forEach(form => {
-  const data = form.querySelector('textarea[name=deployments]');
-  const rows = document.createElement('div');
-  data.before(rows);
-  const sync = () => { data.value = JSON.stringify(Array.from(rows.children).map(row => ({provider:row.querySelector('[data-field=provider]').value, model:row.querySelector('[data-field=model]').value, weight:Number(row.querySelector('[data-field=weight]').value)}))); };
-  const add = deployment => {
-    const row = document.createElement('div'); row.className = 'row'; row.style.marginBottom = '10px';
-    for (const field of ['provider', 'model', 'weight']) {
-      const label = document.createElement('label'); label.textContent = field;
-      const input = document.createElement('input'); input.dataset.field = field; input.required = true;
-      input.value = deployment[field] ?? (field === 'weight' ? 1 : '');
-      if (field === 'weight') { input.type = 'number'; input.min = '1'; } else { input.style.width = '220px'; }
-      if (field === 'provider') input.setAttribute('list', 'provider-names');
-      input.addEventListener('input', sync); label.append(input); row.append(label);
-    }
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'danger'; remove.textContent = 'Remove row';
-    remove.onclick = () => { row.remove(); sync(); }; row.append(remove); rows.append(row); sync();
-  };
-  const initial = JSON.parse(data.value); initial.forEach(add); data.hidden = true;
-  const button = document.createElement('button'); button.type = 'button'; button.className = 'ghost'; button.textContent = 'Add deployment'; button.style.marginRight = '10px';
-  button.onclick = () => add({}); data.after(button);
-  form.addEventListener('submit', sync);
-});
+(() => {
+  const blank = document.getElementById('deployment-row');
+  document.querySelectorAll('.route-form fieldset.deployments').forEach(set => {
+    const rows = set.querySelector('[data-rows]');
+    const add = set.querySelector('[data-add]');
+    const wire = row => {
+      const remove = row.querySelector('[data-remove]');
+      remove.hidden = false;
+      remove.addEventListener('click', () => { row.remove(); add.focus(); });
+    };
+    rows.querySelectorAll('.deployment').forEach(wire);
+    add.hidden = false;
+    add.addEventListener('click', () => {
+      const row = blank.content.firstElementChild.cloneNode(true);
+      rows.append(row);
+      wire(row);
+      row.querySelector('select').focus();
+    });
+  });
+})();
 </script>
 {% endblock %}

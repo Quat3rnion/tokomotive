@@ -179,11 +179,19 @@ struct RoutesPage {
     base: Base,
     routes: Vec<RouteView>,
     providers: Vec<String>,
+    /// Route and Model names offered as Fallback suggestions.
+    fallback_names: Vec<String>,
+}
+impl RoutesPage {
+    /// The Add route form starts with no deployments.
+    fn no_deployments(&self) -> &'static [DeploymentCfg] {
+        &[]
+    }
 }
 struct RouteView {
     name: String,
     strategy: String,
-    deployments: String,
+    deployments: Vec<DeploymentCfg>,
     fallbacks: String,
 }
 
@@ -199,50 +207,112 @@ async fn routes(_: Admin, State(st): State<AppState>) -> Response {
                     .as_str()
                     .unwrap_or("priority")
                     .into(),
-                deployments: serde_json::to_string(&r.deployments)?,
+                deployments: r.deployments.clone(),
                 fallbacks: r.fallbacks.join(", "),
             })
         })
         .collect::<anyhow::Result<Vec<_>>>();
+    let mut fallback_names: Vec<String> = cfg
+        .routes
+        .iter()
+        .map(|r| r.name.clone())
+        .chain(st.catalog().models.iter().map(|m| m.name.clone()))
+        .collect();
+    fallback_names.sort();
+    fallback_names.dedup();
     render(RoutesPage {
         base: Base::new(&st),
         routes: tryr!(routes),
         providers: cfg.providers.into_iter().map(|p| p.name).collect(),
+        fallback_names,
     })
 }
 
-#[derive(Deserialize)]
+/// The route form. Deployment rows arrive as repeated
+/// `deployment_provider`, `deployment_model` and `deployment_weight` fields.
+#[derive(Default)]
 struct RouteForm {
     name: String,
     strategy: String,
-    deployments: String,
-    #[serde(default)]
     fallbacks: String,
+    providers: Vec<String>,
+    models: Vec<String>,
+    weights: Vec<String>,
+}
+impl RouteForm {
+    fn from_pairs(pairs: Vec<(String, String)>) -> Self {
+        let mut f = Self::default();
+        for (key, value) in pairs {
+            match key.as_str() {
+                "name" => f.name = value,
+                "strategy" => f.strategy = value,
+                "fallbacks" => f.fallbacks = value,
+                "deployment_provider" => f.providers.push(value),
+                "deployment_model" => f.models.push(value),
+                "deployment_weight" => f.weights.push(value),
+                _ => {}
+            }
+        }
+        f
+    }
+
+    /// Builds deployments from the rows. Blank rows are ignored.
+    /// `Config::validate` checks providers and weights after this.
+    fn deployments(&self) -> Result<Vec<DeploymentCfg>, &'static str> {
+        let rows = self.providers.len();
+        if self.models.len() != rows || self.weights.len() != rows {
+            return Err("Each deployment needs a provider, model and weight. Reload the page.");
+        }
+        let mut out = Vec::new();
+        for ((provider, model), weight) in
+            self.providers.iter().zip(&self.models).zip(&self.weights)
+        {
+            let (provider, model, weight) = (provider.trim(), model.trim(), weight.trim());
+            if provider.is_empty() && model.is_empty() {
+                continue;
+            }
+            if provider.is_empty() {
+                return Err("Choose a provider for each deployment.");
+            }
+            let weight = if weight.is_empty() {
+                1
+            } else {
+                weight
+                    .parse()
+                    .map_err(|_| "Weight must be a positive integer.")?
+            };
+            out.push(DeploymentCfg {
+                provider: provider.into(),
+                model: model.into(),
+                weight,
+            });
+        }
+        if out.is_empty() {
+            return Err("Add at least one deployment.");
+        }
+        Ok(out)
+    }
 }
 async fn create_route(
     admin: Admin,
     State(st): State<AppState>,
-    Form(f): Form<RouteForm>,
+    Form(f): Form<Vec<(String, String)>>,
 ) -> Response {
-    save_route(admin, st, None, f).await
+    save_route(admin, st, None, RouteForm::from_pairs(f)).await
 }
 async fn update_route(
     admin: Admin,
     State(st): State<AppState>,
     Path(name): Path<String>,
-    Form(f): Form<RouteForm>,
+    Form(f): Form<Vec<(String, String)>>,
 ) -> Response {
-    save_route(admin, st, Some(name), f).await
+    save_route(admin, st, Some(name), RouteForm::from_pairs(f)).await
 }
 async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -> Response {
     let _guard = st.settings_write.lock().await;
-    let deployments: Vec<DeploymentCfg> = match serde_json::from_str(&f.deployments) {
+    let deployments = match f.deployments() {
         Ok(v) => v,
-        Err(_) => {
-            return form_error(
-                "Deployments must be a JSON array with provider, model and positive weight fields.",
-            );
-        }
+        Err(e) => return form_error(e),
     };
     let strategy: Strategy = match serde_json::from_value(serde_json::Value::String(f.strategy)) {
         Ok(v) => v,

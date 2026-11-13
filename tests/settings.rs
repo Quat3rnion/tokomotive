@@ -333,18 +333,26 @@ async fn route_edits_apply_live_and_invalid_changes_are_refused() {
             .status(),
         303
     );
-    let route = |model: &str, weight: u32| {
-        serde_json::json!([{"provider":"p","model":model,"weight":weight}]).to_string()
+    let route = |model: &str, weight: &str| {
+        [
+            ("deployment_provider", "p".to_string()),
+            ("deployment_model", model.to_string()),
+            ("deployment_weight", weight.to_string()),
+        ]
     };
     let r = c
         .post(format!("{url}/admin/routes"))
         .header("cookie", &cookie)
-        .form(&[
-            ("name", "smart"),
-            ("strategy", "priority"),
-            ("deployments", &route("first", 1)),
-            ("fallbacks", ""),
-        ])
+        .form(
+            &[
+                ("name", "smart".to_string()),
+                ("strategy", "priority".to_string()),
+                ("fallbacks", String::new()),
+            ]
+            .into_iter()
+            .chain(route("first", "1"))
+            .collect::<Vec<_>>(),
+        )
         .send()
         .await
         .unwrap();
@@ -373,11 +381,15 @@ async fn route_edits_apply_live_and_invalid_changes_are_refused() {
     assert_eq!(
         c.post(format!("{url}/admin/routes/smart"))
             .header("cookie", &cookie)
-            .form(&[
-                ("name", "smart"),
-                ("strategy", "weighted"),
-                ("deployments", &route("second", 1))
-            ])
+            .form(
+                &[
+                    ("name", "smart".to_string()),
+                    ("strategy", "weighted".to_string()),
+                ]
+                .into_iter()
+                .chain(route("second", "1"))
+                .collect::<Vec<_>>()
+            )
             .send()
             .await
             .unwrap()
@@ -397,11 +409,15 @@ async fn route_edits_apply_live_and_invalid_changes_are_refused() {
     let invalid = c
         .post(format!("{url}/admin/routes/smart"))
         .header("cookie", &cookie)
-        .form(&[
-            ("name", "smart"),
-            ("strategy", "priority"),
-            ("deployments", &route("broken", 0)),
-        ])
+        .form(
+            &[
+                ("name", "smart".to_string()),
+                ("strategy", "priority".to_string()),
+            ]
+            .into_iter()
+            .chain(route("broken", "0"))
+            .collect::<Vec<_>>(),
+        )
         .send()
         .await
         .unwrap();
@@ -431,6 +447,194 @@ async fn route_edits_apply_live_and_invalid_changes_are_refused() {
             .unwrap()["model"],
         "second"
     );
+    task.abort();
+    upstream_task.abort();
+}
+
+#[tokio::test]
+async fn route_row_editor_creates_validates_and_prefills_deployments() {
+    let (_dir, st, url, task) = app().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = axum::Router::new().route("/v1/chat/completions", axum::routing::post(|axum::Json(b): axum::Json<serde_json::Value>| async move {
+        axum::Json(serde_json::json!({"model":b["model"],"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+    }));
+    let upstream_task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    for name in ["alpha", "beta"] {
+        let r = c
+            .post(format!("{url}/admin/providers"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", name),
+                ("kind", "openai"),
+                ("base_url", &upstream_url),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+    }
+    let post = |path: &str, fields: Vec<(&'static str, &'static str)>| {
+        c.post(format!("{url}{path}"))
+            .header("cookie", &cookie)
+            .form(&fields)
+            .send()
+    };
+    // Two deployments, one blank row that the server ignores.
+    let r = post(
+        "/admin/routes",
+        vec![
+            ("name", "rows"),
+            ("strategy", "weighted"),
+            ("fallbacks", ""),
+            ("deployment_provider", "beta"),
+            ("deployment_model", "upstream-one"),
+            ("deployment_weight", "3"),
+            ("deployment_provider", ""),
+            ("deployment_model", "  "),
+            ("deployment_weight", "1"),
+            ("deployment_provider", "alpha"),
+            ("deployment_model", "upstream-two"),
+            ("deployment_weight", "7"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 303, "{}", r.text().await.unwrap());
+    let route = st
+        .router_table()
+        .routes
+        .iter()
+        .find(|r| r.name == "rows")
+        .cloned()
+        .expect("route is live");
+    let got: Vec<_> = route
+        .deployments
+        .iter()
+        .map(|d| (d.provider.clone(), d.model.clone(), d.weight))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("beta".to_string(), "upstream-one".to_string(), 3),
+            ("alpha".to_string(), "upstream-two".to_string(), 7)
+        ]
+    );
+    let user = llm_accounting::db::create_user(&st.db, "rows", None, None, false)
+        .await
+        .unwrap();
+    let (_, key) = llm_accounting::db::create_key(&st.db, user, "rows", None)
+        .await
+        .unwrap();
+    let answer: serde_json::Value = c
+        .post(format!("{url}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .json(&serde_json::json!({"model":"rows","messages":[]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            answer["model"].as_str(),
+            Some("upstream-one" | "upstream-two")
+        ),
+        "{answer}"
+    );
+
+    for (fields, message) in [
+        (
+            vec![
+                ("deployment_provider", "missing"),
+                ("deployment_model", "m"),
+                ("deployment_weight", "1"),
+            ],
+            "unknown provider missing",
+        ),
+        (
+            vec![
+                ("deployment_provider", "alpha"),
+                ("deployment_model", "m"),
+                ("deployment_weight", "0"),
+            ],
+            "zero deployment weight",
+        ),
+        (
+            vec![
+                ("deployment_provider", "alpha"),
+                ("deployment_model", "m"),
+                ("deployment_weight", "-2"),
+            ],
+            "Weight must be a positive integer",
+        ),
+        (
+            vec![
+                ("deployment_provider", ""),
+                ("deployment_model", ""),
+                ("deployment_weight", "1"),
+            ],
+            "Add at least one deployment",
+        ),
+        (vec![], "Add at least one deployment"),
+    ] {
+        let mut all = vec![("name", "rows"), ("strategy", "priority")];
+        all.extend(fields);
+        let r = post("/admin/routes/rows", all).await.unwrap();
+        assert_eq!(r.status(), 400);
+        let body = r.text().await.unwrap();
+        assert!(body.contains("role=\"alert\""), "{body}");
+        assert!(body.contains(message), "{message}: {body}");
+    }
+    assert_eq!(
+        st.router_table()
+            .routes
+            .iter()
+            .find(|r| r.name == "rows")
+            .unwrap()
+            .deployments
+            .len(),
+        2,
+        "refused edits leave the route unchanged"
+    );
+
+    let page = c
+        .get(format!("{url}/admin/routes"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!page.contains("Deployment JSON"), "JSON textarea is gone");
+    let edit = page
+        .split("action=\"/admin/routes/rows\"")
+        .nth(1)
+        .and_then(|s| s.split("</form>").next())
+        .expect("edit form for the route");
+    // Without JavaScript, a spare blank row inside <noscript> lets the operator add one.
+    let (edit, spare) = edit.split_once("<noscript>").expect("spare row for no-JS");
+    assert!(spare.contains("name=\"deployment_model\" value=\"\""));
+    assert_eq!(edit.matches("name=\"deployment_provider\"").count(), 2);
+    assert_eq!(edit.matches("name=\"deployment_model\"").count(), 2);
+    assert!(
+        edit.contains("<option value=\"beta\" selected>beta</option>"),
+        "{edit}"
+    );
+    assert!(edit.contains("value=\"upstream-one\""));
+    assert!(edit.contains("value=\"3\""));
+    assert!(edit.contains("value=\"upstream-two\""));
+    assert!(edit.contains("value=\"7\""));
+    assert!(
+        edit.find("upstream-one") < edit.find("upstream-two"),
+        "order kept"
+    );
+    assert!(page.contains("<datalist id=\"fallback-names\">"));
+    assert!(page.contains("<option value=\"rows\">"));
     task.abort();
     upstream_task.abort();
 }
