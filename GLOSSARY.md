@@ -10,6 +10,10 @@
 
 **Subscription Provider** - A Provider that uses the Operator's ChatGPT or Claude subscription. Its per-request Cost is zero. The normal Price still applies.
 
+**Codex Provider** - A Subscription Provider that uses legacy Codex OAuth and the private ChatGPT model route. It is separate from ChatGPT token sharing.
+
+**Device Code Sign-in** - A sign-in method in which the Operator enters a short code on the account service's verification page. The Proxy waits for approval and connects automatically.
+
 **Provider Access** - The Providers that a Virtual Key can use. A Subscription Provider needs explicit permission. Permission to use a Route does not replace Provider Access.
 
 **Model** - A named LLM offered by a Provider. A Model can have a Cost Card and a Price Card.
@@ -20,7 +24,7 @@
 
 **Model rewrite** - The replacement of the model name in the request with the upstream model name of the Deployment, or with the name after the `provider/` prefix.
 
-**Translation** - Conversion between the Chat Completions and Messages API formats so that a client can use a Provider with a different API format.
+**Translation** - Conversion between the Chat Completions, Responses and Messages API formats so that a client can use a Provider with a different API format.
 
 **Fallback** - A Route or catalog Model tried after the primary Route's Deployments fail. Model permission for the primary Route includes its Fallbacks. Provider Access still applies. Fallbacks do not expand recursively.
 

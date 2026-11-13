@@ -40,6 +40,7 @@ impl Flow {
         match auth {
             ProviderAuth::ApiKey => None,
             ProviderAuth::Chatgpt => Some(Self::Chatgpt),
+            ProviderAuth::Codex => Some(Self::Codex),
             ProviderAuth::Claude => Some(Self::Claude),
         }
     }
@@ -61,6 +62,7 @@ pub struct OAuthEndpoints {
     pub claude_token: String,
     pub claude_resource: String,
     pub codex_usage: String,
+    pub codex_resource: String,
 }
 impl Default for OAuthEndpoints {
     fn default() -> Self {
@@ -71,6 +73,7 @@ impl Default for OAuthEndpoints {
             claude_token: "https://platform.claude.com/v1/oauth/token".into(),
             claude_resource: "https://api.anthropic.com".into(),
             codex_usage: "https://chatgpt.com/backend-api/wham/usage".into(),
+            codex_resource: "https://chatgpt.com/backend-api/codex".into(),
         }
     }
 }
@@ -107,6 +110,23 @@ pub struct Started {
     pub authorize_url: String,
     pub expires_at: i64,
 }
+/// Only the public user code is serializable. The device credential stays private.
+#[derive(Clone, Serialize)]
+pub struct DeviceStatus {
+    pub attempt: String,
+    pub user_code: String,
+    pub verification_url: String,
+    pub expires_at: i64,
+    pub remaining_secs: i64,
+    pub interval: i64,
+    pub state: &'static str,
+}
+struct DeviceAttempt {
+    status: DeviceStatus,
+    device_auth_id: String,
+    next_poll: i64,
+    seen_at: i64,
+}
 #[derive(Clone)]
 pub struct UsageWindow {
     pub label: String,
@@ -141,6 +161,7 @@ pub struct OAuthManager {
     http: reqwest::Client,
     locks: FlightLocks,
     pending: Mutex<HashMap<Identity, Attempt>>,
+    devices: Mutex<HashMap<Identity, DeviceAttempt>>,
     usage_cache: Mutex<HashMap<String, (i64, Option<PlanUsage>)>>,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
@@ -163,6 +184,9 @@ fn uuid() -> String {
         &h[16..20],
         &h[20..]
     )
+}
+pub(crate) fn session_id() -> String {
+    uuid()
 }
 fn has_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == SHARING_SCOPE)
@@ -309,6 +333,7 @@ impl OAuthManager {
                 .build()?,
             locks: Mutex::default(),
             pending: Mutex::default(),
+            devices: Mutex::default(),
             usage_cache: Mutex::default(),
             clock: Arc::new(db::now_ms),
         })
@@ -367,12 +392,12 @@ impl OAuthManager {
             .bind(name)
             .fetch_optional(&self.db)
             .await?;
-        let expected = if flow == Flow::Claude {
-            "claude"
-        } else {
-            "chatgpt"
+        let valid = match flow {
+            Flow::Claude => auth.as_deref() == Some("claude"),
+            Flow::Chatgpt => auth.as_deref() == Some("chatgpt"),
+            Flow::Codex => matches!(auth.as_deref(), Some("chatgpt" | "codex")),
         };
-        if auth.as_deref() != Some(expected) {
+        if !valid {
             bail!("OAuth flow does not match this Provider");
         }
         Ok(())
@@ -380,6 +405,7 @@ impl OAuthManager {
     pub fn resource(&self, auth: ProviderAuth) -> &str {
         match auth {
             ProviderAuth::Claude => &self.endpoints.claude_resource,
+            ProviderAuth::Codex => &self.endpoints.codex_resource,
             _ => self.endpoints.openai_resource.trim_end_matches("/v1"),
         }
     }
@@ -400,6 +426,7 @@ impl OAuthManager {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
         self.pending.lock().await.remove(&(name.into(), flow));
+        self.devices.lock().await.remove(&(name.into(), flow));
         self.usage_cache.lock().await.remove(name);
         let mut s = self.load(name, flow).await?;
         s.credential = None;
@@ -409,6 +436,7 @@ impl OAuthManager {
     pub async fn start(&self, name: &str, flow: Flow) -> Result<Started> {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
+        self.devices.lock().await.remove(&(name.into(), flow));
         let mut s = self.load(name, flow).await?;
         if s.host_id.is_empty() {
             s.host_id = format!("urn:uuid:{}", uuid());
@@ -640,6 +668,17 @@ impl OAuthManager {
             .context("OAuth attempt expired or missing")?;
         let (code, client) = a.callback(flow, callback, self.now())?;
         let tokens = self.tokens(flow,json!({"grant_type":"authorization_code","client_id":client,"code":code,"state":a.state,"redirect_uri":flow.redirect(),"code_verifier":a.verifier,"resource":self.endpoints.openai_resource})).await?;
+        self.store_tokens(name, flow, client, &a.nonce, tokens)
+            .await
+    }
+    async fn store_tokens(
+        &self,
+        name: &str,
+        flow: Flow,
+        client: String,
+        nonce: &str,
+        tokens: Tokens,
+    ) -> Result<()> {
         let refresh = tokens
             .refresh_token
             .context("OAuth response has no refresh token")?;
@@ -658,7 +697,7 @@ impl OAuthManager {
                         .as_deref()
                         .context("Missing OAuth ID token")?,
                     &client,
-                    &a.nonce,
+                    nonce,
                 )
                 .await?;
             account = claims["email"].as_str().map(str::to_owned);
@@ -706,6 +745,221 @@ impl OAuthManager {
         self.save(name, flow, &s).await?;
         self.usage_cache.lock().await.remove(name);
         Ok(())
+    }
+    pub async fn codex_account(&self, name: &str) -> Result<String> {
+        self.load(name, Flow::Codex)
+            .await?
+            .credential
+            .and_then(|c| c.account_id)
+            .context("Missing Codex account")
+    }
+
+    /// OpenAI's Codex device flow is not RFC 8628. It first yields a PKCE
+    /// authorization code, which is exchanged at the normal token endpoint.
+    pub async fn start_device(&self, name: &str, flow: Flow) -> Result<DeviceStatus> {
+        let _guard = self.flight(name, flow).await;
+        self.validate(name, flow).await?;
+        if flow != Flow::Codex {
+            bail!("Device sign-in is not supported for this flow");
+        }
+        self.pending.lock().await.remove(&(name.into(), flow));
+        self.devices.lock().await.remove(&(name.into(), flow));
+        let response = self
+            .http
+            .post(format!(
+                "{}/api/accounts/deviceauth/usercode",
+                self.endpoints.issuer
+            ))
+            .json(&json!({"client_id":CODEX_CLIENT}))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("Cannot start device sign-in"))?;
+        if !response.status().is_success() {
+            bail!("Device sign-in is not available; use the redirect URL instead");
+        }
+        let value = bounded_json(response).await?;
+        let field = |key: &str| {
+            value[key]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 16384)
+                .map(str::to_owned)
+                .context("Invalid device sign-in response")
+        };
+        let device_auth_id = field("device_auth_id")?;
+        let user_code = field("user_code").or_else(|_| field("usercode"))?;
+        if user_code.len() > 128 {
+            bail!("Invalid device sign-in response");
+        }
+        let interval = value["interval"]
+            .as_i64()
+            .or_else(|| value["interval"].as_str()?.parse().ok())
+            .unwrap_or(5)
+            .clamp(1, 900);
+        let ttl = value["expires_in"].as_i64().unwrap_or(900).clamp(1, 900);
+        let now = self.now();
+        let status = DeviceStatus {
+            attempt: random(24),
+            user_code,
+            verification_url: format!("{}/codex/device", self.endpoints.issuer),
+            expires_at: now + ttl * 1000,
+            remaining_secs: ttl,
+            interval,
+            state: "pending",
+        };
+        let mut devices = self.devices.lock().await;
+        devices.retain(|_, a| a.status.expires_at > now);
+        devices.insert(
+            (name.into(), flow),
+            DeviceAttempt {
+                status: status.clone(),
+                device_auth_id,
+                next_poll: now + interval * 1000,
+                seen_at: now,
+            },
+        );
+        Ok(status)
+    }
+    /// Status requests are also heartbeats. If the panel goes away, polling
+    /// stops within 15 seconds (plus at most one bounded issuer request).
+    pub async fn device_status(
+        &self,
+        name: &str,
+        flow: Flow,
+        attempt: &str,
+    ) -> Result<DeviceStatus> {
+        self.validate(name, flow).await?;
+        let now = self.now();
+        let mut devices = self.devices.lock().await;
+        devices.retain(|_, a| a.status.expires_at + 60_000 > now);
+        let a = devices
+            .get_mut(&(name.into(), flow))
+            .filter(|a| a.status.attempt == attempt)
+            .context("Device attempt expired or missing")?;
+        a.seen_at = now;
+        a.status.remaining_secs = ((a.status.expires_at - now + 999) / 1000).max(0);
+        if a.status.expires_at <= now && a.status.state == "pending" {
+            a.status.state = "expired";
+            a.device_auth_id.clear();
+        }
+        Ok(a.status.clone())
+    }
+    /// One due poll. Returns false for terminal, missing, replaced or stale
+    /// attempts. Holding the credential flight prevents a disconnect race.
+    pub async fn poll_device(&self, name: &str, flow: Flow, attempt: &str) -> Result<bool> {
+        let _guard = self.flight(name, flow).await;
+        self.validate(name, flow).await?;
+        let identity = (name.into(), flow);
+        let now = self.now();
+        let (device, user) = {
+            let mut devices = self.devices.lock().await;
+            let Some(a) = devices
+                .get_mut(&identity)
+                .filter(|a| a.status.attempt == attempt)
+            else {
+                return Ok(false);
+            };
+            if a.status.state != "pending" {
+                return Ok(false);
+            }
+            if a.seen_at + 15_000 < now {
+                devices.remove(&identity);
+                return Ok(false);
+            }
+            if a.status.expires_at <= now {
+                a.status.state = "expired";
+                a.device_auth_id.clear();
+                return Ok(false);
+            }
+            if a.next_poll > now {
+                return Ok(true);
+            }
+            a.next_poll = now + a.status.interval * 1000;
+            (a.device_auth_id.clone(), a.status.user_code.clone())
+        };
+        let result = self.poll_device_response(name, &device, &user).await;
+        let mut devices = self.devices.lock().await;
+        let Some(a) = devices.get_mut(&identity) else {
+            return Ok(false);
+        };
+        match result {
+            Ok("slow_down") => {
+                a.status.interval = (a.status.interval + 5).min(900);
+                a.next_poll = self.now() + a.status.interval * 1000;
+            }
+            Ok("pending") => {}
+            Ok(state) => {
+                a.status.state = state;
+                a.device_auth_id.clear();
+            }
+            Err(_) => {
+                a.status.state = "failed";
+                a.device_auth_id.clear();
+            }
+        }
+        Ok(a.status.state == "pending")
+    }
+    async fn poll_device_response(
+        &self,
+        name: &str,
+        device: &str,
+        user: &str,
+    ) -> Result<&'static str> {
+        let response = self
+            .http
+            .post(format!(
+                "{}/api/accounts/deviceauth/token",
+                self.endpoints.issuer
+            ))
+            .json(&json!({"device_auth_id":device,"user_code":user}))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("Device poll failed"))?;
+        let status = response.status();
+        // Never log issuer bodies. 403 and 404 with no OAuth error are pending
+        // in Codex's protocol; an explicit denial is terminal.
+        let value = bounded_json(response).await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Ok(
+                match value["error"]
+                    .as_str()
+                    .or_else(|| value["error"]["code"].as_str())
+                {
+                    Some("slow_down") => "slow_down",
+                    Some("access_denied" | "authorization_declined") => "denied",
+                    Some("expired_token") => "expired",
+                    Some("authorization_pending") => "pending",
+                    _ if status.as_u16() == 429 => "slow_down",
+                    _ if matches!(status.as_u16(), 403 | 404) => "pending",
+                    _ => "failed",
+                },
+            );
+        }
+        let code = value["authorization_code"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 16384)
+            .context("Invalid device authorization")?;
+        let verifier = value["code_verifier"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 16384)
+            .context("Invalid device authorization")?;
+        if value["code_challenge"].as_str()
+            != Some(&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
+        {
+            bail!("Invalid device PKCE challenge");
+        }
+        let tokens = self.tokens(Flow::Codex,json!({"grant_type":"authorization_code","client_id":CODEX_CLIENT,"code":code,"redirect_uri":format!("{}/deviceauth/callback",self.endpoints.issuer),"code_verifier":verifier})).await?;
+        // Expiry and a lost browser heartbeat also cancel an in-flight result.
+        let devices = self.devices.lock().await;
+        let a = devices
+            .get(&(name.into(), Flow::Codex))
+            .context("Device attempt missing")?;
+        if a.status.expires_at <= self.now() || a.seen_at + 15_000 < self.now() {
+            return Ok("expired");
+        }
+        drop(devices);
+        self.store_tokens(name, Flow::Codex, CODEX_CLIENT.into(), "", tokens)
+            .await?;
+        Ok("connected")
     }
     /// A private usage endpoint must never affect inference or fallback.
     pub async fn usage(&self, name: &str) -> Option<PlanUsage> {

@@ -14,6 +14,7 @@ pub mod routing;
 pub mod settings;
 pub mod state;
 pub mod translate;
+pub mod translate_responses;
 pub mod usage;
 pub mod web;
 

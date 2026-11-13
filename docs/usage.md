@@ -869,17 +869,27 @@ Proxy process for each database.
 ## Subscription Providers
 
 Read [ADR 0003](adr/0003-subscription-providers.md) before you connect an
-account. Claude OAuth impersonates Claude Code and can cause account
-restriction. Codex plan usage uses a private route that can stop without notice.
+account. Also read [ADR 0004](adr/0004-legacy-codex-oauth.md) for legacy Codex
+OAuth. Claude OAuth impersonates Claude Code and can cause account restriction.
+Codex model requests and plan usage use private routes that can stop without
+notice and can break the service terms.
 
 ### Sign in
 
 1. Log in to `/admin`. Open **Providers**.
 2. Add a Provider. For ChatGPT, select kind **OpenAI**, authentication
-   **ChatGPT token sharing**, and base URL `https://api.openai.com`. For Claude,
+   **ChatGPT subscription (recommended)**, and base URL `https://api.openai.com`.
+   For legacy Codex, select **ChatGPT via Codex (legacy)** and base URL
+   `https://chatgpt.com/backend-api/codex`. For Claude,
    select kind **Anthropic**, authentication **Claude Pro/Max**, and base URL
    `https://api.anthropic.com`. Leave the key field empty.
-3. Select **Sign in**, then **Open sign-in page**. The link opens in a new tab.
+3. For Codex, select **Sign in with a device code**. Copy the large user code.
+   Open the verification page in the new tab. Sign in and enter that code.
+   Keep the Tokomotive panel open. It connects automatically after approval.
+   The panel shows the time left. A code lasts at most 15 minutes. If device
+   sign-in is not enabled for the account, use **Paste the redirect URL instead**.
+   For ChatGPT token sharing or Claude, select **Sign in**, then open the
+   sign-in page in the new tab. These flows do not offer device sign-in.
 4. Complete consent. For ChatGPT, copy the final
    `http://localhost:1455/auth/callback?...` URL from the address bar. A browser
    connection error at that address is expected. Tokomotive does not run a
@@ -894,8 +904,9 @@ restriction. Codex plan usage uses a private route that can stop without notice.
 8. Add Models or Routes that use this Provider. Send the usual client requests.
    Chat Completions and Messages Translation works with subscription auth too.
 
-For optional ChatGPT plan usage, select **Sign in for usage** on the same
-Provider. Complete the Codex login in a new tab. Paste the final
+For optional ChatGPT plan usage, open **Codex plan usage (optional)** and select
+**Sign in with a device code for usage** on the same Provider. Complete the
+device steps above. The redirect-URL fallback remains available: paste the final
 `http://127.0.0.1:1455/auth/callback?...` or `http://localhost:1455/...` URL and
 select **Connect**. This separate login is used only for plan usage. The panel
 shows 5-hour and weekly percentages and reset times, or **not available**.
@@ -907,6 +918,23 @@ Proxy does not send the subscription token to any other path. A request for
 another path through a Subscription Provider gets HTTP 400. The Proxy also
 rejects every request path that has a `.` or `..` segment, also when it is
 percent-encoded, with HTTP 400.
+
+A Codex Provider accepts only `POST /v1/responses`, `POST /v1/chat/completions`
+and `POST /v1/messages`. All three use the private Codex Responses route.
+Chat requests map to Responses. Messages requests chain through Chat. JSON
+clients get the final reply collected from upstream SSE. Streaming clients get
+text and function-argument deltas, completion usage and errors in their own
+format. Cached input is recorded as cache read. Only function tools are
+translated. Unsupported Chat fields are omitted, and the existing Messages
+Translation limits still apply. Models, temperature and output-limit support
+depend on the private backend. Use a native Responses request for options that
+have no Chat mapping. This adapter does not change ordinary OpenAI Providers.
+
+Device polling stops after expiry, refusal or Disconnect. It also stops if
+the sign-in panel stops sending status requests for 15 seconds, plus at most
+one 30-second issuer request. Reloading or closing the panel can cancel the
+attempt. Do not share the user code. The secret device credential is never
+shown. Only connect an attempt that you started yourself.
 
 Select **Disconnect** to remove the model-request tokens. **Disconnect usage
 login** removes only the optional Codex tokens. API-key tests do not apply to

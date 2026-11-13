@@ -181,7 +181,7 @@ The table below lists the keys of the seed file. The dashboard has the fields
 | -------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | string           | none    | Required. The name that `models.provider` uses.                                                                  |
 | `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the wire format and usage parser. |
-| `auth`         | string           | `"api_key"` | `"api_key"`, `"chatgpt"` or `"claude"`. Subscription auth needs sign-in on Providers. |
+| `auth`         | string           | `"api_key"` | `"api_key"`, `"chatgpt"`, `"codex"` or `"claude"`. Subscription auth needs sign-in on Providers. |
 | `base_url`     | string           | none    | Required. The URL of the Provider API, without a path such as `/v1`. The Proxy adds the path and query of the client request. |
 | `api_key`      | string           | none    | One Provider Key, in the file. The Proxy encrypts it when it seeds. Do not use it in a repository that you commit. |
 | `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. A non-empty variable takes precedence over `api_key`.         |
@@ -238,6 +238,12 @@ auth = "chatgpt"
 base_url = "https://api.openai.com"
 
 [[providers]]
+name = "legacy-codex"
+kind = "openai"
+auth = "codex"
+base_url = "https://chatgpt.com/backend-api/codex"
+
+[[providers]]
 name = "my-claude"
 kind = "anthropic"
 auth = "claude"
@@ -250,13 +256,17 @@ Do not set `api_key`, `api_key_env`, `api_keys` or `api_keys_env` for these
 Providers. Tokens cannot be seeded in TOML. Open **Providers** and complete
 sign-in. A Provider's authentication type cannot be changed after creation.
 
-The optional Codex usage login attaches to a ChatGPT Provider. It is not a
-Provider kind or an inference credential. See
+The optional Codex usage login attaches to a token-sharing ChatGPT Provider.
+Its credential is separate from that Provider's inference credential. The
+new `codex` auth uses Codex credentials for model requests instead. It requires
+the fixed base URL above. ChatGPT token sharing remains recommended. See
 [Subscription Providers](usage.md#subscription-providers) for sign-in steps,
 Provider Access and the usage panel, and
-[ADR 0003](adr/0003-subscription-providers.md) for the owner's risk decision.
+[ADR 0003](adr/0003-subscription-providers.md) and
+[ADR 0004](adr/0004-legacy-codex-oauth.md) for the owner's risk decisions.
 
-Attempts expire after 10 minutes and are lost at restart. Before a request, the
+Paste attempts expire after 10 minutes; device attempts expire after at most
+15 minutes. Both are lost at restart. Before a request, the
 Proxy refreshes a token that expires within 5 minutes. It also retries once
 after a 401. Refresh is single-flight for each
 credential. A failed or uncertain refresh needs sign-in again. Refresh errors
@@ -265,6 +275,9 @@ do not expose token response bodies. Run one process for each database.
 The Proxy does not copy these client headers to the Provider: `Authorization`,
 `x-api-key`, `Host`, `Content-Length`, `Accept-Encoding` and the hop-by-hop
 headers. It copies all other headers.
+Codex requests also replace client identity, account, session, version and
+user-agent headers and do not forward cookies or OpenAI organization/project
+headers. Their model destination is fixed; client query parameters are omitted.
 
 ## `[[models]]`
 

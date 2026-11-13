@@ -14,6 +14,7 @@ pub enum ProviderAuth {
     #[default]
     ApiKey,
     Chatgpt,
+    Codex,
     Claude,
 }
 
@@ -22,6 +23,7 @@ impl ProviderAuth {
         match self {
             Self::ApiKey => "api_key",
             Self::Chatgpt => "chatgpt",
+            Self::Codex => "codex",
             Self::Claude => "claude",
         }
     }

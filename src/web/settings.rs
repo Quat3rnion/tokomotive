@@ -679,6 +679,7 @@ fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
     match auth {
         crate::provider::ProviderAuth::ApiKey => "API key",
         crate::provider::ProviderAuth::Chatgpt => "ChatGPT subscription",
+        crate::provider::ProviderAuth::Codex => "ChatGPT via Codex",
         crate::provider::ProviderAuth::Claude => "Claude Pro/Max",
     }
 }
@@ -870,7 +871,7 @@ async fn save_provider(
     // the address with /v1, as the Provider documentation often shows it.
     match f.auth {
         ProviderAuth::ApiKey => {}
-        ProviderAuth::Chatgpt => f.kind = ProviderKind::Openai,
+        ProviderAuth::Chatgpt | ProviderAuth::Codex => f.kind = ProviderKind::Openai,
         ProviderAuth::Claude => f.kind = ProviderKind::Anthropic,
     }
     if f.auth != ProviderAuth::ApiKey {

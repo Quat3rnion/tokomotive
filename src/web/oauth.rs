@@ -5,9 +5,19 @@ use crate::oauth::Flow;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/providers/{name}/oauth/start", post(start))
+        .route("/admin/providers/{name}/oauth/paste", post(paste))
+        .route(
+            "/admin/providers/{name}/oauth/device/status",
+            post(device_status),
+        )
         .route("/admin/providers/{name}/oauth/finish", post(finish))
         .route("/admin/providers/{name}/oauth/disconnect", post(disconnect))
         .route("/admin/providers/{name}/usage/start", post(usage_start))
+        .route("/admin/providers/{name}/usage/paste", post(usage_paste))
+        .route(
+            "/admin/providers/{name}/usage/device/status",
+            post(usage_device_status),
+        )
         .route("/admin/providers/{name}/usage/finish", post(usage_finish))
         .route(
             "/admin/providers/{name}/usage/disconnect",
@@ -42,7 +52,8 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
             label: match flow {
                 Flow::Chatgpt => "ChatGPT subscription",
                 Flow::Claude => "Claude Pro/Max",
-                Flow::Codex => "Codex plan usage",
+                Flow::Codex if path == "usage" => "Codex plan usage",
+                Flow::Codex => "ChatGPT via Codex",
             },
             claude: flow == Flow::Claude,
             callback: flow.redirect(),
@@ -54,10 +65,96 @@ async fn start(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -
     let Some(flow) = flow(&st, &name) else {
         return bad("This Provider does not use OAuth.");
     };
-    begin(st, name, flow, "oauth").await
+    if flow == Flow::Codex {
+        begin_device(st, name, flow, "oauth").await
+    } else {
+        begin(st, name, flow, "oauth").await
+    }
 }
 async fn usage_start(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    begin_device(st, name, Flow::Codex, "usage").await
+}
+async fn paste(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let Some(flow) = flow(&st, &name) else {
+        return bad("This Provider does not use OAuth.");
+    };
+    begin(st, name, flow, "oauth").await
+}
+async fn usage_paste(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
     begin(st, name, Flow::Codex, "usage").await
+}
+#[derive(Template)]
+#[template(path = "signin_device.html")]
+struct DevicePage {
+    name: String,
+    path: &'static str,
+    device: crate::oauth::DeviceStatus,
+}
+async fn begin_device(st: AppState, name: String, flow: Flow, path: &'static str) -> Response {
+    match st.oauth.start_device(&name, flow).await {
+        Ok(device) => {
+            let state = st.clone();
+            let provider = name.clone();
+            let attempt = device.attempt.clone();
+            st.spawn_tracked(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if !matches!(
+                        state.oauth.poll_device(&provider, flow, &attempt).await,
+                        Ok(true)
+                    ) {
+                        break;
+                    }
+                }
+            });
+            render(DevicePage { name, path, device })
+        }
+        Err(_) => render(DeviceUnavailable { name, path }),
+    }
+}
+#[derive(Template)]
+#[template(path = "signin_device_unavailable.html")]
+struct DeviceUnavailable {
+    name: String,
+    path: &'static str,
+}
+#[derive(Deserialize)]
+struct DeviceQuery {
+    attempt: String,
+}
+async fn device_progress(
+    st: AppState,
+    name: String,
+    flow: Flow,
+    path: &'static str,
+    attempt: String,
+) -> Response {
+    match st.oauth.device_status(&name, flow, &attempt).await {
+        Ok(device) if device.state == "connected" => {
+            saved("/admin/providers", &format!("Provider {name} connected."))
+        }
+        Ok(device) => render(DevicePage { name, path, device }),
+        Err(_) => render(DeviceUnavailable { name, path }),
+    }
+}
+async fn device_status(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Query(q): Query<DeviceQuery>,
+) -> Response {
+    let Some(flow) = flow(&st, &name) else {
+        return bad("This Provider does not use OAuth.");
+    };
+    device_progress(st, name, flow, "oauth", q.attempt).await
+}
+async fn usage_device_status(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Query(q): Query<DeviceQuery>,
+) -> Response {
+    device_progress(st, name, Flow::Codex, "usage", q.attempt).await
 }
 #[derive(Deserialize)]
 struct CallbackForm {

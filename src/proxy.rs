@@ -17,6 +17,7 @@ use crate::provider::{Endpoint, ProviderKind, is_stream, model_of};
 use crate::ratelimit::Scope;
 use crate::state::{AppState, Provider, Reservation};
 use crate::translate::{self, Direction, StreamTranslator};
+use crate::translate_responses::{self, ProxyStream, ResponseStream};
 use crate::usage::Usage;
 
 fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -> Response {
@@ -79,8 +80,17 @@ fn prepare_body(
     endpoint: Endpoint,
     body: Option<&Value>,
 ) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    let codex = candidate.provider.auth == crate::provider::ProviderAuth::Codex;
+    if codex
+        && !matches!(
+            endpoint,
+            Endpoint::ChatCompletions | Endpoint::Responses | Endpoint::Messages
+        )
+    {
+        return Err(translate::TranslateError { message:"Codex accepts only model requests on /v1/responses, /v1/chat/completions or /v1/messages".into() });
+    }
     let dir = translation(candidate.provider.kind, endpoint);
-    let target = dir.map_or(endpoint, |d| Endpoint::from_path(d.upstream_path()));
+    let mut target = dir.map_or(endpoint, |d| Endpoint::from_path(d.upstream_path()));
     let mut prepared = match dir {
         Some(dir) => Some(translate::translate_request(
             dir,
@@ -100,6 +110,15 @@ fn prepare_body(
         && let Some(v) = prepared.as_mut()
     {
         v["model"] = json!(candidate.model);
+    }
+    if codex {
+        let mut value = prepared.unwrap_or(Value::Null);
+        if target == Endpoint::ChatCompletions {
+            value = translate_responses::request(&value)?;
+        }
+        translate_responses::prepare_codex(&mut value)?;
+        prepared = Some(value);
+        target = Endpoint::Responses;
     }
     let strip = prepared
         .as_mut()
@@ -624,7 +643,7 @@ pub async fn handle(
             Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
             None => body.clone(),
         };
-        let path = dir.map_or_else(
+        let mut path = dir.map_or_else(
             || path_q.to_owned(),
             |d| {
                 let mut path = d.upstream_path().to_owned();
@@ -635,7 +654,18 @@ pub async fn handle(
                 path
             },
         );
-        if provider.auth != crate::provider::ProviderAuth::ApiKey
+        let codex = provider.auth == crate::provider::ProviderAuth::Codex;
+        if codex && (method != Method::POST || !subscription_path_allowed(endpoint, path_q)) {
+            translation_error = Some(translate::TranslateError {
+                message: "Codex accepts only canonical model request paths".into(),
+            });
+            continue;
+        }
+        if codex {
+            path = "/responses".into();
+        }
+        if !codex
+            && provider.auth != crate::provider::ProviderAuth::ApiKey
             && !subscription_path_allowed(target_endpoint, &path)
         {
             translation_error = Some(translate::TranslateError {
@@ -689,7 +719,12 @@ pub async fn handle(
             let key = oauth_token
                 .as_deref()
                 .unwrap_or_else(|| idx.map(|i| provider.keys[i].as_str()).unwrap_or(""));
-            let req = build_request(&st, provider, key, &method, &url, &headers, anthropic_hint);
+            let Some(req) =
+                build_request(&st, provider, key, &method, &url, &headers, anthropic_hint).await
+            else {
+                permit.record(false);
+                break;
+            };
             upstream = None;
             let mut result = req.body(upstream_body.clone()).send().await;
             if let Some(flow) = flow
@@ -702,7 +737,7 @@ pub async fn handle(
                     Ok(token) => {
                         ctx.attempts += 1;
                         metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
-                        result = build_request(
+                        let Some(req) = build_request(
                             &st,
                             provider,
                             &token,
@@ -711,9 +746,12 @@ pub async fn handle(
                             &headers,
                             anthropic_hint,
                         )
-                        .body(upstream_body.clone())
-                        .send()
-                        .await;
+                        .await
+                        else {
+                            permit.record(false);
+                            break;
+                        };
+                        result = req.body(upstream_body.clone()).send().await;
                         if result
                             .as_ref()
                             .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
@@ -776,18 +814,39 @@ pub async fn handle(
         .is_some_and(|v| v.starts_with("text/event-stream"));
 
     if is_sse {
+        let codex = ctx.provider.auth == crate::provider::ProviderAuth::Codex;
+        if codex && !streamed && status.is_success() {
+            return collect_codex(ctx, upstream, out_headers).await;
+        }
         let translator = direction.map(|dir| {
             out_headers.insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("text/event-stream"),
             );
-            StreamTranslator::new(dir, ctx.upstream_model.as_deref().unwrap_or_default())
+            ProxyStream::Chat(
+                StreamTranslator::new(dir, ctx.upstream_model.as_deref().unwrap_or_default())
+                    .with_usage(
+                        json_body
+                            .as_ref()
+                            .is_some_and(|v| v["stream_options"]["include_usage"] == true),
+                    ),
+            )
+        });
+        let translator = if codex && endpoint != Endpoint::Responses {
+            Some(ProxyStream::Responses(
+                ResponseStream::new(
+                    ctx.upstream_model.as_deref().unwrap_or_default(),
+                    endpoint == Endpoint::Messages,
+                )
                 .with_usage(
                     json_body
                         .as_ref()
                         .is_some_and(|v| v["stream_options"]["include_usage"] == true),
-                )
-        });
+                ),
+            ))
+        } else {
+            translator
+        };
         return stream_response(
             ctx,
             upstream,
@@ -856,7 +915,7 @@ fn retryable(s: StatusCode) -> bool {
     s == StatusCode::TOO_MANY_REQUESTS || s.is_server_error()
 }
 
-fn build_request(
+async fn build_request(
     st: &AppState,
     provider: &Provider,
     key: &str,
@@ -864,10 +923,25 @@ fn build_request(
     url: &str,
     headers: &HeaderMap,
     anthropic_hint: bool,
-) -> reqwest::RequestBuilder {
+) -> Option<reqwest::RequestBuilder> {
     let mut req = st.http().request(method.clone(), url);
     for (name, value) in headers.iter() {
         if !skip_header(name)
+            && !(provider.auth == crate::provider::ProviderAuth::Codex
+                && matches!(
+                    name.as_str(),
+                    "originator"
+                        | "chatgpt-account-id"
+                        | "session-id"
+                        | "thread-id"
+                        | "x-client-request-id"
+                        | "version"
+                        | "user-agent"
+                        | "accept"
+                        | "cookie"
+                        | "openai-organization"
+                        | "openai-project"
+                ))
             && !(provider.kind == ProviderKind::Openai && name.as_str().starts_with("anthropic-"))
             && !(provider.auth == crate::provider::ProviderAuth::Claude
                 && matches!(
@@ -879,13 +953,36 @@ fn build_request(
         }
     }
     if provider.auth == crate::provider::ProviderAuth::Claude {
-        return req
-            .bearer_auth(key)
-            .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", crate::oauth::CLAUDE_BETAS)
-            .header("user-agent", crate::oauth::CLAUDE_UA);
+        return Some(
+            req.bearer_auth(key)
+                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-beta", crate::oauth::CLAUDE_BETAS)
+                .header("user-agent", crate::oauth::CLAUDE_UA),
+        );
     }
-    match provider.kind {
+    if provider.auth == crate::provider::ProviderAuth::Codex {
+        let account = st.oauth.codex_account(&provider.name).await.ok()?;
+        let session = crate::oauth::session_id();
+        return Some(
+            req.bearer_auth(key)
+                .header("chatgpt-account-id", account)
+                .header("originator", "codex_cli_rs")
+                .header("session-id", &session)
+                .header("thread-id", &session)
+                .header("x-client-request-id", &session)
+                .header("version", env!("CARGO_PKG_VERSION"))
+                .header(
+                    "user-agent",
+                    concat!(
+                        "codex_cli_rs/",
+                        env!("CARGO_PKG_VERSION"),
+                        " (Linux; tokomotive)"
+                    ),
+                )
+                .header("accept", "text/event-stream"),
+        );
+    }
+    Some(match provider.kind {
         ProviderKind::Openai => req.bearer_auth(key),
         ProviderKind::Anthropic => {
             let r = req.header("x-api-key", key);
@@ -895,7 +992,65 @@ fn build_request(
                 r.header("anthropic-version", "2023-06-01")
             }
         }
+    })
+}
+
+/// The Codex backend only streams. Collect the final Response for JSON clients
+/// with the same usage accounting as streaming clients, without buffering deltas.
+async fn collect_codex(ctx: Ctx, upstream: reqwest::Response, mut headers: HeaderMap) -> Response {
+    let mut decoder = ResponseStream::new("", false);
+    let mut tracker = ProviderKind::Openai.new_stream_tracker(Endpoint::Responses, false);
+    let mut stream = upstream.bytes_stream();
+    let mut failed = false;
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            failed = true;
+            break;
+        };
+        tracker.feed(&chunk);
+        decoder.feed(&chunk);
     }
+    tracker.finish();
+    decoder.finish();
+    let response = decoder.final_response.take();
+    let failed = failed || decoder.failed || response.is_none();
+    let endpoint = ctx.endpoint;
+    let status = if failed {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::OK
+    };
+    ctx.finish(Outcome {
+        status: status.as_u16(),
+        model: tracker.model.take(),
+        usage: tracker.usage.unwrap_or_default(),
+        estimated: !tracker.usage_final,
+        ttft_ms: None,
+        client_aborted: false,
+    });
+    let Some(value) = response.filter(|_| !failed) else {
+        return formatted_error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "Responses upstream failed",
+            endpoint == Endpoint::Messages,
+        );
+    };
+    let value = match endpoint {
+        Endpoint::ChatCompletions => translate_responses::response(&value),
+        Endpoint::Messages => translate::translate_response(
+            Direction::MessagesToChat,
+            &translate_responses::response(&value),
+        ),
+        _ => value,
+    };
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let mut response = Response::new(Body::from(value.to_string()));
+    *response.headers_mut() = headers;
+    response
 }
 
 /// Forward an SSE stream. If the client disconnects, keep reading the
@@ -907,7 +1062,7 @@ fn stream_response(
     headers: HeaderMap,
     strip_usage_chunk: bool,
     upstream_endpoint: Endpoint,
-    mut translator: Option<StreamTranslator>,
+    mut translator: Option<ProxyStream>,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
     let mut tracker = ctx

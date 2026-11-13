@@ -336,10 +336,10 @@ impl Config {
             validate_name(&p.name)?;
             use crate::provider::ProviderAuth;
             if p.auth != ProviderAuth::ApiKey {
-                let base = if p.auth == ProviderAuth::Chatgpt {
-                    "https://api.openai.com"
-                } else {
-                    "https://api.anthropic.com"
+                let base = match p.auth {
+                    ProviderAuth::Chatgpt => "https://api.openai.com",
+                    ProviderAuth::Codex => "https://chatgpt.com/backend-api/codex",
+                    _ => "https://api.anthropic.com",
                 };
                 if p.base_url.trim_end_matches('/') != base
                     || p.api_key.is_some()
@@ -352,8 +352,10 @@ impl Config {
             }
             if matches!(
                 (p.auth, p.kind),
-                (ProviderAuth::Chatgpt, ProviderKind::Anthropic)
-                    | (ProviderAuth::Claude, ProviderKind::Openai)
+                (
+                    ProviderAuth::Chatgpt | ProviderAuth::Codex,
+                    ProviderKind::Anthropic
+                ) | (ProviderAuth::Claude, ProviderKind::Openai)
             ) {
                 bail!(
                     "The authentication of Provider {} does not match its API format.",

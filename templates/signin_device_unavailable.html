@@ -1,0 +1,4 @@
+<div class="signin-panel" role="status">
+  <p>Device sign-in is not available or the attempt expired. Use the redirect URL, or reload the page and try again.</p>
+  <form method="post" action="/admin/providers/{{ name }}/{{ path }}/paste" hx-post="/admin/providers/{{ name }}/{{ path }}/paste" hx-target="closest .signin" hx-swap="innerHTML"><button class="ghost">Paste the redirect URL</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+</div>
