@@ -13,6 +13,7 @@ use sqlx::{FromRow, Row, SqlitePool};
 use crate::catalog::{Catalog, ModelEntry, Quote};
 use crate::config::{Config, percent_to_bp, usd_to_micros};
 use crate::pricing::{CardRates, PriceSpec};
+use crate::ratelimit::Limits;
 use crate::usage::Usage;
 
 pub type Db = SqlitePool;
@@ -121,24 +122,30 @@ pub async fn seed(db: &Db, cfg: &Config) -> Result<()> {
             Some(id) => id,
             None => {
                 let team = u.team.as_ref().map(|t| teams[t]);
-                create_user(
+                create_user_with_limits(
                     db,
                     &u.name,
                     team,
                     u.budget_usd.map(usd_to_micros),
                     u.budget_monthly,
+                    Limits {
+                        rpm: u.rpm_limit,
+                        tpm: u.tpm_limit,
+                    },
                 )
                 .await?
             }
         };
         for k in &u.keys {
             sqlx::query(
-                "INSERT OR IGNORE INTO virtual_keys(user_id, key_hash, prefix, label, created_at) VALUES(?, ?, ?, 'config', ?)",
+                "INSERT OR IGNORE INTO virtual_keys(user_id, key_hash, prefix, label, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, 'config', ?, ?, ?)",
             )
             .bind(user_id)
             .bind(hash_key(k))
             .bind(key_prefix(k))
             .bind(now_s())
+            .bind(u.key_rpm_limit)
+            .bind(u.key_tpm_limit)
             .execute(db)
             .await?;
         }
@@ -301,12 +308,25 @@ pub async fn create_user(
     budget: Option<i64>,
     monthly: bool,
 ) -> Result<i64> {
-    Ok(sqlx::query("INSERT INTO users(name, team_id, budget_micros, budget_monthly, created_at) VALUES(?, ?, ?, ?, ?)")
+    create_user_with_limits(db, name, team, budget, monthly, Limits::default()).await
+}
+
+pub async fn create_user_with_limits(
+    db: &Db,
+    name: &str,
+    team: Option<i64>,
+    budget: Option<i64>,
+    monthly: bool,
+    limits: Limits,
+) -> Result<i64> {
+    Ok(sqlx::query("INSERT INTO users(name, team_id, budget_micros, budget_monthly, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, ?, ?, ?, ?)")
         .bind(name)
         .bind(team)
         .bind(budget)
         .bind(monthly)
         .bind(now_s())
+        .bind(limits.rpm)
+        .bind(limits.tpm)
         .execute(db)
         .await?
         .last_insert_rowid())
@@ -331,6 +351,28 @@ pub async fn update_user(
     Ok(())
 }
 
+pub async fn update_user_with_limits(
+    db: &Db,
+    id: i64,
+    team: Option<i64>,
+    budget: Option<i64>,
+    monthly: bool,
+    disabled: bool,
+    limits: Limits,
+) -> Result<()> {
+    sqlx::query("UPDATE users SET team_id = ?, budget_micros = ?, budget_monthly = ?, disabled = ?, rpm_limit = ?, tpm_limit = ? WHERE id = ?")
+        .bind(team)
+        .bind(budget)
+        .bind(monthly)
+        .bind(disabled)
+        .bind(limits.rpm)
+        .bind(limits.tpm)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 // -------------------------------------------------------------------- keys
 
 pub fn hash_key(key: &str) -> String {
@@ -348,11 +390,21 @@ pub async fn create_key(
     label: &str,
     allowed: Option<Vec<String>>,
 ) -> Result<(i64, String)> {
+    create_key_with_limits(db, user_id, label, allowed, Limits::default()).await
+}
+
+pub async fn create_key_with_limits(
+    db: &Db,
+    user_id: i64,
+    label: &str,
+    allowed: Option<Vec<String>>,
+    limits: Limits,
+) -> Result<(i64, String)> {
     let mut bytes = [0u8; 24];
     rand::rng().fill_bytes(&mut bytes);
     let key = format!("sk-llma-{}", hex::encode(bytes));
     let id = sqlx::query(
-        "INSERT INTO virtual_keys(user_id, key_hash, prefix, label, allowed_models, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+        "INSERT INTO virtual_keys(user_id, key_hash, prefix, label, allowed_models, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user_id)
     .bind(hash_key(&key))
@@ -360,10 +412,22 @@ pub async fn create_key(
     .bind(label)
     .bind(allowed.map(|a| serde_json::to_string(&a).unwrap_or_default()))
     .bind(now_s())
+    .bind(limits.rpm)
+    .bind(limits.tpm)
     .execute(db)
     .await?
     .last_insert_rowid();
     Ok((id, key))
+}
+
+pub async fn update_key_limits(db: &Db, id: i64, limits: Limits) -> Result<()> {
+    sqlx::query("UPDATE virtual_keys SET rpm_limit = ?, tpm_limit = ? WHERE id = ?")
+        .bind(limits.rpm)
+        .bind(limits.tpm)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 pub async fn revoke_key(db: &Db, id: i64) -> Result<()> {
@@ -386,11 +450,14 @@ pub struct KeyAuth {
     pub user_disabled: bool,
     pub budget_micros: Option<i64>,
     pub budget_monthly: bool,
+    pub key_limits: Limits,
+    pub user_limits: Limits,
 }
 
 pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
     let row = sqlx::query(
-        "SELECT k.id, k.user_id, k.allowed_models, k.revoked_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly
+        "SELECT k.id, k.user_id, k.allowed_models, k.revoked_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
+            k.rpm_limit AS key_rpm, k.tpm_limit AS key_tpm, u.rpm_limit AS user_rpm, u.tpm_limit AS user_tpm
          FROM virtual_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?",
     )
     .bind(hash_key(key))
@@ -409,6 +476,14 @@ pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
         user_disabled: r.get::<i64, _>("disabled") != 0,
         budget_micros: r.get("budget_micros"),
         budget_monthly: r.get::<i64, _>("budget_monthly") != 0,
+        key_limits: Limits {
+            rpm: r.get("key_rpm"),
+            tpm: r.get("key_tpm"),
+        },
+        user_limits: Limits {
+            rpm: r.get("user_rpm"),
+            tpm: r.get("user_tpm"),
+        },
     }))
 }
 
@@ -736,12 +811,14 @@ pub struct UserRow {
     pub disabled: bool,
     pub period_spend: i64,
     pub keys: i64,
+    pub rpm_limit: Option<i64>,
+    pub tpm_limit: Option<i64>,
 }
 
 pub async fn list_users(db: &Db) -> Result<Vec<UserRow>> {
     let month = budget_period_start(true);
     Ok(sqlx::query_as(
-        "SELECT u.id, u.name, u.team_id, t.name AS team, u.budget_micros, u.budget_monthly, u.disabled,
+        "SELECT u.id, u.name, u.team_id, t.name AS team, u.budget_micros, u.budget_monthly, u.disabled, u.rpm_limit, u.tpm_limit,
             (SELECT IFNULL(SUM(price_micros), 0) FROM rollup_hourly r WHERE r.user_id = u.id
                AND r.hour >= CASE WHEN u.budget_monthly THEN ? ELSE 0 END) AS period_spend,
             (SELECT COUNT(*) FROM virtual_keys k WHERE k.user_id = u.id AND k.revoked_at IS NULL) AS keys
@@ -777,11 +854,13 @@ pub struct KeyRow {
     pub revoked_at: Option<i64>,
     pub last_used_at: Option<i64>,
     pub created_at: i64,
+    pub rpm_limit: Option<i64>,
+    pub tpm_limit: Option<i64>,
 }
 
 pub async fn list_keys(db: &Db) -> Result<Vec<KeyRow>> {
     Ok(sqlx::query_as(
-        "SELECT k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.revoked_at, k.last_used_at, k.created_at
+        "SELECT k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.revoked_at, k.last_used_at, k.created_at, k.rpm_limit, k.tpm_limit
          FROM virtual_keys k JOIN users u ON u.id = k.user_id ORDER BY k.revoked_at IS NOT NULL, u.name, k.id",
     )
     .fetch_all(db)

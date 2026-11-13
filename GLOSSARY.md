@@ -46,4 +46,6 @@ A Ledger Entry does not change after it is written.
 
 **Reservation** — The worst-case Price of a request in progress. It counts against the Budget until the Ledger Entry for the request is written.
 
+**Rate Limit** — A limit on requests per minute (RPM) or completed tokens per minute (TPM) for a Virtual Key or a User. It uses the last 60 seconds. A blank limit is unlimited; zero blocks requests.
+
 **Operator** — The person who runs the Proxy, sets cards and Budgets, and uses the dashboard.
