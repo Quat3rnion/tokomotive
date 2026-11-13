@@ -75,6 +75,23 @@ restart. Virtual Keys, model allowlists, routing and token metrics stay active.
 You do not need cards or limits. The dashboard hides financial data and
 controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 
+## Screenshots
+
+The screenshots show demo data from a local test server. The keys are not real.
+
+![The Overview page in Full Mode. It shows the totals for 24 hours, a Money chart and a Traffic chart, and the start of the By model table.](docs/images/overview.png)
+
+![The Routes page. The Route "smart" uses the weighted strategy with three Deployments on two Providers and two Fallbacks.](docs/images/routes.png)
+
+| Page | What it shows |
+| ---- | ------------- |
+| [Ledger](docs/images/ledger.png) | The newest Ledger Entries with the User, the Provider, the endpoint, the Model, the status and the tokens. |
+| [Providers](docs/images/providers.png) | Two Providers and their Key Pools. The page shows only the last 4 characters of each key. |
+| [Models](docs/images/models.png) | The Models with their Cost Card rates, Price Cards and Team overrides. |
+| [Model page](docs/images/model.png) | The cards of one Model, two Team overrides and the Card history. |
+| [Users](docs/images/users.png) | The Users with Teams, Budgets, Rate Limits and the spend in this period. |
+| [Overview in Simple Mode](docs/images/overview-simple.png) | The Overview without money data: requests, tokens, latency, errors and attempts. |
+
 ## Quick start
 
 Both methods are UI-first. You do not edit a file.
