@@ -33,26 +33,25 @@
     <div class="field"><label for="lf-model">Model</label><input id="lf-model" name="model" value="{{ filters.model }}" list="ledger-models" autocomplete="off" spellcheck="false" placeholder="Any Model"></div>
     <div class="field"><label for="lf-from">From (UTC)</label><input id="lf-from" name="from" type="date" value="{{ filters.from }}"></div>
     <div class="field"><label for="lf-to">To (UTC)</label><input id="lf-to" name="to" type="date" value="{{ filters.to }}"></div>
-    <div class="row"><button>Apply filters</button>{% if filters.active %}<a href="{% if filter == "all" %}/admin/ledger{% else %}/admin/ledger?filter={{ filter }}{% endif %}">Clear filters</a>{% endif %}</div>
+    <div class="row"><button>Apply filters</button>{% if filters.active %}<a class="pad" href="{% if filter == "all" %}/admin/ledger{% else %}/admin/ledger?filter={{ filter }}{% endif %}">Clear filters</a>{% endif %}</div>
   </div>
   {% if let Some(e) = error %}<div class="form-error" role="alert"><p>{{ e }}</p></div>{% endif %}
 </form>
 
 <div class="panel scroll" aria-label="Ledger Entries">
 <table class="ledger cards-sm">
-  <thead><tr><th scope="col">Time (UTC)</th><th scope="col">User</th><th scope="col">Model</th><th scope="col" class="n">Status</th><th scope="col">Flags</th><th scope="col" class="n">Tokens in / out</th>{% if !base.simple %}<th scope="col" class="n">Price</th><th scope="col" class="n">Cost</th>{% endif %}<th scope="col" class="n">Latency</th><th scope="col">Provider</th><th scope="col"><span class="vh">Details</span></th></tr></thead>
+  <thead><tr><th scope="col">Time (UTC)</th><th scope="col">User</th><th scope="col">Model <span class="vh">and Provider</span></th><th scope="col" class="n">Status</th><th scope="col">Flags</th><th scope="col" class="n">Tokens in / out</th>{% if !base.simple %}<th scope="col" class="n">Price</th><th scope="col" class="n">Cost</th>{% endif %}<th scope="col" class="n">Latency</th><th scope="col"><span class="vh">Details</span></th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr id="e{{ r.id }}">
     <th scope="row"><time datetime="{{ r.time.iso }}">{{ r.time.short }}</time></th>
     <td data-label="User"><span class="trunc" title="{{ r.user }}">{{ r.user }}</span></td>
-    <td data-label="Model">{{ r.model }}</td>
+    <td data-label="Model">{{ r.model }}<span class="sub">{{ r.provider }}</span></td>
     <td data-label="Status" class="n{% if r.status >= 400 %} bad{% endif %}">{{ r.status }}</td>
     <td data-label="Flags" class="flags">{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
     <td data-label="Tokens in / out" class="n" title="{{ r.tokens_title }}">{{ r.tokens }}</td>
     {% if !base.simple %}<td data-label="Price" class="n"><span title="{{ r.price.exact }}">{{ r.price }}</span></td><td data-label="Cost" class="n"><span title="{{ r.cost.exact }}">{{ r.cost }}</span></td>{% endif %}
     <td data-label="Latency" class="n">{{ r.latency }}</td>
-    <td data-label="Provider">{{ r.provider }}</td>
     <td><div class="actions"><button type="button" class="ghost" data-toggle="d{{ r.id }}" aria-expanded="false" aria-controls="d{{ r.id }}" aria-label="Details of entry {{ r.id }}">Details</button></div></td>
   </tr>
   <tr id="d{{ r.id }}" class="edit-row" data-collapse>
@@ -80,7 +79,7 @@
 </table>
 </div>
 {% if older.is_some() || newest.is_some() %}
-<nav class="row" aria-label="Ledger pages">
+<nav class="pager" aria-label="Ledger pages">
   {% if let Some(n) = newest %}<a href="{{ n }}">Newest entries</a>{% endif %}
   {% if let Some(o) = older %}<a href="{{ o }}">Older entries</a>{% endif %}
 </nav>

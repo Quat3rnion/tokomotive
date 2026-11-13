@@ -21,7 +21,7 @@
   {% for d in deployments.iter() %}{% call deployment_row(providers, d.provider.as_str(), d.model, d.weight) %}{% endfor %}
   {% if spare %}{% call deployment_row(providers, "", "", 1) %}{% else %}<noscript>{% call deployment_row(providers, "", "", 1) %}</noscript>{% endif %}
   </div>
-  <button type="button" class="ghost" data-add hidden>Add deployment</button>
+  <button type="button" class="ghost" data-add hidden aria-label="Add a Deployment to this Route">Add a Deployment</button>
 </fieldset>
 {% endmacro %}
 {% macro strategy_select(pre, name, strategy) %}
@@ -82,29 +82,41 @@
     const add = set.querySelector('[data-add]');
     const strategy = form.querySelector('[data-strategy]');
     // Weight is used only by the Weighted strategy.
+    // Name each row button after its position.
+    const of = (form.getAttribute('aria-label') || '').replace(/^Edit /, '') || 'the new Route';
+    const number = () => rows.querySelectorAll('.deployment').forEach((row, i) => {
+      const n = `${i + 1} of ${of}`;
+      row.querySelector('[data-move="-1"]').setAttribute('aria-label', `Move Deployment ${n} up`);
+      row.querySelector('[data-move="1"]').setAttribute('aria-label', `Move Deployment ${n} down`);
+      row.querySelector('[data-remove]').setAttribute('aria-label', `Remove Deployment ${n}`);
+    });
     const weights = () => rows.querySelectorAll('[data-weight]').forEach(w => { w.hidden = strategy.value !== 'weighted'; });
     const wire = row => {
       row.querySelector('[data-tools]').hidden = false;
-      row.querySelector('[data-remove]').addEventListener('click', () => { row.remove(); add.focus(); });
+      row.querySelector('[data-remove]').addEventListener('click', () => { row.remove(); number(); add.focus(); });
       row.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () => {
         const up = b.dataset.move === '-1';
         const other = up ? row.previousElementSibling : row.nextElementSibling;
         if (!other || !other.classList.contains('deployment')) { toko.say(up ? 'Already first.' : 'Already last.'); return; }
         if (up) { other.before(row); } else { other.after(row); }
+        number();
         b.focus();
         toko.say(up ? 'Moved up.' : 'Moved down.');
       }));
     };
     rows.querySelectorAll('.deployment').forEach(wire);
     add.hidden = false;
+    add.setAttribute('aria-label', 'Add a Deployment to ' + of);
     add.addEventListener('click', () => {
       const row = blank.content.firstElementChild.cloneNode(true);
       rows.append(row);
       wire(row);
+      number();
       weights();
       row.querySelector('select').focus();
     });
     strategy.addEventListener('change', weights);
+    number();
     weights();
   });
 })();

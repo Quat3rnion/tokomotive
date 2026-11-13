@@ -56,8 +56,8 @@
   {% if p.has_unset_env() %}<p class="hint">An environment variable that is not set is skipped. Set it before the Proxy starts.</p>{% endif %}
   {% endif %}
   <form method="post" action="/admin/providers/{{ p.name }}/keys" class="row" aria-label="Add a Provider Key to {{ p.name }}">
-    <div class="field grow"><label for="p-{{ p.name }}-newkey">New Provider Key or env:NAME</label><input id="p-{{ p.name }}-newkey" type="password" name="api_key" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-newkey-help"><p class="hint" id="p-{{ p.name }}-newkey-help">Paste the key, or write env:NAME to read it from an environment variable.</p></div>
-    <button>Add key</button>
+    <div class="field wide-key"><label for="p-{{ p.name }}-newkey">New Provider Key or env:NAME</label><input id="p-{{ p.name }}-newkey" type="password" name="api_key" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-newkey-help"><p class="hint" id="p-{{ p.name }}-newkey-help">Paste the key, or write env:NAME to read it from an environment variable.</p></div>
+    <button aria-label="Add the Provider Key to {{ p.name }}">Add key</button>
     <div class="form-error" role="alert" tabindex="-1"></div>
   </form>
   <form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="find .test-result" hx-swap="innerHTML" class="row test-form" hx-on::before-request="this.querySelector('.test-result').textContent=''">
@@ -70,7 +70,7 @@
   {% if let Some(s) = p.status %}
   {% call status_list(s) %}
   <div class="row">
-    <form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="next .signin" hx-swap="innerHTML"><button{% if s.connected %} class="ghost"{% endif %} data-busy="Starting...">{% if s.connected %}Reconnect{% else %}Sign in{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+    <form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="next .signin" hx-swap="innerHTML"><button{% if s.connected %} class="ghost"{% endif %} data-busy="Starting..." aria-label="{% if s.connected %}Reconnect{% else %}Sign in to{% endif %} {{ p.name }}">{% if s.connected %}Reconnect{% else %}Sign in{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
     {% if s.connected %}<form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect" data-confirm="Disconnect {{ p.name }}? Requests to this Provider fail until you sign in again."><button class="danger" aria-label="Disconnect {{ p.name }}">Disconnect</button></form>{% endif %}
   </div>
   <div class="signin"></div>
@@ -124,6 +124,15 @@
 {% block scripts %}
 <script>
 (() => {
+  // Move focus to a new sign-in panel (once per page load).
+  if (!window.tokoSignin) {
+    window.tokoSignin = true;
+    document.addEventListener('htmx:afterSettle', e => {
+      const t = e.detail.target;
+      const h = t && t.classList && t.classList.contains('signin') && t.querySelector('[data-focus]');
+      if (h) { h.focus(); }
+    });
+  }
   // A subscription has a fixed API format and base URL, and no key field.
   const form = document.getElementById('add-provider');
   if (!form) { return; }

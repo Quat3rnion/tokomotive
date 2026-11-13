@@ -272,6 +272,37 @@ details > summary { cursor:pointer; color:var(--link); min-height:24px; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior:auto !important; transition:none !important; animation:none !important; }
 }
+/* Operations pages (Ledger, Providers, Routes, Settings). */
+header .mode { padding:3px var(--sp-2); }
+.panel > .toolbar { margin-bottom:var(--sp-3); }
+.panel > .toolbar h2 { margin:0; }
+input[readonly] { background:transparent; border-style:dashed; }
+.ledger tbody th { white-space:nowrap; }
+nav.pager { display:flex; gap:var(--sp-4); }
+nav.pager a { display:inline-block; padding:var(--sp-1) 0; }
+ul.key-list { list-style:none; padding:0; margin:0 0 var(--sp-3); max-width:40em; }
+ul.key-list li { display:flex; justify-content:space-between; align-items:center; gap:var(--sp-3); padding:var(--sp-1) 0; border-bottom:1px solid var(--line); }
+.provider h3 { margin-top:var(--sp-5); }
+.field.wide-key input { width:28em; }
+a.pad { display:inline-block; padding:3px var(--sp-1); }
+.provider .test-form { margin-top:var(--sp-3); align-items:center; }
+.test-result p { margin:0; }
+.signin:not(:empty) { margin-top:var(--sp-3); }
+.signin-panel { padding:var(--sp-3) var(--sp-4); border:1px solid var(--link); border-radius:8px; background:var(--info-bg); max-width:56em; }
+.signin-panel h4 { margin:0 0 var(--sp-2); font-size:14px; }
+.signin-panel ol { margin:0 0 var(--sp-3); padding-left:var(--sp-5); }
+.signin-panel li { margin-bottom:var(--sp-1); }
+details.usage { margin-top:var(--sp-4); }
+details.usage[open] { padding:var(--sp-3); border:1px solid var(--line); border-radius:8px; }
+details.usage > summary { margin-bottom:var(--sp-2); }
+ul.meters { list-style:none; padding:0; margin:0 0 var(--sp-3); display:grid; gap:var(--sp-2); }
+ul.meters meter { width:12em; vertical-align:middle; }
+.route-form .row.deployment label input[name=deployment_model] { width:18em; }
+.route-form .row.deployment label input[name=deployment_weight] { width:6em; }
+.row-tools { display:inline-flex; gap:var(--sp-1); align-self:flex-end; }
+@media (max-width: 720px) {
+  table.cards-sm td.flags:empty { display:none; }
+}
 </style>
 </head>
 <body>

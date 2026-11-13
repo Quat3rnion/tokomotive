@@ -494,3 +494,47 @@ async fn saving_settings_keeps_the_mode() {
     assert_eq!(a.st.settings().upstream_timeout_secs, 77);
     assert_eq!(a.st.settings().mode, "simple");
 }
+
+#[tokio::test]
+async fn default_markup_is_read_only_in_settings() {
+    let a = app().await;
+    let r = a
+        .post(
+            "/admin/settings/markup",
+            &[("default_markup_percent", "20")],
+        )
+        .await;
+    assert_eq!(r.status(), 303);
+    let html = a.page("/admin/settings").await;
+    assert!(html.contains("Default Markup: 20%"), "{html}");
+    assert!(html.contains("href=\"/admin/models#markup\">Change on Models</a>"));
+    assert!(!html.contains("name=\"default_markup_percent\""));
+    // Old scripts that still send the field keep working.
+    let s = a.st.settings();
+    let r = a
+        .post(
+            "/admin/settings",
+            &[
+                ("default_markup_percent", "15"),
+                (
+                    "upstream_timeout_secs",
+                    &s.upstream_timeout_secs.to_string(),
+                ),
+                (
+                    "reserve_output_tokens",
+                    &s.reserve_output_tokens.to_string(),
+                ),
+                ("session_days", &s.session_days.to_string()),
+                ("failure_threshold", &s.router.failure_threshold.to_string()),
+                ("cooldown_secs", &s.router.cooldown_secs.to_string()),
+                ("max_attempts", &s.router.max_attempts.to_string()),
+            ],
+        )
+        .await;
+    assert_eq!(r.status(), 303);
+    assert_eq!(a.st.catalog().default_markup_bp, 1500);
+    a.set_simple().await;
+    let html = a.page("/admin/settings").await;
+    assert!(!html.contains("Default Markup"));
+    assert!(!html.contains("/admin/models#markup"));
+}

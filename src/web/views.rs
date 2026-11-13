@@ -118,14 +118,6 @@ fn stamp(ts_s: i64) -> Stamp {
         .unwrap_or_default()
 }
 
-/// The one date format of the dashboard: `YYYY-MM-DD HH:MM UTC`.
-pub fn utc_ms(ms: i64) -> String {
-    Utc.timestamp_millis_opt(ms)
-        .single()
-        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-        .unwrap_or_default()
-}
-
 fn date(ts_s: i64) -> Stamp {
     stamp(ts_s)
 }
@@ -1356,7 +1348,7 @@ impl LedgerView {
 impl LedgerPage {
     /// Column count of the table, for the `colspan` of full-width rows.
     pub fn columns(&self) -> usize {
-        if self.base.simple { 9 } else { 11 }
+        if self.base.simple { 8 } else { 10 }
     }
 }
 
@@ -1377,7 +1369,7 @@ mod tests {
         assert_eq!(money_row(30), "<$0.0001");
         assert_eq!(money_row(-30), "-<$0.0001");
         assert_eq!(money_exact(1_234_567), "$1.234567");
-        assert_eq!(utc_ms(0), "1970-01-01 00:00 UTC");
+        assert_eq!(stamp(0).text, "1970-01-01 00:00 UTC");
         assert_eq!(bp_percent(2_500), "25");
         assert_eq!(bp_percent(1_250), "12.5");
     }
