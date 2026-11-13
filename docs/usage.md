@@ -1,7 +1,8 @@
 # Operator guide
 
-This guide is for the Operator. It shows how to connect clients, how to use the
-dashboard, how the Proxy calculates amounts, and how to monitor the Proxy.
+This guide is for the Operator. It shows how to connect clients, how the Proxy
+routes requests, how to use the dashboard, how the Proxy calculates amounts, and
+how to monitor the Proxy.
 
 The terms are defined in [GLOSSARY.md](../GLOSSARY.md). For the settings, see
 [configuration.md](configuration.md). For the first installation, see
@@ -79,12 +80,17 @@ Model. This applies, for example, to multipart requests to `/v1/images/edits`.
 ### Routing and Translation
 
 An explicit Route selects its Deployments before catalog lookup. The Proxy
-replaces the requested Model with the Deployment's Model. The Route strategy
-sets the order: `priority` uses the listed order, `round_robin` rotates the first
-choice, and `weighted` selects the first choice by weight. The Proxy tries the
-Key Pool of each Deployment before the next Deployment, then its Fallbacks.
-Connection errors, HTTP 429 and HTTP 5xx can cause a retry before the response
-starts. Other upstream errors do not cause a retry.
+replaces the requested Model with the upstream model name of the Deployment
+(Model rewrite). The strategy of the Route sets the order of the Deployments. See
+"Routes and router settings" in [configuration.md](configuration.md#routes-and-router-settings).
+The Proxy tries the Key Pool of each Deployment before the next Deployment, then
+the Fallbacks. Connection errors, HTTP 429 and HTTP 5xx can cause a retry before
+the response starts. Other upstream errors do not cause a retry. The setting
+`max_attempts` limits the total number of upstream attempts.
+
+Each Deployment has a Circuit Breaker. After `failure_threshold` failures in a
+row, the Proxy skips the Deployment for `cooldown_secs`. Then one probe request
+tests it. If every candidate is open, the Proxy tries them anyway.
 
 Without an explicit Route, `provider/model` selects that Provider and removes
 the prefix, unless the full name matches a catalog Model. Otherwise, the Proxy
@@ -105,17 +111,39 @@ It adds `anthropic-version` for Anthropic if necessary and removes
 Provider kind. Translation does not change the Route strategy or Deployment
 order. A Route with both Provider kinds can serve both client formats.
 
-Translation supports text, images and function tools. It rejects `n > 1` and
-JSON-schema response formats with HTTP 400 before an upstream call. Other
-unsupported options, cache-control hints, thinking blocks and signatures are
-dropped. Only choice zero is translated. Chat tool calls are buffered until
-stream end when converted to Messages. Chat `reasoning_effort` sets a fixed
-thinking budget; an explicit output limit must exceed that budget.
+Translation supports text, images and function tools, with and without
+streaming. It has these limits:
+
+- It rejects `n` greater than 1 and JSON-schema response formats with HTTP 400
+  before an upstream call.
+- It drops other unsupported options, cache-control hints, thinking blocks and
+  signatures.
+- It translates choice 0 only.
+- It buffers Chat tool calls until the stream ends when it converts them to
+  Messages. Parallel tool calls become serial content blocks.
+- Chat `reasoning_effort` (`low`, `medium` or `high`) sets a thinking budget of
+  1,024, 4,096 or 16,384 tokens. An explicit output limit must be larger than the
+  budget.
 
 The Ledger Entry uses the client's endpoint and the upstream Model and usage.
 Cost and Price use upstream Token Classes, before Translation. The Proxy
 continues to read upstream streams after a client disconnect to obtain final
 usage.
+
+### List models
+
+`GET /v1/models` and `GET /v1/models/{id}` need a Virtual Key.
+
+```sh
+curl $PROXY/v1/models -H "Authorization: Bearer $KEY"
+```
+
+The list has the catalog Models (`owned_by` is the Provider) and the Routes
+(`owned_by` is `router`). If the key has an allowed-Models list, the Proxy shows
+only the permitted names. A request with the header `anthropic-version` gets the
+Anthropic format. `provider/model` names are not listed, but they work. An
+unknown `{id}` gets HTTP 404. These requests do not count against Rate Limits and
+do not make Ledger Entries.
 
 ### Examples with curl
 
@@ -175,16 +203,17 @@ curl $PROXY/v1/images/generations \
   -d '{"model":"gpt-image-2","prompt":"A red bicycle"}'
 ```
 
-The Model names in these examples are the names in `config.example.toml`. Use the
-names of the Models in your dashboard.
+The Model names in these examples are samples. Use the names of the Models and
+Routes in your dashboard, or a `provider/model` name.
 
-## Routes
+## HTTP endpoints
 
-| Route                                   | Method   | Function                                                          |
+| Path                                    | Method   | Function                                                          |
 | --------------------------------------- | -------- | ----------------------------------------------------------------- |
 | `/`                                     | GET      | Redirects to `/admin`.                                            |
 | `/healthz`                              | GET      | Returns `ok`. Needs no authentication.                            |
 | `/metrics`                              | GET      | Prometheus metrics. Needs a token if one is set.                  |
+| `/v1/models`, `/v1/models/{id}`         | GET      | Lists the permitted Models and Routes. Needs a Virtual Key.       |
 | `/v1/*`                                 | any      | The Proxy. Needs a Virtual Key.                                   |
 | `/admin`                                | GET      | Overview page.                                                    |
 | `/admin/login`                          | GET, POST | Login page and login form (field `password`).                    |
@@ -200,18 +229,25 @@ names of the Models in your dashboard.
 | `/admin/models/{id}/cost`               | POST     | Saves a new Cost Card version.                                    |
 | `/admin/models/{id}/price`              | POST     | Saves a new Price Card version.                                   |
 | `/admin/models/{id}/team-price`         | POST     | Sets or removes a Team override.                                  |
-| `/setup` | GET, POST | Sets the first admin password; refuses later setup requests. |
-| `/admin/providers` | GET, POST | Lists or creates Providers. Edit, delete, key and test forms are on this page. |
-| `/admin/routes` | GET, POST | Lists or creates Routes. Edit deployment rows and Fallbacks on this page. |
-| `/admin/settings` | GET, POST | Edits server and router settings, mode and metrics token. |
+| `/setup` | GET, POST | Sets the first admin password and the mode; refuses later setup requests. |
+| `/admin/providers` | GET, POST | Lists or creates Providers. |
+| `/admin/providers/{name}` | POST | Changes the name, kind and base URL of a Provider. |
+| `/admin/providers/{name}/delete` | POST | Deletes a Provider. |
+| `/admin/providers/{name}/keys` | POST | Adds a Provider Key or an `env:NAME` reference. |
+| `/admin/providers/{name}/keys/{index}/delete` | POST | Removes one key. |
+| `/admin/providers/{name}/test` | POST | Tests the Provider. |
+| `/admin/routes` | GET, POST | Lists or creates Routes. |
+| `/admin/routes/{name}` | POST | Changes a Route. |
+| `/admin/routes/{name}/delete` | POST | Deletes a Route. |
+| `/admin/settings` | GET, POST | Edits server and router settings, the mode and the metrics token. |
 | `/admin/settings/password` | POST | Changes the password and ends all sessions. |
 | `/admin/settings/markup` | POST | Saves the default Markup from the Models page. |
 | `/admin/ledger`                         | GET      | Ledger page. The query `?filter=` is `unpriced`, `estimated` or `errors`. |
 | `/admin/reprice`                        | POST     | Prices the Unpriced Entries.                                      |
 | `/admin/assets/htmx.min.js`             | GET      | The script file of the dashboard.                                 |
 
-All `/admin` routes need a valid session, except the login routes, the logout
-route and the script file.
+All `/admin` paths need a valid session, except the login paths, the logout
+path and the script file.
 
 ## Dashboard
 
@@ -222,11 +258,37 @@ of at least 8 characters. Then log in. See "Dashboard password" in
 A login stays valid for `server.session_days` days (default 7) and survives a
 restart. Select **Log out** to end the session. All dashboard times are UTC.
 
-The header also has **Providers**, **Routes** and **Settings**. These pages apply
-changes without a restart. Providers has key-pool forms and a **Test** button.
-Routes has deployment rows and Fallbacks. Settings has server/router values,
-password change, a mode choice and a metrics token. Back up `secret.key` with
-the database.
+### Providers, Routes and Settings
+
+The header has **Providers**, **Routes** and **Settings**. These pages apply
+changes without a restart. The settings are in
+[configuration.md](configuration.md).
+
+**Providers**:
+
+1. To add a Provider, enter a name, a kind, a base URL and optionally a first
+   key. Select **Add provider**.
+2. To add a key, enter the key in **New key or env:NAME** and select **Add key**.
+   The Proxy encrypts the key. The page shows only its last 4 characters. Enter
+   `env:NAME` to store a reference to an environment variable instead.
+3. To remove a key, select **Remove key** in its row.
+4. To check a Provider, select **Test**. The page shows the upstream HTTP status.
+5. To remove a Provider, select **Delete provider**. A Route or a Model that uses
+   the Provider blocks this.
+
+**Routes**:
+
+1. To add a Route, enter a name, select a strategy and enter Fallbacks as a comma
+   list.
+2. Select **Add deployment** for each Deployment. Each row has a Provider
+   (select), a Model and a weight. Select **Remove** to remove a row. Only the `weighted` strategy uses the weight.
+3. Select **Add route** or **Save route**. Select **Delete route** to remove it.
+
+**Settings** has the server and router values, the mode, the metrics token and
+the password. To change the password, enter the current password and a new
+password of at least 8 characters. All sessions end. Back up `secret.key` with
+the database. See "Master Key and backups" in
+[configuration.md](configuration.md#master-key-and-backups).
 
 ### Simple mode
 
@@ -658,7 +720,8 @@ token is set, the request needs `Authorization: Bearer <token>`. Without a valid
 token the Proxy answers HTTP 401.
 
 The Proxy updates accounting metrics when it writes a Ledger Entry. It updates
-`llm_rate_limited_total` when it rejects a request. The label `model`
+`llm_rate_limited_total`, `llm_circuit_opens_total` and
+`llm_upstream_fallbacks_total` when the event happens. The label `model`
 is the Model name from the response (for example `gpt-4o-2024-08-06`). If the
 response has none, it is the name from the request. The label `user` is the name
 of the User.
@@ -675,6 +738,8 @@ of the User.
 | `llm_time_to_first_token_seconds`     | histogram | `provider`, `model`, `user`                  | Time to the first content of a stream.        |
 | `llm_upstream_retries_total`          | counter   | `provider`                                   | Retries with the next key of the Key Pool.    |
 | `llm_rate_limited_total`              | counter   | `scope`                                      | Rejected requests. `scope` is `key` or `user`. |
+| `llm_circuit_opens_total`             | counter   | `provider`, `model`                          | Times that a Circuit Breaker opened. `model` is the upstream model name. |
+| `llm_upstream_fallbacks_total`        | counter   | `from`, `to`                                 | Moves to the next Deployment after a failed one. The labels are the Route names of both Deployments. |
 
 The Proxy omits `llm_tokens_total` series for a class with 0 tokens. The
 histograms use these buckets, in seconds: 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
@@ -718,6 +783,7 @@ For `/v1/messages`, the body also has the top-level field `"type": "error"`.
 | 403         | `permission_error`     | `this API key may not use this model`                           | The key has an allowed-Models list and the Model is not in it. |
 | 402         | `budget_exceeded`      | `the budget for this user does not cover this request`          | The Budget check failed. See "Budgets and Reservations".       |
 | 400         | `invalid_request_error` | Details of the unsupported request.                          | Translation could not convert the request.                    |
+| 404         | `not_found_error`      | `model not found`                                               | `GET /v1/models/{id}` names a Model or Route that the key cannot see. |
 | 429         | `rate_limit_error`     | The key or User request or token limit was exceeded.           | A Rate Limit check failed. The response has `Retry-After`.     |
 | 502         | `api_error`            | `no provider is configured for this request`                    | The configuration has no Provider.                             |
 | 502         | `api_error`            | `upstream request failed`                                       | The last attempt to connect to the Provider failed.            |
@@ -736,7 +802,7 @@ the error body to the client's format. The Ledger Entry has that status. A
 
 ### Other routes
 
-| Route           | Status | Cause                                                          |
+| Path            | Status | Cause                                                          |
 | --------------- | ------ | -------------------------------------------------------------- |
 | `/metrics`      | 401    | A metrics token is set and the request has no valid token. The response has `WWW-Authenticate: Bearer`. |
 | `/admin/...`    | 303    | No valid session. The redirect goes to `/admin/login`.         |

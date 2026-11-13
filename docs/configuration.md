@@ -4,8 +4,10 @@ This document lists every setting of llm-accounting. The terms are defined in
 [GLOSSARY.md](../GLOSSARY.md).
 
 The database is the source of truth. Start the Proxy without a file, open
-`/admin`, and set the first password on `/setup`. Use **Providers**, **Routes**
-and **Settings** for live changes. See [usage.md](usage.md) for the Operator guide.
+`/admin`, and set the first password and the mode on `/setup`. Use **Providers**,
+**Routes** and **Settings** for live changes. They apply without a restart. See
+[usage.md](usage.md) for the Operator guide and [INSTALL.md](../INSTALL.md) for
+the first installation.
 
 ## Process options and optional seed file
 
@@ -13,6 +15,7 @@ The Proxy reads a seed file only when you give a path:
 
 1. The `--config PATH` flag (short form `-c PATH`).
 2. The environment variable `LLM_ACCOUNTING_CONFIG`.
+
 There is no implicit `config.toml`. With no path, the Proxy uses defaults and
 the existing database. `--listen ADDRESS` overrides `LLM_ACCOUNTING_LISTEN`.
 `--database SQLITE_URL` overrides `LLM_ACCOUNTING_DATABASE`. Their defaults are
@@ -27,10 +30,15 @@ The Proxy stops at start in these cases:
 
 - The file cannot be read or is not valid TOML.
 - The file has an unknown section at the top level.
-- The file has an unknown key in `[server]`, in a `[[providers]]` item, in a
-  `[[models]]` item, in a `[[teams]]` item or in a `[[users]]` item.
+- The file has an unknown key in `[server]`, in `[router]`, in a `[[providers]]`
+  item, in a `[[routes]]` item, in a `[[models]]` item, in a `[[teams]]` item or
+  in a `[[users]]` item.
 - A required key is missing.
-- A Model uses a Provider that is not in the file.
+- A Model or a Route Deployment uses a Provider that is not in the file.
+- Two Routes or two Providers have the same name, or a name has a character that
+  is not a letter, a digit, a dot, an underscore or a hyphen.
+- A Deployment has a weight of 0. A `[router]` `failure_threshold` or
+  `max_attempts` is 0.
 - A User uses a Team that is not in the file.
 - A Price Card has both `markup_percent` and rates, or has neither.
 
@@ -49,14 +57,14 @@ The Proxy does not check the spelling of rate keys. This applies to the keys in
 
 | Variable                        | Function                                                                                             |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `LLM_ACCOUNTING_CONFIG`         | Path of the configuration file. The `--config` flag has priority.                                    |
+| `LLM_ACCOUNTING_CONFIG`         | Path of the optional seed file. The `--config` flag has priority.                                    |
 | `LLM_ACCOUNTING_LISTEN`         | Listen address, unless `--listen` is set. |
 | `LLM_ACCOUNTING_DATABASE`       | SQLite URL, unless `--database` is set. |
-| `LLM_ACCOUNTING_ADMIN_PASSWORD` | Seeds or overrides the password hash at each start. |
+| `LLM_ACCOUNTING_ADMIN_PASSWORD` | Recovery override. When not empty, it replaces the stored password hash at each start. Use Setup for the normal path. |
 | `LLM_ACCOUNTING_SECRET_KEY`     | Master Key: 32 bytes encoded as 64 hex characters or base64. |
-| `LLM_ACCOUNTING_METRICS_TOKEN`  | Initial metrics token, used only before runtime settings exist. |
+| `LLM_ACCOUNTING_METRICS_TOKEN`  | Initial metrics token, used only on the first start, before runtime settings exist. |
 | `RUST_LOG`                      | Log filter, for example `info` or `llm_accounting=debug`. The default is `info`.                     |
-| Names in `*_env` keys           | Each `api_key_env`, `api_keys_env`, `admin_password_env` and `metrics_token_env` key names a variable. |
+| Names in `env:NAME` references and in `*_env` keys | Each name is a variable that holds a Provider Key, a password or a token. |
 
 An empty listen address or database URL is not valid.
 
@@ -65,45 +73,42 @@ variable that is not set or is empty.
 
 ## `[server]`
 
-All keys are optional. The whole section is optional. Except for the process
-options and the password override, values seed once. Edit them in **Settings**.
+All keys are optional. The whole section is optional. Values seed once, on the
+first start. Edit them in **Settings** afterward.
 
 | Key                      | Type   | Default                         | Meaning                                                                                                                                                  |
 | ------------------------ | ------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `listen`                 | string | `"127.0.0.1:8787"` | Legacy field; use `--listen` or the environment. |
 | `database`               | string | `"sqlite://llm-accounting.db"` | Legacy field; use `--database` or the environment. |
-| `admin_password`         | string | none                            | The dashboard password, in the file. Do not use it in a repository that you commit.                                                                      |
-| `admin_password_env`     | string | `"LLM_ACCOUNTING_ADMIN_PASSWORD"` | Name of the variable that holds the dashboard password. The variable has priority over `admin_password`.                                               |
+| `admin_password`         | string | none                            | Legacy. A dashboard password in the file. It seeds the hash only when none exists. Use Setup instead. Do not use it in a repository that you commit. |
+| `admin_password_env`     | string | `"LLM_ACCOUNTING_ADMIN_PASSWORD"` | Name of the variable that holds the dashboard password. The variable has priority over `admin_password`. |
 | `default_markup_percent` | float  | `0`                             | Markup for Models that have no Price Card. The file `config.example.toml` sets it to `20`.                                                               |
 | `upstream_timeout_secs`  | integer | `600`                          | Time limit in seconds for one request to a Provider. The limit includes the time to read the response body. The connect time limit is 15 seconds and is fixed. |
-| `metrics_token`          | string | none                            | The bearer token for `/metrics`, in the file.                                                                                                            |
+| `metrics_token`          | string | none                            | The bearer token for `/metrics`, in the file. It seeds once. Later changes belong in **Settings**. |
 | `metrics_token_env`      | string | `"LLM_ACCOUNTING_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
 | `reserve_output_tokens`  | integer | `4096` | Output tokens that a Reservation assumes when the request sets no maximum. Must be non-negative. |
 | `session_days`           | integer | `7` | Duration of new dashboard sessions, from 1 to 3650 days. |
-| `mode`                   | string | `"full"` | `full` enables pricing and usage limits. `simple` enables routing and token metrics without Budget checks, Reservations or Rate Limits. |
+| `mode`                   | string | `"full"` | `full` enables pricing and usage limits. `simple` enables routing and token metrics without Budget checks, Reservations or Rate Limits. See "Simple mode". |
 
 ### Simple mode
 
-Select the mode on `/setup` or in **Settings**. The default is `full` for
-compatibility. To seed Simple Mode on the first start:
+Select the mode on `/setup` or in **Settings**. The default is `full`. To seed
+Simple Mode on the first start:
 
 ```toml
 [server]
 mode = "simple"
 ```
 
-Later file changes do not replace the saved mode. Use **Settings** for live
-changes. Simple Mode hides financial data and controls, but keeps Virtual Keys,
-model allowlists, routing and token metrics. Saved cards and limits stay in the
-database. Existing cards still supply amounts for Ledger Entries. Entries with
-no card can be priced after you select Full Mode. See "Simple mode" in
-[usage.md](usage.md#simple-mode).
+Later file changes do not replace the saved mode. A change in **Settings** applies
+to new requests without a restart. Saved cards and limits stay in the database.
+See "Simple mode" in [usage.md](usage.md#simple-mode) for the behavior.
 
 ### Dashboard password
 
 If no password hash exists, dashboard pages redirect to `/setup`. Setup accepts
 a password of at least 8 characters and refuses all later setup requests.
-Passwords are stored as salted Argon2 hashes. Use **Settings** to change the
+The Proxy stores passwords as salted Argon2 hashes. Use **Settings** to change the
 password. Enter the current password and a new password of at least 8 characters.
 This ends all sessions. Existing sessions otherwise survive restarts.
 
@@ -126,17 +131,26 @@ If no token is set, `/metrics` needs no authentication.
 
 ## Master Key and backups
 
-Provider Keys and the metrics token use AES-256-GCM. Each saved value has a new
-random 96-bit nonce. SQLite stores base64 of `nonce || ciphertext` (including the
-authentication tag). The Master Key is not stored in SQLite.
+The Master Key protects the stored Provider Keys and the metrics token. They use
+AES-256-GCM. Each saved value has a new random 96-bit nonce. SQLite stores base64
+of `nonce || ciphertext` (including the authentication tag). The Master Key is
+not stored in SQLite.
 
-Set `LLM_ACCOUNTING_SECRET_KEY` to 32 bytes in hex or base64. If it is absent,
-the Proxy creates `secret.key` next to the database with Unix mode `0600`.
+The Proxy finds the Master Key in this order:
+
+1. The variable `LLM_ACCOUNTING_SECRET_KEY`. It holds 32 bytes as 64 hex
+   characters or as base64. An empty value or a wrong length stops the start.
+2. The file `secret.key` next to the database. It holds 32 bytes in base64. If
+   the file does not exist, the Proxy makes it at the first start with Unix mode
+   `0600`.
+
 Back up this file with the database. If you use the environment variable, back
 up that value instead. Protect both backups. A database backup without its
 Master Key cannot recover the stored secrets. A wrong or lost key causes a clear
 startup error when the Proxy cannot decrypt a value. Do not replace the key to
 repair that error. Restore the original key.
+
+References with `env:NAME` are not encrypted. They store only the variable name.
 
 Keep `secret.key` out of version control. It is not covered by this repository's
 current ignore rules. Add the line `secret.key` to your local ignore rules before
@@ -150,32 +164,40 @@ Use **Providers** to add, edit or delete Providers and to add or remove keys.
 Names use letters, digits, dot, underscore or hyphen. Base URLs must use HTTP or
 HTTPS and must not contain credentials, a query or a fragment. You cannot delete
 a Provider used by a Route or Model. Update those references first. **Test**
-calls `GET {base_url}/v1/models` with the first key and reports its status.
+calls `GET {base_url}/v1/models` with the first key and reports its HTTP status.
+It has a time limit of 15 seconds.
 
 Saved keys show only their last 4 characters. A value `env:NAME` stores a
-reference, not an encrypted key. The Proxy resolves the variable at start and
-on configuration reload. Set the variable in the service environment; a UI edit
-cannot change the environment of the running process.
+reference, not an encrypted key. `NAME` has letters, digits and underscores. The
+Proxy resolves the variable at start and on each reload. Set the variable in the
+service environment. A dashboard edit cannot change the environment of the
+running process.
+
+The table below lists the keys of the seed file. The dashboard has the fields
+`name`, `kind`, `base_url` and the keys.
 
 | Key            | Type             | Default | Meaning                                                                                                          |
 | -------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | string           | none    | Required. The name that `models.provider` uses.                                                                  |
 | `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the usage format and the authentication headers.        |
 | `base_url`     | string           | none    | Required. The URL of the Provider API, without a path such as `/v1`. The Proxy adds the path and query of the client request. |
-| `api_key`      | string           | none    | One Provider Key, in the file. Do not use it in a repository that you commit.                                    |
-| `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. The variable has priority over `api_key`.                      |
-| `api_keys`     | array of strings | `[]`    | More Provider Keys, in the file.                                                                                 |
+| `api_key`      | string           | none    | One Provider Key, in the file. The Proxy encrypts it when it seeds. Do not use it in a repository that you commit. |
+| `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. When set, `api_key` is ignored.                                |
+| `api_keys`     | array of strings | `[]`    | More Provider Keys, in the file. The Proxy encrypts them when it seeds.                                          |
 | `api_keys_env` | array of strings | `[]`    | Names of variables. Each variable holds one Provider Key.                                                        |
 
 ### Key Pool
 
-The Key Pool of a Provider holds these keys, in this order:
+The Key Pool of a Provider holds the keys in the order that **Providers** shows.
+The Proxy skips empty keys, and `env:NAME` references that are not set, and
+removes duplicate keys.
 
-1. The single key (`api_key_env`, else `api_key`).
-2. The keys in `api_keys`.
-3. The keys from the variables in `api_keys_env`.
+A seed file fills the Key Pool in this order:
 
-The Proxy skips empty keys and removes duplicate keys.
+1. The single key. If `api_key_env` is set, the Proxy stores a reference to that
+   variable and ignores `api_key`. Otherwise it stores `api_key`, encrypted.
+2. The keys in `api_keys`, encrypted.
+3. The variables in `api_keys_env`, as references.
 
 For each request, the Proxy starts at the next key in turn. After a 429, a 5xx or
 a connection error, it tries the next key. This happens before the Proxy sends
@@ -345,29 +367,65 @@ Keys keep the additive rules below.
 | Virtual Key in `keys`         | Added for the User if the key is not in the database. This also applies to existing Users.       |
 
 Changes that you make in the dashboard stay after a restart. Use the dashboard
-to edit seeded items. Router changes preserve Circuit Breaker and key rotation
+to edit seeded items. The Proxy also seeds Provider Keys from the file: see
+"Key Pool". Router changes preserve Circuit Breaker and key rotation
 state. Timeout changes build a new HTTP client for new upstream requests.
 Requests already in progress can finish with the settings that they captured.
 
 ## Routes and router settings
 
-Use **Routes** to create, edit or delete a Route. Choose `priority`, `round_robin`
-or `weighted`. Add deployment rows with Provider, upstream Model and positive
-weight. Remove rows with **Remove row**. Enter Fallback names as a comma list.
-Unknown Fallback names are skipped at request time. Fallbacks do not expand
-recursively. Without JavaScript, edit the deployment JSON array in the form.
+A Route has a name, a strategy, Deployments and Fallbacks. Use **Routes** to
+create, edit or delete a Route. The page has one section for each Route.
+
+| Field        | Meaning                                                                                              |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| Name         | The model name that clients send. Use letters, digits, dot, underscore or hyphen. The name must be unique. |
+| Strategy     | `priority`, `round_robin` or `weighted`. See below.                                                  |
+| Deployments  | Rows that you add and remove. Each row has a Provider (select), an upstream Model and a weight. The weight is a positive integer. Only the `weighted` strategy uses it. |
+| Fallbacks    | A comma list of Route names or catalog Model names.                                                  |
+
+The strategies:
+
+| Strategy      | Order of the Deployments                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------- |
+| `priority`    | The order of the rows.                                                                            |
+| `round_robin` | The order of the rows, but the first choice moves one row for each request.                       |
+| `weighted`    | One Deployment is the first choice, selected at random by weight. The others follow in descending weight order. |
+
+Rules for Fallbacks:
+
+- The Proxy tries the Fallbacks after all Deployments of the Route fail.
+- A Fallback does not expand recursively. A Fallback Route contributes its own
+  Deployments only.
+- The Proxy skips an unknown Fallback name at request time and writes a warning.
+- A Virtual Key that allows a Route also allows its Fallbacks.
+- You cannot delete or rename a Route that another Route uses as a Fallback.
+  Remove that reference first.
+- You cannot delete a Provider that a Route uses.
+
+The request-time behavior is in "Routing and Translation" in
+[usage.md](usage.md#routing-and-translation).
 
 The optional file uses `[[routes]]` with `name`, `strategy`, `deployments` and
-`fallbacks`, and `[router]` with these settings:
+`fallbacks`, and `[router]` with these settings. They also appear on
+**Settings**:
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `failure_threshold` | `3` | Positive number of failures before a circuit opens. |
-| `cooldown_secs` | `30` | Seconds before a recovery probe. |
-| `max_attempts` | `8` | Positive limit on upstream attempts for one request. |
+| Setting             | Default | Meaning                                                                                  |
+| ------------------- | ------- | ---------------------------------------------------------------------------------------- |
+| `failure_threshold` | `3`     | Positive number of failures in a row before a Circuit Breaker opens.                     |
+| `cooldown_secs`     | `30`    | Seconds that an open Circuit Breaker waits before it allows one probe request. 0 or more. |
+| `max_attempts`      | `8`     | Positive limit on upstream attempts for one request. Each Provider Key try counts.       |
 
-Change these values on **Settings**. All Provider, Route and router changes apply
-without a restart. The TOML loader and dashboard share validation.
+The Proxy keeps one Circuit Breaker for each pair of Provider and upstream model.
+A connection error, a 429 or a 5xx counts as a failure. Any other response resets
+the count. When the count reaches `failure_threshold`, the Circuit Breaker opens.
+After `cooldown_secs`, one probe request tests the Deployment. A good result
+closes the Circuit Breaker. A failed probe opens it again. If every candidate is
+open, the Proxy tries them anyway. The Proxy keeps this state in memory, so it
+resets at a restart.
+
+All Provider, Route and router changes apply without a restart. The TOML loader
+and the dashboard share the same validation.
 
 ## Docker
 
@@ -394,6 +452,18 @@ docker run -p 8787:8787 -v llma-data:/data \
   llm-accounting
 ```
 
+The file `compose.yaml` builds this image and runs it with these settings:
+
+- It publishes `127.0.0.1:8787:8787`.
+- It mounts the volume `llma-data` at `/data`.
+- It passes `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `RUST_LOG` and
+  `LLM_ACCOUNTING_ADMIN_PASSWORD` from the shell or from a `.env` file.
+- It has a health check on `/healthz`.
+- It does not set `LLM_ACCOUNTING_SECRET_KEY`. The line is a comment, because an
+  empty value stops the start. Without it, the Proxy makes `/data/secret.key`.
+
+Start it with `docker compose up -d`. See [INSTALL.md](../INSTALL.md).
+
 Rules for Docker:
 
 - Open `/setup` on the first start. To seed instead, mount your own file and add
@@ -401,7 +471,8 @@ Rules for Docker:
   not use the example file unless you ask for it.
 - Keep the database on the volume `/data`. Without a volume, the Ledger Entries
   are lost when the container is removed.
-- Pass the secrets with `-e NAME`. Do not write them in the file.
+- Pass the secrets with `-e NAME`, or with `env:NAME` references. Do not write
+  them in a file.
 - Back up `/data/secret.key` and the database. Keep the volume across updates.
 - To publish the port on the loopback interface only, use
   `-p 127.0.0.1:8787:8787`.

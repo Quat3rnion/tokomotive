@@ -1,18 +1,46 @@
 # llm-accounting
 
-llm-accounting is a Proxy for LLM APIs. Clients send requests to the Proxy
-instead of to the Provider. The Proxy forwards each request, reads the token
-usage from the response, and records the Cost, the Price and the Profit for each
-User and Model. A web dashboard shows the data and lets the Operator change the
-configuration.
+llm-accounting is an LLM router and Proxy with optional cost accounting. Clients
+send requests to the Proxy instead of to the Provider. The Proxy chooses a
+Deployment, forwards the request, and reads the token usage from the response.
+In Full Mode, it also records the Cost, the Price and the Profit for each User
+and Model.
 
+You configure everything in the web dashboard. You do not need to edit a file.
 The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Features
 
+### Routing
+
+- Maps a client model name to a Route. A Route has one or more Deployments.
+  Each Deployment is a Provider and an upstream model name.
+- Selects Deployments with the strategy `priority`, `round_robin` or `weighted`.
+- Tries Fallbacks and the next Provider Key when a Deployment fails with a
+  connection error, a 429 or a 5xx.
+- Uses a Circuit Breaker for each Deployment. A failing Deployment rests for a
+  cooldown. Then one probe request tests it.
+- Limits the number of upstream attempts for each request with `max_attempts`.
+- Accepts `provider/model` names when no Route or catalog Model matches. The
+  Proxy removes the Provider prefix before the upstream request.
+- Rewrites the Model name of the request to the upstream model name of the
+  Deployment.
+
+### Compatibility
+
 - Supports OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/responses`,
   `/v1/embeddings`, `/v1/images/generations`, `/v1/images/edits`) and the
   Anthropic API (`/v1/messages`), with and without streaming.
+- Translates between Chat Completions and Messages, with streaming and tools.
+  A Chat Completions client can use an Anthropic Provider. A Messages client
+  can use an OpenAI Provider. See [Translation](docs/usage.md#routing-and-translation)
+  for the limits.
+- Lists the Routes and Models that a Virtual Key can use at `GET /v1/models`
+  and `GET /v1/models/{id}`, in OpenAI or Anthropic format.
+- Accepts the Virtual Key in `Authorization: Bearer` or in `x-api-key`.
+
+### Accounting
+
 - Records seven Token Classes: input, output, cache read, cache write
   (5 minutes), cache write (1 hour), image input and image output.
 - Uses a Cost Card and a Price Card for each Model. A Price Card is a Markup or
@@ -20,72 +48,106 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Supports Context Tiers, for example higher rates above 200,000 input tokens.
 - Keeps every change to a card as a Card Version. A Ledger Entry does not change
   when you change a card.
-- Issues Virtual Keys to Users. The Provider Keys stay on the server.
-- Uses a Key Pool for each Provider. After a 429, a 5xx or a connection error,
-  the Proxy tries the next key before it sends data to the client.
-- Routes a client model name to several Deployments with priority,
-  round-robin or weighted selection, Fallbacks and Circuit Breakers.
-- Supports `provider/model` names when no Route or catalog Model matches.
-  The Provider prefix is removed before the upstream request. Models without
-  cards still have usage recorded as Unpriced Entries.
-- Lists permitted Routes and catalog Models at `GET /v1/models` and
-  `GET /v1/models/{id}`, in OpenAI or Anthropic format.
+- Records Models without cards as Unpriced Entries. You can price them later.
 - Rejects requests with HTTP 402 when the Budget of the User does not cover the
   worst-case Price of the request (the Reservation).
+- Applies RPM and TPM Rate Limits to each Virtual Key and each User. A request
+  over a limit gets HTTP 429 and a `Retry-After` header.
+
+### Operations
+
+- Stores Providers, Provider Keys, Routes and settings in the database. The
+  Operator changes them on the **Providers**, **Routes** and **Settings** pages.
+  Changes apply without a restart.
+- Encrypts Provider Keys with AES-256-GCM. The Master Key comes from
+  `LLM_ACCOUNTING_SECRET_KEY` or from a generated `secret.key` file.
+- Lets a Provider Key refer to an environment variable with `env:NAME`.
 - Shows requests, tokens, latency, time to first token, Cost, Price and Profit
   per Model, User and Team in the dashboard.
 - Exports Prometheus metrics at `/metrics`, optionally with a token.
 - Offers Simple Mode for routing and token metrics without prices or usage
-  limits. Full Mode keeps pricing, Budgets and Rate Limits.
+  limits.
 
 ### Simple mode
 
-Select **Simple** on `/setup` or in **Settings**. Changes apply without a
+Select **Simple** on `/setup` or in **Settings**. The change applies without a
 restart. Virtual Keys, model allowlists, routing and token metrics stay active.
-You do not need cards or limits. The dashboard hides financial data and controls.
-The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
+You do not need cards or limits. The dashboard hides financial data and
+controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 
 ## Quick start
 
-1. Start the Proxy. No configuration file is required:
+Both methods are UI-first. You do not edit a file.
+
+### With Docker Compose
+
+1. Start the Proxy from the root directory of the repository:
+
+   ```sh
+   docker compose up -d
+   ```
+
+2. Open `http://127.0.0.1:8787/admin`. The page redirects to `/setup`. Enter an
+   admin password of at least 8 characters, select **Full** or **Simple**, and
+   select **Set password**. Then log in.
+3. Go to the next section, "Configure in the dashboard".
+
+Compose keeps the database and the generated `secret.key` file in the volume
+`llma-data`. Back up both. See [INSTALL.md](INSTALL.md) for the Master Key
+options.
+
+### With Cargo
+
+1. Start the Proxy. The Rust version must be 1.88 or newer:
 
    ```sh
    cargo run --release
    ```
 
-2. Open `http://127.0.0.1:8787/admin`. Setup asks for a password of at least 8
-   characters and lets you select the mode. Log in and add a Provider and its
-   keys on **Providers**. Add Models on **Models**, or use `provider/model` names.
-   In Full Mode, add cards and check rates against the Provider price list.
-3. Add a User on **Users**, then create a Virtual Key on **Keys**. Copy the key.
-   You cannot see it again. Back up the database and its `secret.key` file.
+2. Open `http://127.0.0.1:8787/admin` and complete Setup, as in the Compose
+   steps above.
+3. Go to the next section, "Configure in the dashboard".
 
-4. Send a request to the Proxy with the Virtual Key:
+The Proxy creates `llm-accounting.db` and `secret.key` in the working directory.
+Back up both.
+
+### Configure in the dashboard
+
+1. On **Providers**, add a Provider with its name, kind, base URL and key. Use
+   `env:NAME` to refer to an environment variable instead of a key. Select
+   **Test** to check the connection.
+2. Optional: on **Routes**, add a Route with its Deployments and Fallbacks.
+3. In Full Mode, add Models and cards on **Models**. Check the rates against the
+   Provider price list. In Simple Mode, skip this step and use `provider/model`
+   names or Routes.
+4. Add a User on **Users**. Then create a Virtual Key on **Keys**. Copy the key.
+   You cannot see it again.
+5. Send a request with the Virtual Key:
 
    ```sh
    curl http://127.0.0.1:8787/v1/chat/completions \
      -H "Authorization: Bearer sk-llma-..." -H "content-type: application/json" \
-     -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
+     -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
    ```
 
-   The request appears on the **Ledger** page.
+   The request appears on the **Ledger** page. The name `openai/gpt-4o` works
+   when a Provider named `openai` exists and no Model has that full name.
 
-The Proxy accepts the Virtual Key in `Authorization: Bearer` or in `x-api-key`.
-An allowed Route also permits its Fallbacks. Use **Providers**, **Routes** and
-**Settings** for live changes. An optional `--config PATH` file seeds the
-database. Later edits belong in the dashboard. Use `--listen` and `--database`
-for process options. The default listen address is `127.0.0.1:8787`.
-Docker is also available. See [INSTALL.md](INSTALL.md).
+The default listen address is `127.0.0.1:8787`. Use `--listen` and `--database`
+(or `LLM_ACCOUNTING_LISTEN` and `LLM_ACCOUNTING_DATABASE`) to change the listen
+address and the database. These two options are the only settings outside the
+dashboard. An optional `--config PATH` file seeds the database once. See
+[docs/configuration.md](docs/configuration.md).
 
 ## Documentation
 
 - [INSTALL.md](INSTALL.md): install, configure and verify the Proxy. It is
   written for AI coding agents.
 - [docs/usage.md](docs/usage.md): the Operator guide. It covers clients, the
-  dashboard pages, how amounts are calculated, Budgets, Key Pools, metrics and
-  error responses.
+  dashboard pages, routing, Translation, how amounts are calculated, Budgets,
+  Rate Limits, metrics and error responses.
 - [docs/configuration.md](docs/configuration.md): every setting, every
-  environment variable, seeding and Docker.
+  environment variable, the Master Key, seeding and Docker.
 - [GLOSSARY.md](GLOSSARY.md): the terms of this project.
 - [docs/adr/](docs/adr/): the architecture decisions.
 
@@ -96,14 +158,19 @@ Docker is also available. See [INSTALL.md](INSTALL.md).
 - The Proxy reads the Model name from a JSON request body only. A multipart
   request has no Model name. The Proxy records it as an Unpriced Entry unless
   the response names the Model.
+- Translation rejects `n` greater than 1 and JSON-schema response formats. It
+  drops thinking blocks, signatures and cache hints. It translates choice 0
+  only. See [docs/usage.md](docs/usage.md#routing-and-translation).
 - The Reservation uses an estimate of the input tokens. A request can cost more
   than its Reservation, for example when it refers to files or cached content
   that is not in the request body. Thus, a Budget can be exceeded by a small
   amount.
-- Reservations are in memory. Run one Proxy process for each database.
+- Reservations, Rate Limits, Circuit Breaker state and Key Pool rotation are in
+  memory. They reset when the process restarts. Run one Proxy process for each
+  database.
 - On the image endpoints, the Proxy treats cached tokens as text tokens. Cached
   image input tokens are recorded as image input, not as cache read.
-- `/metrics` has no authentication when `metrics_token` is not set.
+- `/metrics` has no authentication when no metrics token is set.
 
 ## Development
 
@@ -113,3 +180,12 @@ cargo clippy --all-targets
 ```
 
 The code needs Rust 1.88 or newer (edition 2024).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution that you intentionally
+submit for inclusion in this work, as defined in the Apache-2.0 license, is
+dual licensed as above, without any additional terms or conditions.
