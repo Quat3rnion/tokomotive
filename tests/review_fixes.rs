@@ -83,6 +83,23 @@ deployments = [{ provider = "openai", model = "gpt" }, { provider = "anthropic",
     assert_eq!(response.status(), 402, "budget only covers the untranslated 4096 token default");
 }
 
+#[tokio::test]
+async fn sessions_cannot_outlive_the_password_they_verified() {
+    let e = env("").await;
+    let old_hash = llm_accounting::settings::value(&e.st.db, "admin_password_hash").await.unwrap().unwrap();
+    llm_accounting::db::create_session(&e.st.db, "old-login", 1).await.unwrap();
+    assert!(llm_accounting::db::session_valid(&e.st.db, "old-login").await.unwrap());
+    let new_hash = llm_accounting::settings::hash_password("new-password").unwrap();
+    llm_accounting::settings::put(&e.st.db, "admin_password_hash", &new_hash).await.unwrap();
+    assert!(!llm_accounting::db::session_valid(&e.st.db, "old-login").await.unwrap(),
+        "a session verified against the old password survived rotation");
+    // A login that verified before rotation can finish inserting afterwards.
+    llm_accounting::db::create_session_for_password(&e.st.db, "late-login", 1, Some(&old_hash)).await.unwrap();
+    assert!(!llm_accounting::db::session_valid(&e.st.db, "late-login").await.unwrap());
+    llm_accounting::db::create_session_for_password(&e.st.db, "new-login", 1, Some(&new_hash)).await.unwrap();
+    assert!(llm_accounting::db::session_valid(&e.st.db, "new-login").await.unwrap());
+}
+
 #[test]
 fn tool_result_images_follow_all_consecutive_tool_replies() {
     let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}});

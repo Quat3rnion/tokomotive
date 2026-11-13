@@ -977,13 +977,22 @@ pub async fn card_history(db: &Db, model_id: i64) -> Result<Vec<CardHistoryRow>>
 
 /// Store a new dashboard session. Only the hash of the token is stored.
 pub async fn create_session(db: &Db, token: &str, days: i64) -> Result<()> {
+    let password = crate::settings::value(db, "admin_password_hash").await?;
+    create_session_for_password(db, token, days, password.as_deref()).await
+}
+
+/// Use the exact hash that the login verified, not a fresh password lookup.
+pub async fn create_session_for_password(
+    db: &Db, token: &str, days: i64, password_hash: Option<&str>,
+) -> Result<()> {
     sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
         .bind(now_s())
         .execute(db)
         .await?;
-    sqlx::query("INSERT INTO sessions(token_hash, expires_at) VALUES(?, ?)")
+    sqlx::query("INSERT INTO sessions(token_hash, expires_at, password_hash) VALUES(?, ?, ?)")
         .bind(hash_key(token))
         .bind(now_s() + days * 86_400)
+        .bind(password_hash)
         .execute(db)
         .await?;
     Ok(())
@@ -991,7 +1000,8 @@ pub async fn create_session(db: &Db, token: &str, days: i64) -> Result<()> {
 
 pub async fn session_valid(db: &Db, token: &str) -> Result<bool> {
     let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM sessions WHERE token_hash = ? AND expires_at >= ?",
+        "SELECT COUNT(*) FROM sessions WHERE token_hash = ? AND expires_at >= ?
+         AND password_hash IS (SELECT value FROM settings WHERE key='admin_password_hash')",
     )
     .bind(hash_key(token))
     .bind(now_s())
