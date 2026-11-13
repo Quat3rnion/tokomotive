@@ -141,6 +141,44 @@ deployments = [{ provider = "openai", model = "gpt" }, { provider = "anthropic",
 }
 
 #[tokio::test]
+async fn incompatible_fallback_preserves_the_upstream_outcome_and_ledger() {
+    let e = env(r#"
+[[routes]]
+name = "mixed"
+deployments = [{ provider = "openai", model = "gpt" }]
+fallbacks = ["claude"]
+"#).await;
+    for (index, extra) in [json!({"n":2}), json!({"response_format":{"type":"json_schema"}})].into_iter().enumerate() {
+        let mut body = extra;
+        body["model"] = json!("mixed");
+        body["messages"] = json!([]);
+        body["max_tokens"] = json!(10);
+        let response = reqwest::Client::new().post(format!("{}/v1/chat/completions", e.url))
+            .bearer_auth("sk-review").json(&body).send().await.unwrap();
+        e.st.flush().await;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger").fetch_one(&e.st.db).await.unwrap();
+        assert_eq!(count, index as i64 + 1, "translation failure after an upstream attempt lost the Ledger Entry");
+        assert_eq!(response.status(), 429, "an incompatible fallback must not replace the upstream outcome");
+        assert_eq!(response.json::<serde_json::Value>().await.unwrap()["error"]["message"], "rate limited");
+        let row: (i64, i64, String) = sqlx::query_as("SELECT status,attempts,provider FROM ledger ORDER BY id DESC LIMIT 1")
+            .fetch_one(&e.st.db).await.unwrap();
+        assert_eq!(row, (429, 1, "openai".into()));
+    }
+}
+
+#[tokio::test]
+async fn translation_error_without_upstream_attempts_is_400_without_ledger() {
+    let e = env("").await;
+    let response = reqwest::Client::new().post(format!("{}/v1/chat/completions", e.url))
+        .bearer_auth("sk-review").json(&json!({"model":"claude","messages":[],"n":2,"max_tokens":10}))
+        .send().await.unwrap();
+    assert_eq!(response.status(), 400);
+    e.st.flush().await;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger").fetch_one(&e.st.db).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn sessions_cannot_outlive_the_password_they_verified() {
     let e = env("").await;
     let old_hash = llm_accounting::settings::value(&e.st.db, "admin_password_hash").await.unwrap().unwrap();

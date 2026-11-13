@@ -452,6 +452,7 @@ pub async fn handle(
         .iter()
         .all(|c| !st.deployment_available(c, &table.settings));
     let mut upstream = None;
+    let mut translation_error = None;
     let mut strip_usage_chunk = false;
     let mut direction = None;
     let mut upstream_endpoint = endpoint;
@@ -467,7 +468,10 @@ pub async fn handle(
         let dir = translation(provider.kind, endpoint);
         let (prepared, target_endpoint, strip) = match prepare_body(candidate, endpoint, json_body.as_ref()) {
             Ok(v) => v,
-            Err(e) => return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message),
+            Err(e) => {
+                translation_error = Some(e);
+                continue;
+            }
         };
         let upstream_body = match prepared {
             Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
@@ -530,6 +534,9 @@ pub async fn handle(
         previous_route = Some(candidate.route.clone());
     }
     let Some(upstream) = upstream else {
+        if ctx.attempts == 0 && let Some(e) = translation_error {
+            return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message);
+        }
         ctx.finish(Outcome::failed(502));
         return error(
             StatusCode::BAD_GATEWAY,
