@@ -82,17 +82,18 @@ controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 
 The screenshots show demo data from a local test server. The keys are not real.
 
-![The Overview page in Full Mode. It shows the totals for 24 hours, a Money chart and a Traffic chart, and the start of the By model table.](docs/images/overview.png)
+![The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the start of the By Model table.](docs/images/overview.png)
 
 ![The Routes page. The Route "smart" uses the weighted strategy with three Deployments on two Providers and two Fallbacks.](docs/images/routes.png)
 
 | Page | What it shows |
 | ---- | ------------- |
-| [Ledger](docs/images/ledger.png) | The newest Ledger Entries with the User, the Provider, the endpoint, the Model, the status and the tokens. |
-| [Providers](docs/images/providers.png) | Two Providers and their Key Pools. The page shows only the last 4 characters of each key. |
+| [Ledger](docs/images/ledger.png) | The newest Ledger Entries with filters. Each row shows the User, the Model and Provider, the status, the flags, the tokens, the amounts and the latency. |
+| [Providers](docs/images/providers.png) | API-key and subscription Providers. The page shows only the last 4 characters of each key, or the name of its environment variable. |
 | [Models](docs/images/models.png) | The Models with their Cost Card rates, Price Cards and Team overrides. |
 | [Model page](docs/images/model.png) | The cards of one Model, two Team overrides and the Card history. |
-| [Users](docs/images/users.png) | The Users with Teams, Budgets, Rate Limits and the spend in this period. |
+| [Users](docs/images/users.png) | The Users with their Teams, Budgets, Rate Limits and spend. Edit opens one form for each User. |
+| [Keys](docs/images/keys.png) | The form to add a Virtual Key with Provider Access and Rate Limits, and the active keys. |
 | [Overview in Simple Mode](docs/images/overview-simple.png) | The Overview without money data: requests, tokens, latency, errors and attempts. |
 
 ## Quick start
