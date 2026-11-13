@@ -3,7 +3,7 @@ use tokomotive::{config::Config, state::AppState};
 
 #[tokio::test]
 async fn master_key_is_next_to_database_with_encoded_parent_path() {
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/with%20space/db.sqlite", dir.path().display());
     let st = tokomotive::init(&cfg, None).await.unwrap();
@@ -17,7 +17,7 @@ async fn app() -> (
     String,
     tokio::task::JoinHandle<()>,
 ) {
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
     let st = tokomotive::init(&cfg, None).await.unwrap();
@@ -106,7 +106,7 @@ async fn setup_mode_choice_is_clear_validated_and_persists() {
 
 #[tokio::test]
 async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let mut cfg: Config = toml::from_str(
         "[server]\nmode = 'simple'\ndefault_markup_percent = 37\nreserve_output_tokens = 123",
     )
@@ -829,7 +829,7 @@ fn secrets_round_trip_and_wrong_master_key_fails() {
 
 #[tokio::test]
 async fn binary_starts_without_a_config_file() {
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
@@ -868,7 +868,7 @@ async fn binary_starts_without_a_config_file() {
 
 #[tokio::test]
 async fn runtime_seed_is_once_and_wrong_key_stops_startup() {
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let mut cfg: Config = toml::from_str(
         r#"
 [[providers]]

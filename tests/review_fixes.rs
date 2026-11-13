@@ -99,7 +99,7 @@ fn blank_secret_key_uses_the_persistent_generated_key() {
         }
         return;
     }
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let database = format!("sqlite://{}/db.sqlite", dir.path().display());
     let key = tokomotive::settings::SecretKey::load(&database)
         .expect("blank secret key must use generated key instead of failing startup");
@@ -125,7 +125,7 @@ async fn env(routes: &str) -> Env {
     let ul = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_url = format!("http://{}", ul.local_addr().unwrap());
     let ut = tokio::spawn(async move { axum::serve(ul, upstream).await.unwrap() });
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let cfg: Config = toml::from_str(&format!(
         r#"
 [server]

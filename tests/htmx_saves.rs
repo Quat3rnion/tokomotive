@@ -3,7 +3,7 @@
 use tokomotive::config::Config;
 
 async fn app() -> (tempfile::TempDir, String) {
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
     let st = tokomotive::init(&cfg, None).await.unwrap();
