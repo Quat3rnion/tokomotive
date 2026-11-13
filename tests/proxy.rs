@@ -31,10 +31,21 @@ fn sse(events: Vec<String>, delay_ms: u64) -> Response {
 
 async fn mock_openai(
     axum::extract::State(seen): axum::extract::State<Seen>,
-    headers: HeaderMap,
+    uri: axum::http::Uri,
+    mut headers: HeaderMap,
     Json(b): Json<Value>,
 ) -> Response {
+    headers.insert("x-seen-uri", uri.to_string().parse().unwrap());
     seen.0.lock().unwrap().push((headers.clone(), b.clone()));
+    if headers.contains_key("x-mock-error") {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error":{"type":"invalid_request_error","message":"mock rejected request"}}),
+            ),
+        )
+            .into_response();
+    }
     if headers["authorization"] == "Bearer bad-key" {
         return (axum::http::StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
@@ -59,38 +70,52 @@ async fn mock_openai(
         ev.push("data: [DONE]\n\n".into());
         return sse(ev, 5);
     }
-    Json(json!({"model": b["model"], "choices": [], "usage": usage})).into_response()
+    Json(json!({"id":"chat_test", "model": b["model"], "choices": [{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}], "usage": usage})).into_response()
 }
 
 async fn mock_anthropic(
     axum::extract::State(seen): axum::extract::State<Seen>,
-    headers: HeaderMap,
+    uri: axum::http::Uri,
+    mut headers: HeaderMap,
     Json(b): Json<Value>,
 ) -> Response {
-    seen.0.lock().unwrap().push((headers, b.clone()));
+    headers.insert("x-seen-uri", uri.to_string().parse().unwrap());
+    seen.0.lock().unwrap().push((headers.clone(), b.clone()));
+    if headers.contains_key("x-mock-error") {
+        return (axum::http::StatusCode::BAD_REQUEST,Json(json!({"type":"error","error":{"type":"invalid_request_error","message":"mock rejected request"}}))).into_response();
+    }
     let start_usage = json!({"input_tokens": 50, "output_tokens": 1, "cache_read_input_tokens": 2000,
         "cache_creation_input_tokens": 300, "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}});
     if b["stream"] == json!(true) {
-        let slow = b["metadata"]["slow"] == json!(true);
+        let slow = b["metadata"]["slow"] == json!(true) || headers.contains_key("x-mock-slow");
         let mut ev = vec![format!(
             "event: message_start\ndata: {}\n\n",
             json!({"type": "message_start", "message": {"model": "claude-sonnet-4-5-20250929", "usage": start_usage}})
         )];
+        ev.push(format!("event: content_block_start\ndata: {}\n\n", json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})));
         for _ in 0..(if slow { 20 } else { 2 }) {
             ev.push(format!(
                 "event: content_block_delta\ndata: {}\n\n",
-                json!({"type": "content_block_delta", "delta": {"text": "x"}})
+                json!({"type": "content_block_delta", "index":0, "delta": {"type":"text_delta", "text": "x"}})
             ));
         }
+        ev.push(
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+                .into(),
+        );
         ev.push(format!(
             "event: message_delta\ndata: {}\n\n",
-            json!({"type": "message_delta", "usage": {"output_tokens": 77}})
+            json!({"type": "message_delta", "delta":{"stop_reason":"end_turn"}, "usage": {"output_tokens": 77}})
         ));
+        ev.push("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".into());
         return sse(ev, if slow { 40 } else { 2 });
     }
     let mut u = start_usage;
     u["output_tokens"] = json!(77);
-    Json(json!({"model": "claude-sonnet-4-5-20250929", "usage": u})).into_response()
+    if b["tools"].is_array() {
+        return Json(json!({"id":"msg_tool", "type":"message","role":"assistant","model":b["model"],"content":[{"type":"tool_use","id":"call_1","name":"weather","input":{"city":"Paris"}}],"stop_reason":"tool_use","usage":u})).into_response();
+    }
+    Json(json!({"id":"msg_test", "type":"message", "role":"assistant", "content":[{"type":"text","text":"hi"}], "stop_reason":"end_turn", "model": "claude-sonnet-4-5-20250929", "usage": u})).into_response()
 }
 
 async fn mock_embeddings(Json(b): Json<Value>) -> Response {
@@ -355,7 +380,7 @@ deployments = [
 }
 
 #[tokio::test]
-async fn incompatible_deployment_is_skipped() {
+async fn mixed_route_serves_both_client_formats_in_deployment_order() {
     let e = env_with_routes(
         r#"
 [[routes]]
@@ -367,18 +392,382 @@ deployments = [
 "#,
     )
     .await;
+    for endpoint in ["chat/completions", "messages"] {
+        let r = e
+            .http
+            .post(format!("{}/v1/{endpoint}", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model": "smart", "messages": []}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let body: Value = r.json().await.unwrap();
+        if endpoint == "chat/completions" {
+            assert_eq!(body["choices"][0]["message"]["content"], "hi");
+        } else {
+            assert_eq!(body["content"][0]["text"], "hi");
+        }
+        let row = last_entry(&e.st).await;
+        assert_eq!(i(&row, "attempts"), 1);
+        assert_eq!(i(&row, "input"), 50);
+        assert_eq!(i(&row, "output"), 77);
+        assert_eq!(i(&row, "cost_micros"), 3480);
+        assert_eq!(row.get::<String, _>("provider"), "anthropic");
+    }
+    let seen = e.seen.0.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].1["model"], "claude-sonnet-4-5");
+    assert_eq!(seen[0].0["x-api-key"], "upstream-anthropic-key");
+    assert_eq!(seen[0].0["anthropic-version"], "2023-06-01");
+    assert!(!seen[0].0.contains_key("authorization"));
+}
+
+#[tokio::test]
+async fn translated_streams_keep_upstream_usage_and_client_formats() {
+    let e = env().await;
+    for (endpoint, model, include_usage) in [
+        ("chat/completions", "claude-sonnet-4-5", false),
+        ("chat/completions", "claude-sonnet-4-5", true),
+        ("messages", "gpt-4o", false),
+    ] {
+        let r = e.http.post(format!("{}/v1/{endpoint}", e.proxy))
+            .bearer_auth("sk-carol")
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", "test-beta")
+            .json(&json!({"model":model,"messages":[],"max_tokens":100,"stream":true,"stream_options":{"include_usage":include_usage}}))
+            .send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream")
+        );
+        assert!(!r.headers().contains_key("content-length"));
+        let text = r.text().await.unwrap();
+        let row = last_entry(&e.st).await;
+        assert_eq!(i(&row, "estimated"), 0);
+        if endpoint == "chat/completions" {
+            assert!(text.contains("chat.completion.chunk"), "{text}");
+            assert!(text.contains("[DONE]"));
+            assert_eq!(text.contains("prompt_tokens"), include_usage);
+            assert_eq!(i(&row, "input"), 50);
+            assert_eq!(i(&row, "output"), 77);
+            assert_eq!(i(&row, "cost_micros"), 3480);
+        } else {
+            assert!(text.contains("event: message_start"), "{text}");
+            assert!(text.contains("event: message_stop"));
+            assert!(!text.contains("[DONE]"));
+            assert_eq!(i(&row, "input"), 600);
+            assert_eq!(i(&row, "cache_read"), 400);
+            assert_eq!(i(&row, "output"), 100);
+            assert_eq!(i(&row, "cost_micros"), 3000);
+        }
+    }
+    let seen = e.seen.0.lock().unwrap();
+    assert!(!seen[2].0.contains_key("anthropic-version"));
+    assert!(!seen[2].0.contains_key("anthropic-beta"));
+    assert_eq!(seen[2].1["stream_options"]["include_usage"], true);
+}
+
+#[tokio::test]
+async fn key_rpm_limit_returns_retry_after_without_counting_model_reads() {
+    use llm_accounting::{db, ratelimit::Limits};
+    for endpoint in ["chat/completions", "messages"] {
+        let e = env().await;
+        let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
+        db::update_key_limits(
+            &e.st.db,
+            auth.key_id,
+            Limits {
+                rpm: Some(1),
+                tpm: None,
+            },
+        )
+        .await
+        .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                e.http
+                    .get(format!("{}/v1/models", e.proxy))
+                    .bearer_auth("sk-carol")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                200
+            );
+        }
+        for status in [200, 429] {
+            let r = e.http.post(format!("{}/v1/{endpoint}",e.proxy)).bearer_auth("sk-carol")
+                .json(&json!({"model":if endpoint=="messages" {"claude-sonnet-4-5"} else {"gpt-4o"},"messages":[]}))
+                .send().await.unwrap();
+            assert_eq!(r.status(), status);
+            if status == 429 {
+                assert!(
+                    (1..=60).contains(
+                        &r.headers()["retry-after"]
+                            .to_str()
+                            .unwrap()
+                            .parse::<u64>()
+                            .unwrap()
+                    )
+                );
+                let body: Value = r.json().await.unwrap();
+                assert_eq!(body["error"]["type"], "rate_limit_error");
+                assert_eq!(body["type"] == "error", endpoint == "messages");
+            }
+        }
+        assert_eq!(e.seen.0.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn tpm_limit_counts_all_upstream_token_classes_after_completion() {
+    use llm_accounting::{db, ratelimit::Limits};
+    for stream in [false, true] {
+        let e = env().await;
+        let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
+        // Anthropic uses 2427 tokens across all exclusive classes, only 127
+        // of which are uncached input and output.
+        db::update_key_limits(
+            &e.st.db,
+            auth.key_id,
+            Limits {
+                rpm: None,
+                tpm: Some(2400),
+            },
+        )
+        .await
+        .unwrap();
+        for status in [200, 429] {
+            let r = e
+                .http
+                .post(format!("{}/v1/chat/completions", e.proxy))
+                .bearer_auth("sk-carol")
+                .json(&json!({"model":"claude-sonnet-4-5","messages":[],"stream":stream}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), status);
+            r.bytes().await.unwrap();
+            e.st.flush().await;
+        }
+        assert_eq!(e.seen.0.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn messages_client_uses_openai_nonstream_and_keeps_query_and_usage() {
+    let e = env().await;
+    let r=e.http.post(format!("{}/v1/messages?test=one%20two",e.proxy)).header("x-api-key","sk-carol")
+        .header("anthropic-version","2023-06-01").header("anthropic-beta","example")
+        .json(&json!({"model":"openai/gpt-4o","system":"Be brief","messages":[{"role":"user","content":"Hello"}],"max_tokens":100}))
+        .send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "application/json");
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["type"], "message");
+    assert_eq!(body["content"], json!([{"type":"text","text":"hi"}]));
+    assert_eq!(
+        body["usage"],
+        json!({"input_tokens":600,"cache_read_input_tokens":400,"output_tokens":100})
+    );
+    let row = last_entry(&e.st).await;
+    assert_eq!(i(&row, "cost_micros"), 3000);
+    assert_eq!(row.get::<String, _>("endpoint"), "messages");
+    let seen = e.seen.0.lock().unwrap();
+    assert_eq!(
+        seen[0].0["x-seen-uri"],
+        "/v1/chat/completions?test=one%20two"
+    );
+    assert!(!seen[0].0.contains_key("x-api-key"));
+    assert!(!seen[0].0.contains_key("anthropic-version"));
+    assert!(!seen[0].0.contains_key("anthropic-beta"));
+    assert_eq!(seen[0].0["authorization"], "Bearer upstream-openai-key");
+    assert_eq!(seen[0].1["model"], "gpt-4o");
+    assert_eq!(
+        seen[0].1["messages"][0],
+        json!({"role":"system","content":"Be brief"})
+    );
+}
+
+#[tokio::test]
+async fn chat_tool_call_round_trip_uses_anthropic_blocks() {
+    let e = env().await;
+    let mut body = json!({"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Weather?"}],"tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]});
     let r = e
         .http
-        .post(format!("{}/v1/chat/completions", e.proxy))
+        .post(format!("{}/v1/chat/completions?trace=yes", e.proxy))
         .bearer_auth("sk-carol")
-        .json(&json!({"model": "smart"}))
+        .json(&body)
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
+    let response: Value = r.json().await.unwrap();
+    assert_eq!(response["choices"][0]["finish_reason"], "tool_calls");
+    let assistant = response["choices"][0]["message"].clone();
+    assert_eq!(assistant["tool_calls"][0]["function"]["name"], "weather");
+    let args: Value = serde_json::from_str(
+        assistant["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(args, json!({"city":"Paris"}));
+    body["messages"].as_array_mut().unwrap().extend([
+        assistant,
+        json!({"role":"tool","tool_call_id":"call_1","content":"Sunny"}),
+    ]);
+    body.as_object_mut().unwrap().remove("tools");
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["choices"][0]["message"]["content"],
+        "hi"
+    );
+    e.st.flush().await;
+    let seen = e.seen.0.lock().unwrap();
+    assert_eq!(seen[0].0["x-seen-uri"], "/v1/messages?trace=yes");
+    assert_eq!(seen[0].1["tools"][0]["name"], "weather");
+    assert_eq!(
+        seen[1].1["messages"][1]["content"][0],
+        json!({"type":"tool_use","id":"call_1","name":"weather","input":{"city":"Paris"}})
+    );
+    assert_eq!(
+        seen[1].1["messages"][2]["content"][0]["type"],
+        "tool_result"
+    );
+    assert_eq!(
+        seen[1].1["messages"][2]["content"][0]["tool_use_id"],
+        "call_1"
+    );
+}
+
+#[tokio::test]
+async fn translated_errors_use_client_format_and_invalid_requests_never_reach_upstream() {
+    let e = env().await;
+    for (endpoint, model) in [
+        ("chat/completions", "claude-sonnet-4-5"),
+        ("messages", "gpt-4o"),
+    ] {
+        let r = e
+            .http
+            .post(format!("{}/v1/{endpoint}", e.proxy))
+            .bearer_auth("sk-carol")
+            .header("x-mock-error", "yes")
+            .json(&json!({"model":model,"messages":[]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400);
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["message"], "mock rejected request");
+        assert_eq!(body["type"] == "error", endpoint == "messages");
+        let row = last_entry(&e.st).await;
+        assert_eq!(i(&row, "status"), 400);
+        assert_eq!(i(&row, "cost_micros"), 0);
+        assert_eq!(i(&row, "unpriced"), 0);
+        let count = e.seen.0.lock().unwrap().len();
+        let r = e
+            .http
+            .post(format!("{}/v1/{endpoint}", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model":model,"messages":[{"role":"invalid","content":"x"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400);
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["type"] == "error", endpoint == "messages");
+        assert_eq!(e.seen.0.lock().unwrap().len(), count);
+    }
+}
+
+#[tokio::test]
+async fn user_rate_limit_is_shared_by_two_virtual_keys() {
+    use llm_accounting::{db, ratelimit::Limits};
+    for limits in [
+        Limits {
+            rpm: Some(1),
+            tpm: None,
+        },
+        Limits {
+            rpm: None,
+            tpm: Some(1100),
+        },
+    ] {
+        let e = env().await;
+        let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
+        db::update_user_with_limits(&e.st.db, auth.user_id, None, None, false, false, limits)
+            .await
+            .unwrap();
+        let (_, second) = db::create_key(&e.st.db, auth.user_id, "second", None)
+            .await
+            .unwrap();
+        for (key, status) in [("sk-carol", 200), (second.as_str(), 429)] {
+            let r = e
+                .http
+                .post(format!("{}/v1/chat/completions", e.proxy))
+                .bearer_auth(key)
+                .json(&json!({"model":"gpt-4o"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), status);
+            r.bytes().await.unwrap();
+            e.st.flush().await;
+        }
+        assert_eq!(e.seen.0.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn authentication_and_allowlist_checks_do_not_consume_rate_limits() {
+    use llm_accounting::{db, ratelimit::Limits};
+    let e = env().await;
+    let auth = db::lookup_key(&e.st.db, "sk-carol").await.unwrap().unwrap();
+    let (_, key) = db::create_key_with_limits(
+        &e.st.db,
+        auth.user_id,
+        "restricted",
+        Some(vec!["gpt-4o".into()]),
+        Limits {
+            rpm: Some(1),
+            tpm: None,
+        },
+    )
+    .await
+    .unwrap();
+    for (credential, model, status) in [
+        ("invalid", "gpt-4o", 401),
+        (key.as_str(), "claude-sonnet-4-5", 403),
+        (key.as_str(), "gpt-4o", 200),
+        (key.as_str(), "claude-sonnet-4-5", 403),
+        (key.as_str(), "gpt-4o", 429),
+    ] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth(credential)
+            .json(&json!({"model":model}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status);
+    }
     assert_eq!(e.seen.0.lock().unwrap().len(), 1);
-    assert_eq!(e.seen.0.lock().unwrap()[0].1["model"], "gpt-4o");
-    assert_eq!(i(&last_entry(&e.st).await, "attempts"), 1);
 }
 
 #[tokio::test]
@@ -766,22 +1155,26 @@ async fn anthropic_stream_cache_tiers() {
 
 #[tokio::test]
 async fn client_abort_still_records_full_usage() {
-    let e = env().await;
-    let r = e
+    for endpoint in ["messages", "chat/completions"] {
+        let e = env().await;
+        let r = e
         .http
-        .post(format!("{}/v1/messages", e.proxy))
+        .post(format!("{}/v1/{endpoint}", e.proxy))
         .header("x-api-key", "sk-carol")
+        .header("x-mock-slow", "yes")
         .json(&json!({"model": "claude-sonnet-4-5", "stream": true, "metadata": {"slow": true}, "messages": []}))
         .send()
         .await
         .unwrap();
-    let mut s = r.bytes_stream();
-    s.next().await.unwrap().unwrap();
-    drop(s); // client goes away mid-stream
-    let row = last_entry(&e.st).await;
-    assert_eq!(i(&row, "client_aborted"), 1);
-    assert_eq!(i(&row, "estimated"), 0);
-    assert_eq!(i(&row, "output"), 77);
+        let mut s = r.bytes_stream();
+        s.next().await.unwrap().unwrap();
+        drop(s); // client goes away mid-stream
+        let row = last_entry(&e.st).await;
+        assert_eq!(i(&row, "client_aborted"), 1);
+        assert_eq!(i(&row, "estimated"), 0);
+        assert_eq!(i(&row, "output"), 77);
+        assert_eq!(i(&row, "cost_micros"), 3480);
+    }
 }
 
 #[tokio::test]

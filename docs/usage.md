@@ -58,7 +58,7 @@ client = Anthropic(base_url="http://127.0.0.1:8787", api_key="sk-llma-...")
 
 ### Endpoints that the Proxy accounts
 
-| Path ends with                             | Provider kind | Usage that the Proxy records                  |
+| Path ends with                             | Native Provider kind | Usage that the Proxy records                  |
 | ------------------------------------------ | ------------- | --------------------------------------------- |
 | `/chat/completions`                        | `openai`      | Input, output, cache read                     |
 | `/responses`                               | `openai`      | Input, output, cache read                     |
@@ -76,7 +76,19 @@ a body that is not JSON, for example a multipart upload, has no Model name.
 The Proxy then records an Unpriced Entry unless the response body names the
 Model. This applies, for example, to multipart requests to `/v1/images/edits`.
 
-The Proxy chooses the Provider in this order:
+### Routing and Translation
+
+An explicit Route selects its Deployments before catalog lookup. The Proxy
+replaces the requested Model with the Deployment's Model. The Route strategy
+sets the order: `priority` uses the listed order, `round_robin` rotates the first
+choice, and `weighted` selects the first choice by weight. The Proxy tries the
+Key Pool of each Deployment before the next Deployment, then its Fallbacks.
+Connection errors, HTTP 429 and HTTP 5xx can cause a retry before the response
+starts. Other upstream errors do not cause a retry.
+
+Without an explicit Route, `provider/model` selects that Provider and removes
+the prefix, unless the full name matches a catalog Model. Otherwise, the Proxy
+chooses the Provider in this order:
 
 1. The Provider of the Model that matches the Model name.
 2. The first Provider with the kind that the endpoint needs (`openai` for chat,
@@ -84,6 +96,26 @@ The Proxy chooses the Provider in this order:
 3. For other paths: the first `anthropic` Provider if the request has an
    `anthropic-version` header. If not, the first `openai` Provider.
 4. The first Provider in the file.
+
+Chat Completions clients can use `anthropic` Deployments. Messages clients can
+use `openai` Deployments. The Proxy translates the request, response, errors
+and SSE events. It keeps query parameters and uses the upstream Provider Key.
+It adds `anthropic-version` for Anthropic if necessary and removes
+`anthropic-*` headers for OpenAI. Other accounted endpoints need their native
+Provider kind. Translation does not change the Route strategy or Deployment
+order. A Route with both Provider kinds can serve both client formats.
+
+Translation supports text, images and function tools. It rejects `n > 1` and
+JSON-schema response formats with HTTP 400 before an upstream call. Other
+unsupported options, cache-control hints, thinking blocks and signatures are
+dropped. Only choice zero is translated. Chat tool calls are buffered until
+stream end when converted to Messages. Chat `reasoning_effort` sets a fixed
+thinking budget; an explicit output limit must exceed that budget.
+
+The Ledger Entry uses the client's endpoint and the upstream Model and usage.
+Cost and Price use upstream Token Classes, before Translation. The Proxy
+continues to read upstream streams after a client disconnect to obtain final
+usage.
 
 ### Examples with curl
 
@@ -106,6 +138,8 @@ curl -N $PROXY/v1/chat/completions \
 For streamed Chat Completions, the Proxy sets `stream_options.include_usage` to
 get the usage from the Provider. If your request did not ask for usage, the
 Proxy removes the usage chunk from the stream that you receive.
+For an Anthropic Deployment, Translation sends a Chat Completions usage chunk
+only if your request set `stream_options.include_usage` to `true`.
 
 Responses API:
 
@@ -252,6 +286,23 @@ Set **RPM** and **TPM** when you create a key, or edit them in its row and selec
 **Save**. Both the key limits and the User limits apply. Leave a field blank for
 unlimited use. Zero blocks requests. The window is the last 60 seconds. TPM
 counts all Token Classes after a request finishes.
+
+### Rate Limits
+
+The Proxy checks Rate Limits after authentication and the allowed-Models check,
+before Budget reservation. Both the Virtual Key and User limits must permit
+the request. User limits apply across all keys of that User. Model-list and
+model-detail requests do not count against Rate Limits.
+
+An exceeded limit returns HTTP 429 with type `rate_limit_error`. The
+`Retry-After` header gives the wait in seconds. The Proxy does not call a
+Provider or write a Ledger Entry for this rejection. RPM counts admitted
+client requests, not upstream retry attempts. TPM counts completed upstream
+tokens across all Token Classes, including cache and image tokens. Requests
+already in progress can cause TPM to exceed the limit before the next check.
+Rate Limit state is local to one process and resets when the process restarts.
+
+### Create and revoke Virtual Keys
 
 To create a Virtual Key:
 
@@ -570,7 +621,8 @@ The route `/metrics` returns metrics in the Prometheus text format. If a metrics
 token is set, the request needs `Authorization: Bearer <token>`. Without a valid
 token the Proxy answers HTTP 401.
 
-The Proxy updates the metrics when it writes a Ledger Entry. The label `model`
+The Proxy updates accounting metrics when it writes a Ledger Entry. It updates
+`llm_rate_limited_total` when it rejects a request. The label `model`
 is the Model name from the response (for example `gpt-4o-2024-08-06`). If the
 response has none, it is the name from the request. The label `user` is the name
 of the User.
@@ -586,6 +638,7 @@ of the User.
 | `llm_request_duration_seconds`        | histogram | `provider`, `model`, `user`                  | Time from request to the end of the response. |
 | `llm_time_to_first_token_seconds`     | histogram | `provider`, `model`, `user`                  | Time to the first content of a stream.        |
 | `llm_upstream_retries_total`          | counter   | `provider`                                   | Retries with the next key of the Key Pool.    |
+| `llm_rate_limited_total`              | counter   | `scope`                                      | Rejected requests. `scope` is `key` or `user`. |
 
 The Proxy omits `llm_tokens_total` series for a class with 0 tokens. The
 histograms use these buckets, in seconds: 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
@@ -620,24 +673,30 @@ The Proxy answers its own errors with this JSON body:
 {"error": {"type": "authentication_error", "message": "invalid API key"}}
 ```
 
+For `/v1/messages`, the body also has the top-level field `"type": "error"`.
+
 | HTTP status | `type`                 | `message`                                                       | Cause                                                          |
 | ----------- | ---------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
 | 401         | `authentication_error` | `missing API key`                                               | No `Authorization: Bearer` header and no `x-api-key` header.   |
 | 401         | `authentication_error` | `invalid API key`                                               | The key is unknown or revoked, or the User is disabled.        |
 | 403         | `permission_error`     | `this API key may not use this model`                           | The key has an allowed-Models list and the Model is not in it. |
 | 402         | `budget_exceeded`      | `the budget for this user does not cover this request`          | The Budget check failed. See "Budgets and Reservations".       |
+| 400         | `invalid_request_error` | Details of the unsupported request.                          | Translation could not convert the request.                    |
+| 429         | `rate_limit_error`     | The key or User request or token limit was exceeded.           | A Rate Limit check failed. The response has `Retry-After`.     |
 | 502         | `api_error`            | `no provider is configured for this request`                    | The configuration has no Provider.                             |
 | 502         | `api_error`            | `upstream request failed`                                       | The last attempt to connect to the Provider failed.            |
 | 502         | `api_error`            | `upstream response failed`                                      | The Proxy could not read the response of the Provider.         |
 | 500         | `api_error`            | `internal error`                                                | A database error while the Proxy checks the key or the Budget. See the server log. |
 
-The Proxy does not write a Ledger Entry for 401, 402, 403 and 500 errors. It writes
+The Proxy does not write a Ledger Entry for its own 400, 401, 402, 403, 429 and
+500 errors. It writes
 a Ledger Entry with status 502 for the two 502 errors that come from the
 upstream.
 
-An error from the Provider (for example 400, 401, 429 or 500) goes to the client
-with the same status and body. The Ledger Entry has that status. A 401 from the
-Provider usually means a wrong Provider Key.
+An error from the Provider (for example 400, 401, 429 or 500) keeps its status.
+For a native request it keeps its body. For Translation, the Proxy converts
+the error body to the client's format. The Ledger Entry has that status. A
+401 from the Provider usually means a wrong Provider Key.
 
 ### Other routes
 

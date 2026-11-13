@@ -72,6 +72,7 @@ pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
     pub db: Db,
+    pub limiter: crate::ratelimit::RateLimiter,
     pub http: reqwest::Client,
     router_table: RwLock<Arc<RouterTable>>,
     pub(crate) circuits: Mutex<HashMap<(String, String), crate::routing::Circuit>>,
@@ -104,6 +105,7 @@ impl AppState {
         let catalog = db::load_catalog(&db).await?;
         Ok(AppState(Arc::new(Inner {
             db,
+            limiter: crate::ratelimit::RateLimiter::new(),
             http,
             router_table: RwLock::new(Arc::new(router_table)),
             circuits: Mutex::new(HashMap::new()),

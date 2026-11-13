@@ -14,12 +14,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::catalog::Catalog;
 use crate::db::{self, KeyAuth, NewEntry};
 use crate::provider::{Endpoint, ProviderKind, is_stream, model_of};
+use crate::ratelimit::Scope;
 use crate::state::{AppState, Provider, Reservation};
+use crate::translate::{self, Direction, StreamTranslator};
 use crate::usage::Usage;
-
-fn error(status: StatusCode, kind: &str, msg: &str) -> Response {
-    formatted_error(status, kind, msg, false)
-}
 
 fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -> Response {
     let mut body = json!({"error": {"type": kind, "message": msg}});
@@ -29,17 +27,18 @@ fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -
     (status, axum::Json(body)).into_response()
 }
 
-fn internal() -> Response {
-    error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "api_error",
-        "internal error",
-    )
-}
-
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
     endpoint.native_kind().is_none_or(|native| native == kind)
+        || translation(kind, endpoint).is_some()
+}
+
+fn translation(kind: ProviderKind, endpoint: Endpoint) -> Option<Direction> {
+    match (endpoint, kind) {
+        (Endpoint::ChatCompletions, ProviderKind::Anthropic) => Some(Direction::ChatToMessages),
+        (Endpoint::Messages, ProviderKind::Openai) => Some(Direction::MessagesToChat),
+        _ => None,
+    }
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -178,6 +177,7 @@ struct Ctx {
     ts_ms: i64,
     provider_key: Option<i64>,
     attempts: i64,
+    rate_scopes: Vec<Scope>,
     /// Released after the Ledger Entry is written, so the amount is always
     /// counted as either reserved or spent.
     reservation: Option<Reservation>,
@@ -207,6 +207,9 @@ impl Outcome {
 
 impl Ctx {
     fn finish(self, o: Outcome) {
+        self.st
+            .limiter
+            .record_tokens(&self.rate_scopes, o.usage.total(), db::now_ms());
         let catalog = self.st.catalog();
         let model = o.model.or_else(|| self.upstream_model.clone());
         let mut quote = catalog.quote(model.as_deref(), self.auth.team_id, &o.usage);
@@ -285,13 +288,15 @@ pub async fn handle(
 ) -> Response {
     let started = Instant::now();
     let ts_ms = db::now_ms();
+    let endpoint = Endpoint::from_path(uri.path());
+    let anthropic = endpoint == Endpoint::Messages;
+    let error = |status, kind, msg: &str| formatted_error(status, kind, msg, anthropic);
 
-    let auth = match authenticate(&st, &headers, false).await {
+    let auth = match authenticate(&st, &headers, anthropic).await {
         Ok(a) => a,
         Err(r) => return *r,
     };
 
-    let endpoint = Endpoint::from_path(uri.path());
     let json_body: Option<Value> = if body.is_empty() {
         None
     } else {
@@ -307,6 +312,31 @@ pub async fn handle(
             "permission_error",
             "this API key may not use this model",
         );
+    }
+
+    let scopes: Vec<_> = [
+        (Scope::Key(auth.key_id), auth.key_limits),
+        (Scope::User(auth.user_id), auth.user_limits),
+    ]
+    .into_iter()
+    .filter(|(_, limits)| limits.rpm.is_some() || limits.tpm.is_some())
+    .collect();
+    if let Err(limited) = st.limiter.admit(&scopes, db::now_ms()) {
+        let scope = match limited.scope {
+            Scope::Key(_) => "key",
+            Scope::User(_) => "user",
+        };
+        metrics::counter!("llm_rate_limited_total", "scope" => scope).increment(1);
+        let mut response = error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            &format!("{scope} {} per minute limit exceeded", limited.which),
+        );
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            HeaderValue::from_str(&limited.retry_after_secs.to_string()).expect("integer header"),
+        );
+        return response;
     }
 
     let anthropic_hint = headers.contains_key("anthropic-version");
@@ -338,7 +368,11 @@ pub async fn handle(
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "budget check failed");
-                return internal();
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "api_error",
+                    "internal error",
+                );
             }
         };
         let worst = candidates
@@ -382,6 +416,7 @@ pub async fn handle(
         ts_ms,
         provider_key: None,
         attempts: 0,
+        rate_scopes: scopes.into_iter().map(|(scope, _)| scope).collect(),
         reservation,
     };
 
@@ -392,6 +427,8 @@ pub async fn handle(
         .all(|c| !st.deployment_available(c, &table.settings));
     let mut upstream = None;
     let mut strip_usage_chunk = false;
+    let mut direction = None;
+    let mut upstream_endpoint = endpoint;
     let mut previous_route = None;
     'deployments: for candidate in &candidates {
         if ctx.attempts as usize >= table.settings.max_attempts {
@@ -401,7 +438,18 @@ pub async fn handle(
             continue;
         };
         let provider = &candidate.provider;
-        let mut prepared = json_body.clone();
+        let dir = translation(provider.kind, endpoint);
+        let target_endpoint = dir.map_or(endpoint, |d| Endpoint::from_path(d.upstream_path()));
+        let mut prepared = if let Some(dir) = dir {
+            match translate::translate_request(dir, json_body.as_ref().unwrap_or(&Value::Null)) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message);
+                }
+            }
+        } else {
+            json_body.clone()
+        };
         if candidate.rewrite
             && let Some(v) = prepared.as_mut()
         {
@@ -409,12 +457,23 @@ pub async fn handle(
         }
         let strip = prepared
             .as_mut()
-            .is_some_and(|v| provider.kind.prepare_body(endpoint, v));
+            .is_some_and(|v| provider.kind.prepare_body(target_endpoint, v));
         let upstream_body = match prepared {
             Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
             None => body.clone(),
         };
-        let url = format!("{}{}", provider.base_url.trim_end_matches('/'), path_q);
+        let path = dir.map_or_else(
+            || path_q.to_owned(),
+            |d| {
+                let mut path = d.upstream_path().to_owned();
+                if let Some(query) = uri.query() {
+                    path.push('?');
+                    path.push_str(query);
+                }
+                path
+            },
+        );
+        let url = format!("{}{}", provider.base_url.trim_end_matches('/'), path);
         let order: Vec<Option<usize>> = match provider.key_order() {
             o if o.is_empty() => vec![None],
             o => o.into_iter().map(Some).collect(),
@@ -434,6 +493,8 @@ pub async fn handle(
             ctx.attempts += 1;
             ctx.provider_key = idx.map(|i| i as i64);
             strip_usage_chunk = strip;
+            direction = dir;
+            upstream_endpoint = target_endpoint;
             let key = idx.map(|i| provider.keys[i].as_str()).unwrap_or("");
             let req = build_request(&st, provider, key, &method, &url, &headers, anthropic_hint);
             upstream = None;
@@ -480,7 +541,27 @@ pub async fn handle(
         .is_some_and(|v| v.starts_with("text/event-stream"));
 
     if is_sse {
-        return stream_response(ctx, upstream, status, out_headers, strip_usage_chunk);
+        let translator = direction.map(|dir| {
+            out_headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            );
+            StreamTranslator::new(dir, ctx.upstream_model.as_deref().unwrap_or_default())
+                .with_usage(
+                    json_body
+                        .as_ref()
+                        .is_some_and(|v| v["stream_options"]["include_usage"] == true),
+                )
+        });
+        return stream_response(
+            ctx,
+            upstream,
+            status,
+            out_headers,
+            strip_usage_chunk && direction.is_none(),
+            upstream_endpoint,
+            translator,
+        );
     }
 
     let bytes = match upstream.bytes().await {
@@ -499,7 +580,7 @@ pub async fn handle(
     let kind = ctx.provider.kind;
     let usage = parsed
         .as_ref()
-        .and_then(|v| kind.usage_from_json(endpoint, v));
+        .and_then(|v| kind.usage_from_json(upstream_endpoint, v));
     let model = parsed.as_ref().and_then(model_of);
     let estimated = usage.is_none() && status.is_success() && endpoint.is_accounted();
     ctx.finish(Outcome {
@@ -511,6 +592,25 @@ pub async fn handle(
         client_aborted: false,
     });
 
+    let bytes = if let Some(dir) = direction {
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        if status.is_success() {
+            Bytes::from(
+                serde_json::to_vec(&translate::translate_response(
+                    dir,
+                    parsed.as_ref().unwrap_or(&Value::Null),
+                ))
+                .unwrap_or_default(),
+            )
+        } else {
+            Bytes::from(translate::translate_error(dir, status.as_u16(), &bytes))
+        }
+    } else {
+        bytes
+    };
     let mut resp = Response::new(Body::from(bytes));
     *resp.status_mut() = status;
     *resp.headers_mut() = out_headers;
@@ -532,7 +632,9 @@ fn build_request(
 ) -> reqwest::RequestBuilder {
     let mut req = st.http.request(method.clone(), url);
     for (name, value) in headers.iter() {
-        if !skip_header(name) {
+        if !skip_header(name)
+            && !(provider.kind == ProviderKind::Openai && name.as_str().starts_with("anthropic-"))
+        {
             req = req.header(name, value);
         }
     }
@@ -557,12 +659,14 @@ fn stream_response(
     status: StatusCode,
     headers: HeaderMap,
     strip_usage_chunk: bool,
+    upstream_endpoint: Endpoint,
+    mut translator: Option<StreamTranslator>,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
     let mut tracker = ctx
         .provider
         .kind
-        .new_stream_tracker(ctx.endpoint, strip_usage_chunk);
+        .new_stream_tracker(upstream_endpoint, strip_usage_chunk);
     let started = ctx.started;
     let st = ctx.st.clone();
     let task = async move {
@@ -574,6 +678,11 @@ fn stream_response(
             match item {
                 Ok(chunk) => {
                     let out = tracker.feed(&chunk);
+                    let out = if let Some(t) = translator.as_mut() {
+                        t.feed(&out)
+                    } else {
+                        out
+                    };
                     if ttft.is_none() && tracker.saw_content {
                         ttft = Some(started.elapsed().as_millis() as i64);
                     }
@@ -596,6 +705,13 @@ fn stream_response(
             }
         }
         let rest = tracker.finish();
+        let rest = if let Some(t) = translator.as_mut() {
+            let mut out = t.feed(&rest);
+            out.extend(t.finish());
+            out
+        } else {
+            rest
+        };
         if !client_gone && !rest.is_empty() {
             let _ = tx.send(Ok(Bytes::from(rest))).await;
         }

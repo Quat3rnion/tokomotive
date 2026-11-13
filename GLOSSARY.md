@@ -10,6 +10,8 @@
 
 **Deployment** - A Provider and an upstream model name that can serve a Route. An explicit Deployment replaces the model name in the upstream request.
 
+**Translation** - Conversion between the Chat Completions and Messages API formats so that a client can use a Provider with a different API format.
+
 **Fallback** - A Route or catalog Model tried after the primary Route's Deployments fail. A Virtual Key that allows the primary Route also allows its Fallbacks. Fallbacks do not expand recursively.
 
 **Circuit Breaker** - The in-memory health state for a Provider and upstream model. Repeated connection errors, 429 or 5xx responses start a cooldown. After it ends, one probe request tests recovery. If every candidate is open, the Proxy can try them anyway.
