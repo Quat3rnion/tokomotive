@@ -65,12 +65,12 @@ fn copy_fields(from: &Value, to: &mut Value, keys: &[&str]) {
 
 fn chat_parts(content: &Value) -> Result<Vec<Value>, TranslateError> {
     if let Some(s) = content.as_str() {
-        return Ok(vec![json!({"type":"text","text":s})]);
+        return Ok(if s.is_empty() { vec![] } else { vec![json!({"type":"text","text":s})] });
     }
     let mut out = Vec::new();
     for part in array(content) {
         match text(part, "type") {
-            "text" => out.push(json!({"type":"text","text":text(part,"text")})),
+            "text" if !text(part, "text").is_empty() => out.push(json!({"type":"text","text":text(part,"text")})),
             "image_url" => {
                 let url = part["image_url"]
                     .as_str()
@@ -230,7 +230,8 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
             }
             let limit = body
                 .get("max_completion_tokens")
-                .or_else(|| body.get("max_tokens"));
+                .filter(|v| !v.is_null())
+                .or_else(|| body.get("max_tokens").filter(|v| !v.is_null()));
             out["max_tokens"] = limit.cloned().unwrap_or(json!(4096));
             let budget = match text(body, "reasoning_effort") {
                 "low" => 1024,
@@ -270,6 +271,7 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
             }
         }
         Direction::MessagesToChat => {
+            let mut tool_images = Vec::new();
             if let Some(system) = body.get("system") {
                 translated
                     .push(json!({"role":"system","content":chat_content(message_parts(system))}));
@@ -281,6 +283,7 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
                 }
                 let content = &message["content"];
                 if content.is_string() {
+                    flush_tool_images(&mut translated, &mut tool_images);
                     translated.push(json!({"role":role,"content":content}));
                     continue;
                 }
@@ -288,18 +291,31 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
                 let mut calls = Vec::new();
                 for block in array(content) {
                     match text(block, "type") {
-                        "tool_use" => calls.push(tool_call(block)),
+                        "tool_use" => {
+                            flush_tool_images(&mut translated, &mut tool_images);
+                            calls.push(tool_call(block));
+                        }
                         "tool_result" => {
                             flush_chat_message(&mut translated, role, &mut parts, &mut calls);
+                            let (images, texts): (Vec<_>, Vec<_>) = message_parts(&block["content"])
+                                .into_iter().partition(|p| p["type"] == "image_url");
+                            if !images.is_empty() {
+                                tool_images.push(json!({"type":"text","text":format!("Images from tool result {}:", text(block, "tool_use_id"))}));
+                                tool_images.extend(images);
+                            }
                             translated
-                                .push(json!({"role":"tool","tool_call_id":block["tool_use_id"],
-                                "content":chat_content(message_parts(&block["content"]))}));
+                                 .push(json!({"role":"tool","tool_call_id":block["tool_use_id"],
+                                "content":chat_content(texts)}));
                         }
-                        _ => parts.extend(message_parts(&json!([block]))),
+                        _ => {
+                            flush_tool_images(&mut translated, &mut tool_images);
+                            parts.extend(message_parts(&json!([block])));
+                        }
                     }
                 }
                 flush_chat_message(&mut translated, role, &mut parts, &mut calls);
             }
+            flush_tool_images(&mut translated, &mut tool_images);
             copy_fields(body, &mut out, &["max_tokens"]);
             if let Some(stop) = body.get("stop_sequences") {
                 out["stop"] = stop.clone();
@@ -329,6 +345,12 @@ pub fn translate_request(dir: Direction, body: &Value) -> Result<Value, Translat
     }
     out["messages"] = json!(translated);
     Ok(out)
+}
+
+fn flush_tool_images(messages: &mut Vec<Value>, images: &mut Vec<Value>) {
+    if !images.is_empty() {
+        messages.push(json!({"role":"user","content":std::mem::take(images)}));
+    }
 }
 
 fn flush_chat_message(
