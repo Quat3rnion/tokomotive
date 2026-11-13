@@ -38,31 +38,19 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Quick start
 
-1. Copy the example configuration and check the rates against the current
-   price lists of the Providers:
+1. Start the Proxy. No configuration file is required:
 
    ```sh
-   cp config.example.toml config.toml
+   cargo run --release
    ```
 
-2. Set the Provider Keys and the dashboard password in the environment:
+2. Open `http://127.0.0.1:8787/admin`. Setup asks for a password of at least 8
+   characters. Log in, add a Provider and its keys on **Providers**, and add
+   Models and cards on **Models**. Check rates against the Provider price list.
+3. Add a User on **Users**, then create a Virtual Key on **Keys**. Copy the key.
+   You cannot see it again. Back up the database and its `secret.key` file.
 
-   ```sh
-   export OPENAI_API_KEY=...
-   export ANTHROPIC_API_KEY=...
-   export LLM_ACCOUNTING_ADMIN_PASSWORD=...
-   ```
-
-3. Start the Proxy:
-
-   ```sh
-   cargo run --release -- --config config.toml
-   ```
-
-4. Open `http://127.0.0.1:8787/admin`, log in, and create a Virtual Key for a
-   User on the **Keys** page. Copy the key. You cannot see it again.
-
-5. Send a request to the Proxy with the Virtual Key:
+4. Send a request to the Proxy with the Virtual Key:
 
    ```sh
    curl http://127.0.0.1:8787/v1/chat/completions \
@@ -73,8 +61,10 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
    The request appears on the **Ledger** page.
 
 The Proxy accepts the Virtual Key in `Authorization: Bearer` or in `x-api-key`.
-An allowed Route also permits its Fallbacks. Route and router settings come
-from TOML; restart the Proxy after changes.
+An allowed Route also permits its Fallbacks. Use **Providers**, **Routes** and
+**Settings** for live changes. An optional `--config PATH` file seeds the
+database. Later edits belong in the dashboard. Use `--listen` and `--database`
+for process options. The default listen address is `127.0.0.1:8787`.
 Docker is also available. See [INSTALL.md](INSTALL.md).
 
 ## Documentation

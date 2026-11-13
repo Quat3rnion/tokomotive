@@ -95,7 +95,7 @@ chooses the Provider in this order:
    responses, embeddings and images; `anthropic` for messages).
 3. For other paths: the first `anthropic` Provider if the request has an
    `anthropic-version` header. If not, the first `openai` Provider.
-4. The first Provider in the file.
+4. The first Provider in the runtime table (ordered by name).
 
 Chat Completions clients can use `anthropic` Deployments. Messages clients can
 use `openai` Deployments. The Proxy translates the request, response, errors
@@ -200,7 +200,12 @@ names of the Models in your dashboard.
 | `/admin/models/{id}/cost`               | POST     | Saves a new Cost Card version.                                    |
 | `/admin/models/{id}/price`              | POST     | Saves a new Price Card version.                                   |
 | `/admin/models/{id}/team-price`         | POST     | Sets or removes a Team override.                                  |
-| `/admin/settings`                       | POST     | Saves the default Markup.                                         |
+| `/setup` | GET, POST | Sets the first admin password; refuses later setup requests. |
+| `/admin/providers` | GET, POST | Lists or creates Providers. Edit, delete, key and test forms are on this page. |
+| `/admin/routes` | GET, POST | Lists or creates Routes. Edit deployment rows and Fallbacks on this page. |
+| `/admin/settings` | GET, POST | Edits server and router settings, mode and metrics token. |
+| `/admin/settings/password` | POST | Changes the password and ends all sessions. |
+| `/admin/settings/markup` | POST | Saves the default Markup from the Models page. |
 | `/admin/ledger`                         | GET      | Ledger page. The query `?filter=` is `unpriced`, `estimated` or `errors`. |
 | `/admin/reprice`                        | POST     | Prices the Unpriced Entries.                                      |
 | `/admin/assets/htmx.min.js`             | GET      | The script file of the dashboard.                                 |
@@ -210,14 +215,18 @@ route and the script file.
 
 ## Dashboard
 
-Open `http://127.0.0.1:8787/admin` and enter the dashboard password. The
-dashboard is on only when an admin password is set. See "Dashboard password" in
+Open `http://127.0.0.1:8787/admin`. With no password, Setup asks you to set one
+of at least 8 characters. Then log in. See "Dashboard password" in
 [configuration.md](configuration.md).
 
 A login stays valid for `server.session_days` days (default 7) and survives a
 restart. Select **Log out** to end the session. All dashboard times are UTC.
 
-The header has the pages Overview, Users, Teams, Keys, Models and Ledger.
+The header also has **Providers**, **Routes** and **Settings**. These pages apply
+changes without a restart. Providers has key-pool forms and a **Test** button.
+Routes has deployment rows and Fallbacks. Settings has server/router values,
+password change and a metrics token. The `simple` mode toggle stores a choice;
+it does not change behaviour yet. Back up `secret.key` with the database.
 
 ### Overview
 
@@ -341,7 +350,7 @@ Tasks on the list page:
   Card and select **Save**. The change applies to new requests only.
 - **Add model**: enter the name, the Provider, the aliases (comma list), the Cost
   Card rates and the Context Tiers. Then select **Add model**. The Provider list
-  holds the Providers from the configuration file.
+   holds the Providers saved in the dashboard.
 
 Select a Model name to open its page. The page has these parts:
 
@@ -604,7 +613,8 @@ Proxy process for each database.
 ## Key Pools
 
 A Provider can have more than one Provider Key. The set of keys is the Key Pool.
-You set the keys in the configuration file only. See "Key Pool" in
+Add or remove keys on **Providers**. Saved keys show only their last 4 characters.
+You can enter `env:NAME` to store an environment variable reference. See "Key Pool" in
 [configuration.md](configuration.md).
 
 - The Proxy starts each request with the next key in turn.
@@ -704,7 +714,9 @@ the error body to the client's format. The Ledger Entry has that status. A
 | --------------- | ------ | -------------------------------------------------------------- |
 | `/metrics`      | 401    | A metrics token is set and the request has no valid token. The response has `WWW-Authenticate: Bearer`. |
 | `/admin/...`    | 303    | No valid session. The redirect goes to `/admin/login`.         |
-| `/admin/...`    | 503    | No admin password is set.                                      |
+| `/admin/...`    | 303    | No admin password is set. The redirect goes to `/setup`. |
+| `/setup` | 403 | Setup is complete. Log in to change the password. |
+| Dashboard POST | 403 | A browser form came from a different origin. |
 | `/admin/login`  | 401    | Wrong password.                                                |
 | `/admin/...`    | 400    | A form field is not valid, for example a dollar amount.        |
 | `/admin/models/{id}` | 404 | No such Model.                                            |

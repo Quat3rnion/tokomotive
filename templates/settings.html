@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Settings - LLM Accounting{% endblock %}
+{% block nav_settings %}class="on"{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<div id="errors"></div>
+<section class="panel">
+<h2>Server and router</h2>
+<p class="muted">Changes apply without a restart. Listen address and database path are process options.</p>
+<form method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="#errors">
+<div class="row">
+  <label>Default markup (%) <input name="default_markup_percent" value="{{ markup }}" required></label>
+  <label>Upstream timeout (seconds) <input type="number" min="1" name="upstream_timeout_secs" value="{{ settings.upstream_timeout_secs }}" required></label>
+  <label>Reserve output tokens <input type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required></label>
+  <label>Session days <input type="number" min="1" max="3650" name="session_days" value="{{ settings.session_days }}" required></label>
+  <label>Mode <select name="mode"><option value="full" {% if settings.mode == "full" %}selected{% endif %}>Full</option><option value="simple" {% if settings.mode == "simple" %}selected{% endif %}>Simple</option></select></label>
+</div>
+<p class="muted">Mode is stored now. Both modes currently use the full interface and behaviour.</p>
+<div class="row">
+  <label>Failure threshold <input type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required></label>
+  <label>Cooldown (seconds) <input type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required></label>
+  <label>Maximum attempts <input type="number" min="1" name="max_attempts" value="{{ settings.router.max_attempts }}" required></label>
+</div>
+<h2>Metrics token</h2>
+<p class="muted">{% if metrics_set %}A token is set.{% else %}No token is set. Metrics are public.{% endif %} Leave the field blank to keep the current token.</p>
+<div class="row">
+  <label>New metrics token <input type="password" name="metrics_token" autocomplete="off" style="width:300px"></label>
+  <label class="check"><input type="checkbox" name="clear_metrics_token">Remove token</label>
+  <button>Save settings</button>
+</div>
+</form>
+</section>
+<section class="panel">
+<h2>Change password</h2>
+<p class="muted">All sessions end when you change the password. An environment password overrides this password at the next start.</p>
+<form method="post" action="/admin/settings/password" hx-post="/admin/settings/password" hx-target="#errors" class="row">
+  <label>Current password <input type="password" name="current_password" autocomplete="current-password" required style="width:220px"></label>
+  <label>New password <input type="password" name="password" minlength="8" autocomplete="new-password" required style="width:220px"></label>
+  <button>Change password</button>
+</form>
+</section>
+{% endblock %}

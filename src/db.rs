@@ -27,6 +27,12 @@ fn now_s() -> i64 {
 }
 
 pub async fn connect(url: &str) -> Result<Db> {
+    if !url.contains(":memory:") {
+        let path = crate::settings::database_path(url)?;
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).context("create database directory")?;
+        }
+    }
     let opts = SqliteConnectOptions::from_str(url)
         .with_context(|| format!("database url {url}"))?
         .create_if_missing(true)

@@ -1,0 +1,646 @@
+//! Live configuration forms. No secret is sent back to the browser.
+use super::*;
+use crate::config::{Config, DeploymentCfg, ProviderCfg, RouteCfg, Strategy};
+use crate::provider::ProviderKind;
+use crate::settings as store;
+use anyhow::Context;
+use sqlx::Row;
+
+pub(super) fn router() -> Router<AppState> {
+    Router::new()
+        .route("/setup", get(setup_page).post(setup))
+        .route("/admin/providers", get(providers).post(create_provider))
+        .route("/admin/providers/{name}", post(update_provider))
+        .route("/admin/providers/{name}/delete", post(delete_provider))
+        .route("/admin/providers/{name}/keys", post(add_key))
+        .route(
+            "/admin/providers/{name}/keys/{index}/delete",
+            post(delete_key),
+        )
+        .route("/admin/providers/{name}/test", post(test_provider))
+        .route("/admin/routes", get(routes).post(create_route))
+        .route("/admin/routes/{name}", post(update_route))
+        .route("/admin/routes/{name}/delete", post(delete_route))
+        .route("/admin/settings", get(settings_page).post(save_settings))
+        .route("/admin/settings/password", post(change_password))
+}
+
+#[derive(Template)]
+#[template(path = "settings.html")]
+struct SettingsPage {
+    settings: std::sync::Arc<store::Settings>,
+    markup: f64,
+    metrics_set: bool,
+}
+async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
+    let settings = st.settings();
+    render(SettingsPage {
+        metrics_set: settings.metrics_token.is_some(),
+        settings,
+        markup: st.catalog().default_markup_bp as f64 / 100.0,
+    })
+}
+
+#[derive(Deserialize)]
+struct ServerForm {
+    default_markup_percent: String,
+    upstream_timeout_secs: String,
+    reserve_output_tokens: String,
+    session_days: String,
+    failure_threshold: String,
+    cooldown_secs: String,
+    max_attempts: String,
+    mode: String,
+    #[serde(default)]
+    metrics_token: String,
+    clear_metrics_token: Option<String>,
+}
+impl ServerForm {
+    fn parse(&self, mut cfg: Config) -> anyhow::Result<(Config, store::Settings)> {
+        if !matches!(self.mode.as_str(), "full" | "simple") {
+            anyhow::bail!("Choose full or simple mode.");
+        }
+        cfg.server.default_markup_percent = self
+            .default_markup_percent
+            .parse()
+            .context("Markup must be a number.")?;
+        cfg.server.upstream_timeout_secs = self
+            .upstream_timeout_secs
+            .parse()
+            .context("Timeout must be a positive integer.")?;
+        cfg.server.reserve_output_tokens = self
+            .reserve_output_tokens
+            .parse()
+            .context("Reserved tokens must be a non-negative integer.")?;
+        cfg.server.session_days = self
+            .session_days
+            .parse()
+            .context("Session days must be a positive integer.")?;
+        cfg.router.failure_threshold = self
+            .failure_threshold
+            .parse()
+            .context("Failure threshold must be a positive integer.")?;
+        cfg.router.cooldown_secs = self
+            .cooldown_secs
+            .parse()
+            .context("Cooldown must be a non-negative integer.")?;
+        cfg.router.max_attempts = self
+            .max_attempts
+            .parse()
+            .context("Maximum attempts must be a positive integer.")?;
+        cfg.validate()?;
+        let settings = store::Settings {
+            upstream_timeout_secs: cfg.server.upstream_timeout_secs,
+            reserve_output_tokens: cfg.server.reserve_output_tokens,
+            session_days: cfg.server.session_days,
+            mode: self.mode.clone(),
+            router: cfg.router.clone(),
+            metrics_token: None,
+        };
+        Ok((cfg, settings))
+    }
+}
+async fn save_settings(
+    _: Admin,
+    State(st): State<AppState>,
+    Form(f): Form<ServerForm>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let cfg = tryr!(runtime(&st).await);
+    let (cfg, mut settings) = match f.parse(cfg) {
+        Ok(v) => v,
+        Err(e) => return form_error(e),
+    };
+    let token = if f.clear_metrics_token.is_some() {
+        None
+    } else if !f.metrics_token.is_empty() {
+        Some(f.metrics_token)
+    } else {
+        st.settings().metrics_token.clone()
+    };
+    settings.metrics_token = tryr!(token.map(|v| st.secret_key.encrypt(&v)).transpose());
+    let mut tx = tryr!(st.db.begin().await);
+    tryr!(
+        sqlx::query("UPDATE settings SET value=? WHERE key='runtime_settings'")
+            .bind(tryr!(serde_json::to_string(&settings)))
+            .execute(&mut *tx)
+            .await
+    );
+    tryr!(
+        sqlx::query("UPDATE settings SET value=? WHERE key='default_markup_bp'")
+            .bind(percent_to_bp(cfg.server.default_markup_percent).to_string())
+            .execute(&mut *tx)
+            .await
+    );
+    tryr!(tx.commit().await);
+    tryr!(st.reload_settings().await);
+    saved("/admin/settings")
+}
+
+#[derive(Deserialize)]
+struct PasswordForm {
+    current_password: String,
+    password: String,
+}
+async fn change_password(
+    _: Admin,
+    State(st): State<AppState>,
+    Form(f): Form<PasswordForm>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    if f.password.chars().count() < 8 {
+        return form_error("Use at least 8 characters for the new password.");
+    }
+    let old = tryr!(store::value(&st.db, "admin_password_hash").await).unwrap_or_default();
+    if !store::verify_password(&f.current_password, &old) {
+        return form_error("Incorrect current password.");
+    }
+    let hash = tryr!(store::hash_password(&f.password));
+    let mut tx = tryr!(st.db.begin().await);
+    tryr!(
+        sqlx::query("UPDATE settings SET value=? WHERE key='admin_password_hash'")
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+    );
+    tryr!(sqlx::query("DELETE FROM sessions").execute(&mut *tx).await);
+    tryr!(tx.commit().await);
+    saved("/admin/login")
+}
+
+#[derive(Template)]
+#[template(path = "routes.html")]
+struct RoutesPage {
+    routes: Vec<RouteView>,
+    providers: Vec<String>,
+}
+struct RouteView {
+    name: String,
+    strategy: String,
+    deployments: String,
+    fallbacks: String,
+}
+
+async fn routes(_: Admin, State(st): State<AppState>) -> Response {
+    let cfg = tryr!(runtime(&st).await);
+    let routes = cfg
+        .routes
+        .iter()
+        .map(|r| -> anyhow::Result<RouteView> {
+            Ok(RouteView {
+                name: r.name.clone(),
+                strategy: serde_json::to_value(r.strategy)?
+                    .as_str()
+                    .unwrap_or("priority")
+                    .into(),
+                deployments: serde_json::to_string(&r.deployments)?,
+                fallbacks: r.fallbacks.join(", "),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>();
+    render(RoutesPage {
+        routes: tryr!(routes),
+        providers: cfg.providers.into_iter().map(|p| p.name).collect(),
+    })
+}
+
+#[derive(Deserialize)]
+struct RouteForm {
+    name: String,
+    strategy: String,
+    deployments: String,
+    #[serde(default)]
+    fallbacks: String,
+}
+async fn create_route(
+    admin: Admin,
+    State(st): State<AppState>,
+    Form(f): Form<RouteForm>,
+) -> Response {
+    save_route(admin, st, None, f).await
+}
+async fn update_route(
+    admin: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(f): Form<RouteForm>,
+) -> Response {
+    save_route(admin, st, Some(name), f).await
+}
+async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let deployments: Vec<DeploymentCfg> = match serde_json::from_str(&f.deployments) {
+        Ok(v) => v,
+        Err(_) => {
+            return form_error(
+                "Deployments must be a JSON array with provider, model and positive weight fields.",
+            );
+        }
+    };
+    let strategy: Strategy = match serde_json::from_value(serde_json::Value::String(f.strategy)) {
+        Ok(v) => v,
+        Err(_) => return form_error("Choose priority, round_robin or weighted."),
+    };
+    let route = RouteCfg {
+        name: f.name,
+        strategy,
+        deployments,
+        fallbacks: csv(&f.fallbacks),
+    };
+    let mut cfg = tryr!(runtime(&st).await);
+    if let Some(name) = &old {
+        if !cfg.routes.iter().any(|r| &r.name == name) {
+            return form_error("Route not found.");
+        }
+        if name != &route.name && cfg.routes.iter().any(|r| r.fallbacks.contains(name)) {
+            return form_error(
+                "This route is used as a fallback. Remove that reference before renaming it.",
+            );
+        }
+        cfg.routes.retain(|r| &r.name != name);
+    }
+    cfg.routes.push(route.clone());
+    if let Err(e) = cfg.validate() {
+        return form_error(e);
+    }
+    let mut tx = tryr!(st.db.begin().await);
+    if let Some(name) = old {
+        tryr!(
+            sqlx::query("DELETE FROM routes WHERE name=?")
+                .bind(name)
+                .execute(&mut *tx)
+                .await
+        );
+    }
+    if let Err(e) = sqlx::query("INSERT INTO routes(name,config_json) VALUES(?,?)")
+        .bind(&route.name)
+        .bind(tryr!(serde_json::to_string(&route)))
+        .execute(&mut *tx)
+        .await
+    {
+        return form_error(e);
+    }
+    tryr!(tx.commit().await);
+    tryr!(st.reload_settings().await);
+    saved("/admin/routes")
+}
+async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let cfg = tryr!(runtime(&st).await);
+    if cfg.routes.iter().any(|r| r.fallbacks.contains(&name)) {
+        return form_error("This route is used as a fallback. Remove that reference first.");
+    }
+    tryr!(
+        sqlx::query("DELETE FROM routes WHERE name=?")
+            .bind(name)
+            .execute(&st.db)
+            .await
+    );
+    tryr!(st.reload_settings().await);
+    saved("/admin/routes")
+}
+
+#[derive(Template)]
+#[template(path = "providers.html")]
+struct ProvidersPage {
+    providers: Vec<ProviderView>,
+}
+struct ProviderView {
+    name: String,
+    kind: String,
+    base_url: String,
+    keys: Vec<String>,
+}
+
+async fn providers(_: Admin, State(st): State<AppState>) -> Response {
+    let mut providers = Vec::new();
+    for row in tryr!(
+        sqlx::query("SELECT * FROM providers ORDER BY name")
+            .fetch_all(&st.db)
+            .await
+    ) {
+        let mut keys = Vec::new();
+        for value in tryr!(serde_json::from_str::<Vec<String>>(row.get("keys_json"))) {
+            let plain = if let Some(env) = value.strip_prefix("env:") {
+                std::env::var(env).unwrap_or_default()
+            } else {
+                tryr!(st.secret_key.decrypt(&value))
+            };
+            keys.push(format!(
+                "****{}",
+                plain
+                    .chars()
+                    .rev()
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<String>()
+            ));
+        }
+        let kind: ProviderKind = tryr!(serde_json::from_str(row.get("kind")));
+        providers.push(ProviderView {
+            name: row.get("name"),
+            kind: match kind {
+                ProviderKind::Openai => "openai",
+                ProviderKind::Anthropic => "anthropic",
+            }
+            .into(),
+            base_url: row.get("base_url"),
+            keys,
+        });
+    }
+    render(ProvidersPage { providers })
+}
+
+#[derive(Deserialize)]
+struct ProviderForm {
+    name: String,
+    kind: ProviderKind,
+    base_url: String,
+    #[serde(default)]
+    api_key: String,
+}
+
+fn form_error(e: impl std::fmt::Display) -> Response {
+    #[derive(Template)]
+    #[template(
+        source = "<p class=\"bad\" role=\"alert\">{{ message }}</p>",
+        ext = "html"
+    )]
+    struct Notice {
+        message: String,
+    }
+    (
+        StatusCode::BAD_REQUEST,
+        render(Notice {
+            message: e.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+fn saved(path: &str) -> Response {
+    ([("HX-Redirect", path)], Redirect::to(path)).into_response()
+}
+
+async fn runtime(st: &AppState) -> anyhow::Result<Config> {
+    Ok(store::load(&st.db, &st.secret_key).await?.0)
+}
+
+fn encode_key(st: &AppState, key: &str) -> anyhow::Result<String> {
+    if let Some(env) = key.strip_prefix("env:") {
+        if env.is_empty() || !env.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+            anyhow::bail!("Use env:NAME for an environment variable reference.");
+        }
+        Ok(key.into())
+    } else {
+        st.secret_key.encrypt(key)
+    }
+}
+
+async fn create_provider(
+    admin: Admin,
+    State(st): State<AppState>,
+    Form(f): Form<ProviderForm>,
+) -> Response {
+    save_provider(admin, st, None, f).await
+}
+async fn update_provider(
+    admin: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(f): Form<ProviderForm>,
+) -> Response {
+    save_provider(admin, st, Some(name), f).await
+}
+async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderForm) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let mut cfg = tryr!(runtime(&st).await);
+    if let Some(name) = &old {
+        cfg.providers.retain(|p| &p.name != name);
+    }
+    cfg.providers.push(ProviderCfg {
+        name: f.name.clone(),
+        kind: f.kind,
+        base_url: f.base_url.clone(),
+        api_key: None,
+        api_key_env: None,
+        api_keys: vec![],
+        api_keys_env: vec![],
+    });
+    // Renaming a used provider requires updating its routes first.
+    if let Err(e) = cfg.validate() {
+        return form_error(e);
+    }
+    if old.as_ref().is_some_and(|name| name != &f.name)
+        && st
+            .catalog()
+            .models
+            .iter()
+            .any(|m| Some(&m.provider) == old.as_ref())
+    {
+        return form_error("This provider is used by a model. Update that model first.");
+    }
+    let mut keys: Vec<String> = match &old {
+        Some(name) => {
+            let raw: Option<String> = tryr!(
+                sqlx::query_scalar("SELECT keys_json FROM providers WHERE name=?")
+                    .bind(name)
+                    .fetch_optional(&st.db)
+                    .await
+            );
+            let Some(raw) = raw else {
+                return form_error("Provider not found.");
+            };
+            tryr!(serde_json::from_str(&raw))
+        }
+        None => vec![],
+    };
+    if !f.api_key.trim().is_empty() {
+        keys.push(match encode_key(&st, f.api_key.trim()) {
+            Ok(v) => v,
+            Err(e) => return form_error(e),
+        });
+    }
+    let mut tx = tryr!(st.db.begin().await);
+    if let Some(name) = old {
+        tryr!(
+            sqlx::query("DELETE FROM providers WHERE name=?")
+                .bind(name)
+                .execute(&mut *tx)
+                .await
+        );
+    }
+    if let Err(e) =
+        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json) VALUES(?,?,?,?)")
+            .bind(f.name)
+            .bind(tryr!(serde_json::to_string(&f.kind)))
+            .bind(f.base_url.trim_end_matches('/'))
+            .bind(tryr!(serde_json::to_string(&keys)))
+            .execute(&mut *tx)
+            .await
+    {
+        return form_error(e);
+    }
+    tryr!(tx.commit().await);
+    tryr!(st.reload_settings().await);
+    saved("/admin/providers")
+}
+
+async fn delete_provider(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let cfg = tryr!(runtime(&st).await);
+    if cfg
+        .routes
+        .iter()
+        .any(|r| r.deployments.iter().any(|d| d.provider == name))
+        || st.catalog().models.iter().any(|m| m.provider == name)
+    {
+        return form_error(
+            "This provider is used by a route or model. Remove those references first.",
+        );
+    }
+    tryr!(
+        sqlx::query("DELETE FROM providers WHERE name=?")
+            .bind(name)
+            .execute(&st.db)
+            .await
+    );
+    tryr!(st.reload_settings().await);
+    saved("/admin/providers")
+}
+
+#[derive(Deserialize)]
+struct KeyForm {
+    api_key: String,
+}
+async fn add_key(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(f): Form<KeyForm>,
+) -> Response {
+    if f.api_key.trim().is_empty() {
+        return form_error("Enter a Provider Key or env:NAME.");
+    }
+    let encoded = match encode_key(&st, f.api_key.trim()) {
+        Ok(v) => v,
+        Err(e) => return form_error(e),
+    };
+    change_keys(st, name, None, Some(encoded)).await
+}
+async fn delete_key(
+    _: Admin,
+    State(st): State<AppState>,
+    Path((name, index)): Path<(String, usize)>,
+) -> Response {
+    change_keys(st, name, Some(index), None).await
+}
+async fn change_keys(
+    st: AppState,
+    name: String,
+    remove: Option<usize>,
+    add: Option<String>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let raw: Option<String> = tryr!(
+        sqlx::query_scalar("SELECT keys_json FROM providers WHERE name=?")
+            .bind(&name)
+            .fetch_optional(&st.db)
+            .await
+    );
+    let Some(raw) = raw else {
+        return form_error("Provider not found.");
+    };
+    let mut keys: Vec<String> = tryr!(serde_json::from_str(&raw));
+    if let Some(i) = remove {
+        if i >= keys.len() {
+            return form_error("Key not found. Reload the page.");
+        }
+        keys.remove(i);
+    }
+    if let Some(key) = add {
+        keys.push(key);
+    }
+    tryr!(
+        sqlx::query("UPDATE providers SET keys_json=? WHERE name=?")
+            .bind(tryr!(serde_json::to_string(&keys)))
+            .bind(name)
+            .execute(&st.db)
+            .await
+    );
+    tryr!(st.reload_settings().await);
+    saved("/admin/providers")
+}
+
+async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let table = st.router_table();
+    let Some(p) = table.providers.iter().find(|p| p.name == name) else {
+        return form_error("Provider not found.");
+    };
+    let url = format!(
+        "{}/v1/models",
+        p.base_url.trim_end_matches('/').trim_end_matches("/v1")
+    );
+    let mut req = st
+        .http()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(key) = p.keys.first() {
+        req = match p.kind {
+            ProviderKind::Openai => req.bearer_auth(key),
+            ProviderKind::Anthropic => req
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01"),
+        };
+    }
+    match req.send().await {
+        Ok(r) => Html(format!("<p>Upstream status: {}</p>", r.status().as_u16())).into_response(),
+        Err(_) => form_error("Cannot reach the provider. Check its URL and credentials."),
+    }
+}
+
+#[derive(Template)]
+#[template(path = "setup.html")]
+struct SetupPage;
+
+async fn setup_page(State(st): State<AppState>) -> Response {
+    if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_some() {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Setup is complete. Log in to change the password.",
+        );
+    }
+    render(SetupPage)
+}
+
+async fn setup(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response {
+    if tryr!(store::value(&st.db, "admin_password_hash").await).is_some() {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Setup is complete. Log in to change the password.",
+        );
+    }
+    if f.password.chars().count() < 8 {
+        return bad("Use at least 8 characters for the password.");
+    }
+    let hash = tryr!(crate::settings::hash_password(&f.password));
+    let result = tryr!(
+        sqlx::query("INSERT OR IGNORE INTO settings(key,value) VALUES('admin_password_hash',?)")
+            .bind(hash)
+            .execute(&st.db)
+            .await
+    );
+    if result.rows_affected() == 0 {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Setup is complete. Log in to change the password.",
+        );
+    }
+    Redirect::to("/admin/login").into_response()
+}

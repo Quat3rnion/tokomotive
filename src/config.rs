@@ -1,11 +1,9 @@
-//! TOML configuration. The file seeds the database on start; the dashboard
-//! edits the database. Provider Keys come only from this file or the
-//! environment.
+//! Optional TOML seed configuration. The dashboard edits the database.
 
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::pricing::{CardRates, ContextTier, PriceSpec, Rates};
 use crate::provider::ProviderKind;
@@ -29,7 +27,7 @@ pub struct Config {
     pub users: Vec<UserCfg>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RouterCfg {
     pub failure_threshold: usize,
@@ -47,7 +45,7 @@ impl Default for RouterCfg {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Strategy {
     #[default]
@@ -56,7 +54,7 @@ pub enum Strategy {
     Weighted,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteCfg {
     pub name: String,
@@ -67,7 +65,7 @@ pub struct RouteCfg {
     pub fallbacks: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentCfg {
     pub provider: String,
@@ -97,6 +95,7 @@ pub struct Server {
     /// not set a maximum.
     pub reserve_output_tokens: i64,
     pub session_days: i64,
+    pub mode: String,
 }
 
 impl Default for Server {
@@ -112,11 +111,12 @@ impl Default for Server {
             metrics_token_env: Some("LLM_ACCOUNTING_METRICS_TOKEN".into()),
             reserve_output_tokens: 4096,
             session_days: 7,
+            mode: "full".into(),
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
     pub name: String,
@@ -313,15 +313,56 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !matches!(self.server.mode.as_str(), "full" | "simple") {
+            bail!("mode must be full or simple");
+        }
+        if self.server.upstream_timeout_secs == 0
+            || self.server.session_days <= 0
+            || self.server.session_days > 3650
+            || self.server.reserve_output_tokens < 0
+            || !self.server.default_markup_percent.is_finite()
+        {
+            bail!(
+                "timeout and session days must be positive (session days at most 3650), reserved tokens must be non-negative, and markup must be finite"
+            );
+        }
+        let mut providers = std::collections::HashSet::new();
+        for p in &self.providers {
+            validate_name(&p.name)?;
+            if !providers.insert(&p.name) {
+                bail!("duplicate provider {}", p.name);
+            }
+            let url = reqwest::Url::parse(&p.base_url)
+                .with_context(|| format!("provider {} needs an absolute base URL", p.name))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                bail!(
+                    "provider {} needs an HTTP(S) base URL without credentials, query or fragment",
+                    p.name
+                );
+            }
+        }
         if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
             bail!("router failure_threshold and max_attempts must be positive");
         }
         let mut names = std::collections::HashSet::new();
         for r in &self.routes {
+            validate_name(&r.name)?;
             if !names.insert(&r.name) {
                 bail!("duplicate route {}", r.name);
             }
             for d in &r.deployments {
+                if d.model.trim().is_empty() {
+                    bail!(
+                        "route {} needs an upstream model for each deployment",
+                        r.name
+                    );
+                }
                 if !self.providers.iter().any(|p| p.name == d.provider) {
                     bail!("route {} uses unknown provider {}", r.name, d.provider);
                 }
@@ -368,6 +409,18 @@ impl Config {
             self.server.metrics_token.as_deref(),
         )
     }
+}
+
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || !name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+    {
+        bail!("names must contain only letters, digits, dot, underscore or hyphen");
+    }
+    Ok(())
 }
 
 /// The value of the environment variable when set and not empty, else the

@@ -12,17 +12,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let path = config_path()?;
-    let mut cfg = Config::load(&path)?;
-    if let Ok(v) = std::env::var("LLM_ACCOUNTING_LISTEN") {
-        cfg.server.listen = v;
-    }
-    if let Ok(v) = std::env::var("LLM_ACCOUNTING_DATABASE") {
-        cfg.server.database = v;
-    }
-    if cfg.admin_password().is_none() {
-        tracing::warn!("no admin password is set; the dashboard is off");
-    }
+    let cfg = configuration()?;
     let metrics = llm_accounting::metrics::install()?;
     let state = llm_accounting::init(&cfg, Some(metrics)).await?;
     let app = llm_accounting::router(state.clone());
@@ -30,7 +20,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.server.listen)
         .await
         .with_context(|| format!("bind {}", cfg.server.listen))?;
-    tracing::info!(listen = %cfg.server.listen, config = %path.display(), "llm-accounting started");
+    tracing::info!(listen = %cfg.server.listen, "llm-accounting started");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
@@ -39,24 +29,36 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn config_path() -> Result<PathBuf> {
+fn configuration() -> Result<Config> {
     let mut args = std::env::args().skip(1);
     let mut path = std::env::var("LLM_ACCOUNTING_CONFIG")
         .ok()
         .map(PathBuf::from);
+    let mut listen = std::env::var("LLM_ACCOUNTING_LISTEN").ok();
+    let mut database = std::env::var("LLM_ACCOUNTING_DATABASE").ok();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-c" | "--config" => path = Some(args.next().context("--config needs a path")?.into()),
+            "--listen" => listen = Some(args.next().context("--listen needs an address")?),
+            "--database" => database = Some(args.next().context("--database needs a SQLite URL")?),
             "-h" | "--help" => {
                 println!(
-                    "usage: llm-accounting [--config PATH]\n\nDefault config: ./config.toml (or LLM_ACCOUNTING_CONFIG)"
+                    "usage: llm-accounting [--config PATH] [--listen ADDRESS] [--database SQLITE_URL]\n\nThe optional config file seeds the database once. Use /setup, then the dashboard.\nEnvironment: LLM_ACCOUNTING_CONFIG, LLM_ACCOUNTING_LISTEN, LLM_ACCOUNTING_DATABASE"
                 );
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument: {other}"),
         }
     }
-    Ok(path.unwrap_or_else(|| PathBuf::from("config.toml")))
+    let mut cfg = match path {
+        Some(p) => Config::load(&p)?,
+        None => toml::from_str("")?,
+    };
+    // Binding and storage are process options, not dashboard settings.
+    cfg.server.listen = listen.unwrap_or_else(|| llm_accounting::config::Server::default().listen);
+    cfg.server.database =
+        database.unwrap_or_else(|| llm_accounting::config::Server::default().database);
+    Ok(cfg)
 }
 
 async fn shutdown() {

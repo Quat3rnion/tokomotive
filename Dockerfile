@@ -14,10 +14,9 @@ COPY --from=build /src/target/release/llm-accounting /usr/local/bin/llm-accounti
 COPY config.example.toml /etc/llm-accounting/config.toml
 USER llma
 WORKDIR /data
-ENV LLM_ACCOUNTING_CONFIG=/etc/llm-accounting/config.toml \
-    LLM_ACCOUNTING_LISTEN=0.0.0.0:8787 \
+ENV LLM_ACCOUNTING_LISTEN=0.0.0.0:8787 \
     LLM_ACCOUNTING_DATABASE=sqlite:///data/llm-accounting.db
 EXPOSE 8787
 VOLUME /data
-# Mount your config at /etc/llm-accounting/config.toml.
+# Optional seed: mount a file and pass --config /etc/llm-accounting/config.toml.
 CMD ["llm-accounting"]

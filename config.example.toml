@@ -1,6 +1,8 @@
-# llm-accounting example configuration.
+# llm-accounting optional seed configuration. No file is required.
 #
-# This file seeds the database at start. The proxy adds Models, cards, Teams
+# Pass --config PATH to use this file. Providers, routes and server/router
+# settings seed once, on the first start. Later edits belong in the dashboard.
+# The proxy adds Models, cards, Teams
 # and Users that are not in the database yet. It does not overwrite changes
 # that you made in the dashboard.
 #
@@ -11,8 +13,8 @@
 # Check them again before you use them.
 
 [server]
-listen = "127.0.0.1:8787"
-database = "sqlite://llm-accounting.db"
+# Binding and storage use --listen/--database or the corresponding environment
+# variables, not this file. Defaults: 127.0.0.1:8787 and sqlite://llm-accounting.db.
 # The dashboard password. The environment variable has priority.
 admin_password_env = "LLM_ACCOUNTING_ADMIN_PASSWORD"
 # Markup for Models that have no Price Card.
@@ -25,8 +27,9 @@ metrics_token_env = "LLM_ACCOUNTING_METRICS_TOKEN"
 reserve_output_tokens = 4096
 # Dashboard login duration.
 session_days = 7
+mode = "full" # "simple" is stored, but does not change behaviour yet.
 
-# Routing settings are static. Restart the Proxy after changes.
+# Initial router settings. Use Settings in the dashboard for live changes.
 [router]
 failure_threshold = 3
 cooldown_secs = 30

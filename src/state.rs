@@ -73,14 +73,13 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub db: Db,
     pub limiter: crate::ratelimit::RateLimiter,
-    pub http: reqwest::Client,
+    http: RwLock<reqwest::Client>,
+    settings: RwLock<Arc<crate::settings::Settings>>,
+    pub secret_key: crate::settings::SecretKey,
+    pub settings_write: tokio::sync::Mutex<()>,
     router_table: RwLock<Arc<RouterTable>>,
     pub(crate) circuits: Mutex<HashMap<(String, String), crate::routing::Circuit>>,
     pub(crate) route_next: Mutex<HashMap<String, usize>>,
-    pub admin_password: Option<String>,
-    pub metrics_token: Option<String>,
-    pub session_days: i64,
-    pub reserve_output_tokens: i64,
     pub metrics: Option<PrometheusHandle>,
     reservations: Mutex<HashMap<i64, i64>>,
     catalog: RwLock<Arc<Catalog>>,
@@ -97,23 +96,25 @@ impl std::ops::Deref for AppState {
 
 impl AppState {
     pub async fn new(cfg: &Config, db: Db, metrics: Option<PrometheusHandle>) -> Result<AppState> {
-        let router_table = RouterTable::from_config(cfg);
+        let secret_key = crate::settings::SecretKey::load(&cfg.server.database)?;
+        crate::settings::seed(&db, cfg, &secret_key).await?;
+        let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
+        let router_table = RouterTable::from_config(&runtime);
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(cfg.server.upstream_timeout_secs))
+            .timeout(Duration::from_secs(settings.upstream_timeout_secs))
             .connect_timeout(Duration::from_secs(15))
             .build()?;
         let catalog = db::load_catalog(&db).await?;
         Ok(AppState(Arc::new(Inner {
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
-            http,
+            http: RwLock::new(http),
+            settings: RwLock::new(Arc::new(settings)),
+            secret_key,
+            settings_write: tokio::sync::Mutex::new(()),
             router_table: RwLock::new(Arc::new(router_table)),
             circuits: Mutex::new(HashMap::new()),
             route_next: Mutex::new(HashMap::new()),
-            admin_password: cfg.admin_password(),
-            metrics_token: cfg.metrics_token(),
-            session_days: cfg.server.session_days.max(1),
-            reserve_output_tokens: cfg.server.reserve_output_tokens.max(0),
             metrics,
             reservations: Mutex::new(HashMap::new()),
             catalog: RwLock::new(Arc::new(catalog)),
@@ -124,6 +125,26 @@ impl AppState {
 
     pub fn catalog(&self) -> Arc<Catalog> {
         self.catalog.read().expect("catalog lock").clone()
+    }
+
+    pub fn settings(&self) -> Arc<crate::settings::Settings> {
+        self.settings.read().expect("settings lock").clone()
+    }
+
+    pub fn http(&self) -> reqwest::Client {
+        self.http.read().expect("http lock").clone()
+    }
+
+    pub async fn reload_settings(&self) -> Result<()> {
+        let (cfg, settings) = crate::settings::load(&self.db, &self.secret_key).await?;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(settings.upstream_timeout_secs))
+            .connect_timeout(Duration::from_secs(15))
+            .build()?;
+        *self.http.write().expect("http lock") = http;
+        *self.settings.write().expect("settings lock") = Arc::new(settings);
+        self.set_router_table(RouterTable::from_config(&cfg));
+        self.reload_catalog().await
     }
 
     pub async fn reload_catalog(&self) -> Result<()> {

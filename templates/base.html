@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
 <title>{% block title %}LLM Accounting{% endblock %}</title>
 <script src="/admin/assets/htmx.min.js"></script>
 <style>
@@ -70,6 +71,9 @@ svg .axis { fill:var(--muted); font-size:11px; }
     <a href="/admin/keys" {% block nav_keys %}{% endblock %}>Keys</a>
     <a href="/admin/models" {% block nav_models %}{% endblock %}>Models</a>
     <a href="/admin/ledger" {% block nav_ledger %}{% endblock %}>Ledger</a>
+    <a href="/admin/providers" {% block nav_providers %}{% endblock %}>Providers</a>
+    <a href="/admin/routes" {% block nav_routes %}{% endblock %}>Routes</a>
+    <a href="/admin/settings" {% block nav_settings %}{% endblock %}>Settings</a>
   </nav>
   <form method="post" action="/admin/logout"><button class="ghost">Log out</button></form>
 </header>

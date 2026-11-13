@@ -9,6 +9,7 @@ pub mod provider;
 pub mod proxy;
 pub mod ratelimit;
 pub mod routing;
+pub mod settings;
 pub mod state;
 pub mod translate;
 pub mod usage;
@@ -47,7 +48,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn metrics_endpoint(State(st): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Some(token) = &st.metrics_token {
+    if let Some(token) = &st.settings().metrics_token {
         let given = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())

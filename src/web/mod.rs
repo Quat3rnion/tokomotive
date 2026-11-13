@@ -25,6 +25,17 @@ use views::*;
 
 const COOKIE: &str = "llma_session";
 
+macro_rules! tryr {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return internal(e.into()),
+        }
+    };
+}
+
+mod settings;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin", get(overview))
@@ -42,9 +53,39 @@ pub fn router() -> Router<AppState> {
         .route("/admin/models/{id}/cost", post(set_cost))
         .route("/admin/models/{id}/price", post(set_price))
         .route("/admin/models/{id}/team-price", post(set_team_price))
-        .route("/admin/settings", post(set_settings))
+        .route("/admin/settings/markup", post(set_settings))
         .route("/admin/ledger", get(ledger))
         .route("/admin/reprice", post(reprice))
+        .merge(settings::router())
+        .layer(axum::middleware::from_fn(same_origin))
+}
+
+async fn same_origin(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if req.method() == axum::http::Method::POST {
+        let h = req.headers();
+        let cross_site = h
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v != "same-origin" && v != "none");
+        let wrong_origin = h.get(header::ORIGIN).is_some_and(|v| {
+            let origin = v
+                .to_str()
+                .ok()
+                .and_then(|v| v.parse::<axum::http::Uri>().ok());
+            !origin.is_some_and(|u| {
+                matches!(u.scheme_str(), Some("http" | "https"))
+                    && u.authority().map(|a| a.as_str())
+                        == h.get(header::HOST).and_then(|v| v.to_str().ok())
+            })
+        });
+        if cross_site || wrong_origin {
+            return page_error(
+                StatusCode::FORBIDDEN,
+                "Cross-origin form submission refused.",
+            );
+        }
+    }
+    next.run(req).await
 }
 
 // -------------------------------------------------------------------- auth
@@ -56,11 +97,12 @@ impl FromRequestParts<AppState> for Admin {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, Self::Rejection> {
-        if st.admin_password.is_none() {
-            return Err(page_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The dashboard is off. Set the admin password in the configuration.",
-            ));
+        if crate::settings::value(&st.db, "admin_password_hash")
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            return Err(Redirect::to("/setup").into_response());
         }
         let ok = match session_cookie(&parts.headers) {
             Some(s) => db::session_valid(&st.db, &s).await.unwrap_or_else(|e| {
@@ -95,7 +137,10 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
         == 0
 }
 
-async fn login_page() -> Response {
+async fn login_page(State(st): State<AppState>) -> Response {
+    if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_none() {
+        return Redirect::to("/setup").into_response();
+    }
     render(LoginPage { error: None })
 }
 
@@ -105,13 +150,10 @@ struct LoginForm {
 }
 
 async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response {
-    let Some(pw) = &st.admin_password else {
-        return page_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The dashboard is off. Set the admin password in the configuration.",
-        );
+    let Some(pw) = tryr!(crate::settings::value(&st.db, "admin_password_hash").await) else {
+        return Redirect::to("/setup").into_response();
     };
-    if !ct_eq(pw, &f.password) {
+    if !crate::settings::verify_password(&f.password, &pw) {
         let mut r = render(LoginPage {
             error: Some("Incorrect password.".into()),
         });
@@ -121,10 +163,10 @@ async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
-    if let Err(e) = db::create_session(&st.db, &token, st.session_days).await {
+    if let Err(e) = db::create_session(&st.db, &token, st.settings().session_days).await {
         return internal(e);
     }
-    let max_age = st.session_days * 86_400;
+    let max_age = st.settings().session_days * 86_400;
     (
         [(
             header::SET_COOKIE,
@@ -192,15 +234,6 @@ fn internal(e: anyhow::Error) -> Response {
         StatusCode::INTERNAL_SERVER_ERROR,
         "Internal error. See the server log.",
     )
-}
-
-macro_rules! tryr {
-    ($e:expr) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => return internal(e.into()),
-        }
-    };
 }
 
 fn opt_usd(s: &str) -> Result<Option<i64>, Response> {
@@ -538,6 +571,7 @@ async fn create_model(
     State(st): State<AppState>,
     Form(f): Form<NewModelForm>,
 ) -> Response {
+    let _guard = st.settings_write.lock().await;
     let name = f.name.trim();
     if name.is_empty() {
         return bad("A model needs a name.");
@@ -598,6 +632,7 @@ async fn update_model(
     Path(id): Path<i64>,
     Form(f): Form<ModelForm>,
 ) -> Response {
+    let _guard = st.settings_write.lock().await;
     if !st
         .router_table()
         .providers
@@ -698,6 +733,15 @@ async fn set_settings(
     State(st): State<AppState>,
     Form(f): Form<SettingsForm>,
 ) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let mut cfg = tryr!(crate::settings::load(&st.db, &st.secret_key).await).0;
+    cfg.server.default_markup_percent = match f.default_markup_percent.trim().parse() {
+        Ok(v) => v,
+        Err(_) => return bad("Markup must be a finite number."),
+    };
+    if let Err(e) = cfg.validate() {
+        return bad(e.to_string());
+    }
     let bp = match percent(&f.default_markup_percent) {
         Ok(b) => b,
         Err(r) => return r,

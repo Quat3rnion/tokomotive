@@ -12,11 +12,10 @@ The terms are defined in [GLOSSARY.md](GLOSSARY.md).
 1. Do not use port 3000 or port 4095. The default port of the Proxy is 8787. To
    use another port, set `LLM_ACCOUNTING_LISTEN` (for example
    `127.0.0.1:8790`).
-2. Never write a Provider Key in a configuration file that is in a committed
-   repository. Use the `api_key_env` and `api_keys_env` keys. Pass the key in an
-   environment variable.
-3. Never write the dashboard password or the metrics token in a committed file.
-   Use the environment variables.
+2. Enter Provider Keys on **Providers**, or use `env:NAME` references. For an
+   optional seed file, use `api_key_env` and `api_keys_env` rather than secrets.
+3. Set the password through Setup and the metrics token through **Settings**.
+   Keep secrets and the Master Key outside the repository.
 4. Use the `keys` setting of a User only for local tests. The key is in plain
    text in the file.
 5. Do not commit `config.toml`, `*.db`, `*.db-shm` or `*.db-wal`. The file
@@ -62,7 +61,69 @@ cargo build --release --locked
 Expected: the last output line starts with ``Finished `release` profile``. The
 binary is `target/release/llm-accounting`.
 
-## 3. Write the configuration
+## 3. UI-first installation (recommended)
+
+No configuration file is required. Start the binary:
+
+```sh
+./target/release/llm-accounting --listen 127.0.0.1:8787 \
+  --database sqlite://data/llm-accounting.db
+```
+
+Expected: the database directory is created and the log shows
+`llm-accounting started`. In another terminal:
+
+```sh
+curl -s http://127.0.0.1:8787/healthz
+curl -si http://127.0.0.1:8787/admin | head -3
+```
+
+Expected: `ok`, then a redirect to `/setup` on the first start.
+
+1. Open `http://127.0.0.1:8787/admin` through a trusted local connection.
+2. Set an admin password of at least 8 characters. Setup works once only.
+3. Log in. On **Providers**, add a name, kind, base URL and key. Use **Test** to
+   check the upstream status. Keys are encrypted in SQLite; saved keys show only
+   their last 4 characters. Use `env:NAME` to store a variable reference instead.
+4. On **Models**, add Models and rates. Check the current Provider price list.
+5. On **Users**, add a User. On **Keys**, create and copy a Virtual Key.
+6. If needed, add Routes and deployment rows on **Routes**. Set Fallback names
+   as a comma list. Use **Settings** for router limits, timeout, reservation
+   tokens, session duration, markup, mode, password and metrics token.
+7. Send a request with the Virtual Key as shown in step 6.3 below. Use the key
+   that you created, not the example development key.
+
+All UI changes apply without a restart. Timeout changes use a new HTTP client.
+Mode is stored as `full` or `simple`; simple-mode behaviour is not implemented
+yet. Password changes end all sessions. Session duration changes affect new
+logins only.
+
+Back up `data/secret.key` with the database. The Proxy creates this Master Key
+file with Unix mode `0600`. Alternatively, set `LLM_ACCOUNTING_SECRET_KEY` to
+32 bytes encoded as 64 hex characters or base64 before the first start. Back up
+that value instead. A lost Master Key makes encrypted secrets unrecoverable.
+If startup reports that it cannot decrypt a stored secret, restore the original
+key. Do not replace it with a new key.
+
+Only listen address and database path stay outside the UI. Flags override
+`LLM_ACCOUNTING_LISTEN` and `LLM_ACCOUNTING_DATABASE`. The defaults are
+`127.0.0.1:8787` and `sqlite://llm-accounting.db`. The binary accepts but ignores
+legacy `server.listen` and `server.database` fields in a seed file.
+
+To verify without a browser, use `POST /setup` with form field `password`, then
+`POST /admin/login` with the same field. Store the session cookie with `curl -c`
+and pass it with `curl -b` for dashboard forms. Browser POSTs must come from the
+same origin. Preserve the public Host and Origin headers at a reverse proxy.
+
+For a new UI-first installation, skip steps 4 and 5 below. They describe an
+optional seed-file workflow. Continue with step 6 to verify the running Proxy.
+
+### Optional seed-file workflow
+
+Use `--config PATH` or `LLM_ACCOUNTING_CONFIG` only if you need a seed file.
+There is no implicit `config.toml`. Providers, Routes, router and server settings
+seed once, before runtime settings exist. Later file edits do not replace UI
+changes. Models, Teams and Users keep their additive seed behaviour.
 
 The file `config.example.toml` has a full example. The next command makes a
 minimal file with one Provider, one Model and one local test User:
@@ -115,11 +176,12 @@ See [docs/configuration.md](docs/configuration.md) for every key.
 | ------------------------------- | --------------- | ----------------------------------------------------------- |
 | `OPENAI_API_KEY`                | Yes (Provider)  | The Provider Key. The name comes from `api_key_env`.        |
 | `ANTHROPIC_API_KEY`             | If you use it   | The Provider Key for an Anthropic Provider.                 |
-| `LLM_ACCOUNTING_ADMIN_PASSWORD` | Yes (dashboard) | The dashboard password. Without it the dashboard is off.    |
-| `LLM_ACCOUNTING_METRICS_TOKEN`  | No              | The bearer token for `/metrics`. Without it `/metrics` is open. |
-| `LLM_ACCOUNTING_LISTEN`         | No              | Replaces `server.listen`.                                   |
-| `LLM_ACCOUNTING_DATABASE`       | No              | Replaces `server.database`.                                 |
-| `LLM_ACCOUNTING_CONFIG`         | No              | Path of the configuration file.                             |
+| `LLM_ACCOUNTING_ADMIN_PASSWORD` | No | Password seed/recovery override at each start. Without it, use Setup. |
+| `LLM_ACCOUNTING_SECRET_KEY` | No | Master Key. Otherwise use the generated `secret.key` file. |
+| `LLM_ACCOUNTING_METRICS_TOKEN`  | No | Initial metrics token. Later changes belong in Settings. |
+| `LLM_ACCOUNTING_LISTEN`         | No | Listen address, unless `--listen` is set. |
+| `LLM_ACCOUNTING_DATABASE`       | No | SQLite URL, unless `--database` is set. |
+| `LLM_ACCOUNTING_CONFIG`         | No | Path of the optional seed file. |
 | `RUST_LOG`                      | No              | Log filter. The default is `info`.                          |
 
 Set them in the shell that starts the Proxy:
@@ -130,7 +192,9 @@ export LLM_ACCOUNTING_ADMIN_PASSWORD="$(head -c 24 /dev/urandom | od -An -tx1 | 
 echo "$LLM_ACCOUNTING_ADMIN_PASSWORD"
 ```
 
-Keep the printed password. You need it in step 6.
+Keep the printed password. You need it in step 6. Remove the password environment
+variable after recovery if you want UI password changes to survive a restart.
+When it is set, the Proxy replaces the password hash at each start.
 
 ## 5. Start the Proxy
 
@@ -142,7 +206,7 @@ cat llm-accounting.log
 ```
 
 Expected: a log line that ends with
-`llm-accounting started listen=127.0.0.1:8787 config=config.toml`. The variable
+`llm-accounting started listen=127.0.0.1:8787`. The variable
 `NO_COLOR=1` removes color codes from the log.
 
 The log can also have warnings. See "Common failures".
@@ -184,8 +248,8 @@ location: /admin
 set-cookie: llma_session=<64 hex characters>; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=604800
 ```
 
-A wrong password gives `HTTP/1.1 401 Unauthorized`. If the dashboard is off, the
-status is `503 Service Unavailable`.
+A wrong password gives `HTTP/1.1 401 Unauthorized`. With no password hash, login
+redirects to `/setup`. Setup refuses requests after a password exists.
 
 ### 6.3 Request with a Virtual Key
 
@@ -302,7 +366,7 @@ a monthly Budget.
 
 ```sh
 cargo test --locked
-cargo clippy --all-targets --locked
+cargo clippy --all-targets --locked -- -D warnings
 ```
 
 Expected: each `test result:` line says `ok`, and `cargo clippy` prints no
@@ -319,9 +383,10 @@ a temporary database. They do not use port 3000 or port 4095.
 | `missing field` `kind` (or another key)                                                                  | A required key is missing.                           | Add the key.                                                                                  |
 | `model X uses unknown provider Y`                                                                        | `provider` of a Model has no `[[providers]]` item.   | Make the names the same.                                                                      |
 | `user X uses unknown team Y`                                                                             | `team` of a User has no `[[teams]]` item.            | Add the Team or correct the name.                                                             |
-| Log warning `no admin password is set; the dashboard is off`. `/admin` and `/admin/login` give HTTP 503. | `LLM_ACCOUNTING_ADMIN_PASSWORD` is not set or is empty. | Set the variable in the shell that starts the Proxy. Restart.                              |
+| `/admin` redirects to `/setup`. | No password hash exists. | Complete Setup through a trusted local connection. |
+| Startup says `cannot decrypt stored secret`. | The Master Key changed or was lost. | Restore the original `secret.key` or `LLM_ACCOUNTING_SECRET_KEY`. |
 | Log warning `no API key is set for this provider`                                                        | The variable in `api_key_env` is not set or is empty. | Set the variable (for example `OPENAI_API_KEY`). Restart. Requests go upstream with an empty key until you do. |
-| A request gives HTTP 401 and the body is from the Provider (not `authentication_error` from the Proxy). The Ledger Entry has `status` 401. | The Provider Key is wrong, expired or empty.         | Set a valid Provider Key. Restart. The Proxy does not retry a 401.                            |
+| A request gives HTTP 401 and the body is from the Provider (not `authentication_error` from the Proxy). The Ledger Entry has `status` 401. | The Provider Key is wrong, expired or empty. | Add a valid key on Providers and remove the old key. The change is live. The Proxy does not retry a 401. |
 | A request gives `{"error":{"type":"authentication_error", ...}}`                                         | The Virtual Key is missing, unknown or revoked, or the User is disabled. | Use a valid Virtual Key. Check the **Keys** and **Users** pages.                |
 | HTTP 403 `this API key may not use this model`                                                           | The Virtual Key has an allowed-Models list.          | Add the Model to the list, or use another key.                                                |
 | HTTP 402 `budget_exceeded`                                                                               | The Budget of the User is used or reserved.          | Raise the Budget on the **Users** page.                                                       |
@@ -346,23 +411,22 @@ docker build -t llm-accounting .
 
 Expected: the build ends without an error.
 
-The image holds a copy of `config.example.toml`. That file creates the
-development Virtual Key `sk-dev-alice-change-me`. For real use, mount your own
-configuration file (made in step 3, with the `keys` lines removed).
+The image holds an optional example seed file. It does not use that file by
+default. Use Setup and the dashboard as described in step 3.
 
 Run the container. Replace the port if 8787 is in use. Do not use 3000 or 4095.
 
 ```sh
 docker run -d --name llm-accounting -p 127.0.0.1:8787:8787 \
   -v llma-data:/data \
-  -v "$PWD/config.toml:/etc/llm-accounting/config.toml:ro" \
-  -e OPENAI_API_KEY -e ANTHROPIC_API_KEY -e LLM_ACCOUNTING_ADMIN_PASSWORD \
   llm-accounting
 ```
 
-The container sets `LLM_ACCOUNTING_CONFIG`, `LLM_ACCOUNTING_LISTEN=0.0.0.0:8787`
+The container sets `LLM_ACCOUNTING_LISTEN=0.0.0.0:8787`
 and `LLM_ACCOUNTING_DATABASE=sqlite:///data/llm-accounting.db`. The database is on
-the volume `llma-data`.
+the volume `llma-data`. Keep and back up `/data/secret.key` with the database.
+To seed instead, mount your own file and add `--config PATH` after the image
+name. Do not use the example development keys in production.
 
 Verify with the commands in step 6.1 to step 6.3. To read the Ledger, copy the
 database files from the volume to the current directory:

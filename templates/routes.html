@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Routes - LLM Accounting{% endblock %}
+{% block nav_routes %}class="on"{% endblock %}
+{% block content %}
+<h1>Routes</h1>
+<div id="errors"></div>
+<datalist id="provider-names">{% for p in providers %}<option value="{{ p }}">{% endfor %}</datalist>
+{% for r in routes %}
+<section class="panel">
+<h2>{{ r.name }}</h2>
+<form method="post" action="/admin/routes/{{ r.name }}" hx-post="/admin/routes/{{ r.name }}" hx-target="#errors" class="route-form">
+  <div class="row">
+  <label>Name <input name="name" value="{{ r.name }}" required></label>
+  <label>Strategy <select name="strategy"><option value="priority" {% if r.strategy == "priority" %}selected{% endif %}>Priority</option><option value="round_robin" {% if r.strategy == "round_robin" %}selected{% endif %}>Round robin</option><option value="weighted" {% if r.strategy == "weighted" %}selected{% endif %}>Weighted</option></select></label>
+  <label>Fallbacks (comma-separated) <input name="fallbacks" value="{{ r.fallbacks }}" style="width:340px"></label>
+  </div>
+  <p class="muted">Deployments, in priority order. Each weight must be positive.</p>
+  <textarea name="deployments" rows="3" aria-label="Deployment JSON">{{ r.deployments }}</textarea>
+  <button>Save route</button>
+</form>
+<form method="post" action="/admin/routes/{{ r.name }}/delete" hx-post="/admin/routes/{{ r.name }}/delete" hx-target="#errors" style="margin-top:12px"><button class="danger">Delete route</button></form>
+</section>
+{% endfor %}
+<section class="panel">
+<h2>Add route</h2>
+<form method="post" action="/admin/routes" hx-post="/admin/routes" hx-target="#errors" class="route-form">
+  <div class="row">
+  <label>Name <input name="name" required></label>
+  <label>Strategy <select name="strategy"><option value="priority">Priority</option><option value="round_robin">Round robin</option><option value="weighted">Weighted</option></select></label>
+  <label>Fallbacks (comma-separated) <input name="fallbacks" style="width:340px"></label>
+  </div>
+  <p class="muted">Deployments, in priority order.</p>
+  <textarea name="deployments" rows="3" aria-label="Deployment JSON">[]</textarea>
+  <button>Add route</button>
+</form>
+</section>
+<script>
+document.querySelectorAll('.route-form').forEach(form => {
+  const data = form.querySelector('textarea[name=deployments]');
+  const rows = document.createElement('div');
+  data.before(rows);
+  const sync = () => { data.value = JSON.stringify(Array.from(rows.children).map(row => ({provider:row.querySelector('[data-field=provider]').value, model:row.querySelector('[data-field=model]').value, weight:Number(row.querySelector('[data-field=weight]').value)}))); };
+  const add = deployment => {
+    const row = document.createElement('div'); row.className = 'row'; row.style.marginBottom = '10px';
+    for (const field of ['provider', 'model', 'weight']) {
+      const label = document.createElement('label'); label.textContent = field;
+      const input = document.createElement('input'); input.dataset.field = field; input.required = true;
+      input.value = deployment[field] ?? (field === 'weight' ? 1 : '');
+      if (field === 'weight') { input.type = 'number'; input.min = '1'; } else { input.style.width = '220px'; }
+      if (field === 'provider') input.setAttribute('list', 'provider-names');
+      input.addEventListener('input', sync); label.append(input); row.append(label);
+    }
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'danger'; remove.textContent = 'Remove row';
+    remove.onclick = () => { row.remove(); sync(); }; row.append(remove); rows.append(row); sync();
+  };
+  const initial = JSON.parse(data.value); initial.forEach(add); data.hidden = true;
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'ghost'; button.textContent = 'Add deployment'; button.style.marginRight = '10px';
+  button.onclick = () => add({}); data.after(button);
+  form.addEventListener('submit', sync);
+});
+</script>
+{% endblock %}

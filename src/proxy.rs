@@ -385,7 +385,7 @@ pub async fn handle(
                     c.model.as_deref(),
                     json_body.as_ref(),
                     body.len(),
-                    st.reserve_output_tokens,
+                    st.settings().reserve_output_tokens,
                 )
             })
             .max()
@@ -630,7 +630,7 @@ fn build_request(
     headers: &HeaderMap,
     anthropic_hint: bool,
 ) -> reqwest::RequestBuilder {
-    let mut req = st.http.request(method.clone(), url);
+    let mut req = st.http().request(method.clone(), url);
     for (name, value) in headers.iter() {
         if !skip_header(name)
             && !(provider.kind == ProviderKind::Openai && name.as_str().starts_with("anthropic-"))

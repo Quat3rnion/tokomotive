@@ -42,6 +42,10 @@
 
 **Provider Key** — The secret credential that the Proxy uses to call a Provider. Users never see it.
 
+**Master Key** - The secret that protects stored Provider Keys and other recoverable secrets. It must be kept with the database backup.
+
+**Setup** - The first-use step in which the Operator sets the dashboard password.
+
 **Key Pool** — The set of Provider Keys for one Provider. The Proxy uses them in turn, and tries the next key when the Provider refuses a request.
 
 **Ledger Entry** — The record of one request: User, Model, token counts per Token Class, Cost, Price.
