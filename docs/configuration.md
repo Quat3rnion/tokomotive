@@ -131,7 +131,8 @@ If no token is set, `/metrics` needs no authentication.
 
 ## Master Key and backups
 
-The Master Key protects the stored Provider Keys and the metrics token. They use
+The Master Key protects the stored Provider Keys, subscription credentials and
+the metrics token. They use
 AES-256-GCM. Each saved value has a new random 96-bit nonce. SQLite stores base64
 of `nonce || ciphertext` (including the authentication tag). The Master Key is
 not stored in SQLite.
@@ -174,12 +175,13 @@ service environment. A dashboard edit cannot change the environment of the
 running process.
 
 The table below lists the keys of the seed file. The dashboard has the fields
-`name`, `kind`, `base_url` and the keys.
+`name`, `kind`, `auth`, `base_url` and the keys.
 
 | Key            | Type             | Default | Meaning                                                                                                          |
 | -------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | string           | none    | Required. The name that `models.provider` uses.                                                                  |
-| `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the usage format and the authentication headers.        |
+| `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the wire format and usage parser. |
+| `auth`         | string           | `"api_key"` | `"api_key"`, `"chatgpt"` or `"claude"`. Subscription auth needs sign-in on Providers. |
 | `base_url`     | string           | none    | Required. The URL of the Provider API, without a path such as `/v1`. The Proxy adds the path and query of the client request. |
 | `api_key`      | string           | none    | One Provider Key, in the file. The Proxy encrypts it when it seeds. Do not use it in a repository that you commit. |
 | `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. A non-empty variable takes precedence over `api_key`.         |
@@ -187,6 +189,9 @@ The table below lists the keys of the seed file. The dashboard has the fields
 | `api_keys_env` | array of strings | `[]`    | Names of variables. Each variable holds one Provider Key.                                                        |
 
 ### Key Pool
+
+Key Pools apply only to `auth = "api_key"`. Subscription Providers have no
+Provider Keys. Their tokens use separate encrypted storage.
 
 The Key Pool of a Provider holds the keys in the order that **Providers** shows.
 The Proxy skips empty keys, and `env:NAME` references that are not set, and
@@ -216,6 +221,46 @@ sends requests to the Provider with an empty key.
 | ----------- | -------------------------------------------------------------------------------------------------------- |
 | `openai`    | `Authorization: Bearer <Provider Key>`                                                                   |
 | `anthropic` | `x-api-key: <Provider Key>`. The Proxy adds `anthropic-version: 2023-06-01` if the client sent no such header. |
+
+This table applies to `auth = "api_key"`. ChatGPT token sharing uses a bearer
+token with the normal public OpenAI API. Claude OAuth uses a bearer token, the
+required betas and the Claude Code user agent, identity and billing marker.
+
+### Subscription auth
+
+To seed a Subscription Provider:
+
+```toml
+[[providers]]
+name = "my-chatgpt"
+kind = "openai"
+auth = "chatgpt"
+base_url = "https://api.openai.com"
+
+[[providers]]
+name = "my-claude"
+kind = "anthropic"
+auth = "claude"
+base_url = "https://api.anthropic.com"
+```
+
+These base URLs and kind/auth pairs are required. Subscription requests use
+fixed issuer and resource URLs, not an Operator-supplied token destination.
+Do not set `api_key`, `api_key_env`, `api_keys` or `api_keys_env` for these
+Providers. Tokens cannot be seeded in TOML. Open **Providers** and complete
+sign-in. A Provider's authentication type cannot be changed after creation.
+
+The optional Codex usage login attaches to a ChatGPT Provider. It is not a
+Provider kind or an inference credential. See
+[Subscription Providers](usage.md#subscription-providers) for sign-in steps,
+Provider Access and the usage panel, and
+[ADR 0003](adr/0003-subscription-providers.md) for the owner's risk decision.
+
+Attempts expire after 10 minutes and are lost at restart. Before a request, the
+Proxy refreshes a token that expires within 5 minutes. It also retries once
+after a 401. Refresh is single-flight for each
+credential. A failed or uncertain refresh needs sign-in again. Refresh errors
+do not expose token response bodies. Run one process for each database.
 
 The Proxy does not copy these client headers to the Provider: `Authorization`,
 `x-api-key`, `Host`, `Content-Length`, `Accept-Encoding` and the hop-by-hop
@@ -341,6 +386,7 @@ and skips the override.
 | `key_rpm_limit`  | integer          | none    | Requests per minute for each new Virtual Key in `keys`. |
 | `key_tpm_limit`  | integer          | none    | Completed tokens per minute for each new Virtual Key in `keys`. |
 | `keys`           | array of strings | `[]`    | Virtual Keys to create at start. For development only. See below.                                    |
+| `key_allowed_providers` | array of strings | `[]` | Provider names allowed for each new Virtual Key in `keys`. Empty allows all API-key Providers, but no Subscription Providers. A non-empty list allows only these Providers. |
 
 Rate Limits must be non-negative integers. Omit a limit for unlimited use. Zero
 blocks requests. Both the User and Virtual Key limits apply. TPM counts all
@@ -350,6 +396,22 @@ Seeding does not change the limits of an existing User or Virtual Key.
 A key in `keys` is stored with the label `config`. The key is in plain text in the
 file. Do not use this setting for production Users. Create Virtual Keys on the
 **Keys** page of the dashboard instead.
+
+For example, to allow a seeded key to use a subscription and an API-key
+Fallback:
+
+```toml
+[[users]]
+name = "development"
+keys = ["development-key-only"]
+key_allowed_providers = ["my-chatgpt", "openai-api"]
+```
+
+Use the Provider names saved in your database. This setting applies only when
+a key is first created. It does not replace existing Provider Access. Edit
+each key with the checkboxes on **Keys**. The database field `allowed_providers`
+holds this list; `NULL` and `[]` both mean API-key Providers only. Provider Access
+still applies to provider prefixes, Fallbacks and model discovery.
 
 ## Seeding
 
@@ -400,7 +462,8 @@ Rules for Fallbacks:
 - A Fallback does not expand recursively. A Fallback Route contributes its own
   Deployments only.
 - The Proxy skips an unknown Fallback name at request time and writes a warning.
-- A Virtual Key that allows a Route also allows its Fallbacks.
+- Model permission for a Route includes its Fallbacks. Provider Access still
+  applies to each Deployment.
 - You cannot delete or rename a Route that another Route uses as a Fallback.
   Remove that reference first.
 - You cannot delete a Provider that a Route uses.
@@ -419,7 +482,8 @@ The optional file uses `[[routes]]` with `name`, `strategy`, `deployments` and
 | `max_attempts`      | `8`     | Positive limit on upstream attempts for one request. Each Provider Key try counts.       |
 
 The Proxy keeps one Circuit Breaker for each pair of Provider and upstream model.
-A connection error, a 429 or a 5xx counts as a failure. Any other response resets
+A connection error, a 429, a 5xx or a subscription credential failure counts as
+a failure. Any other response resets
 the count. When the count reaches `failure_threshold`, the Circuit Breaker opens.
 After `cooldown_secs`, one probe request tests the Deployment. A good result
 closes the Circuit Breaker. A failed probe opens it again. If every candidate is

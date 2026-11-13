@@ -388,6 +388,10 @@ struct ProviderView {
     kind: String,
     base_url: String,
     keys: Vec<String>,
+    auth: String,
+    status: String,
+    usage_status: String,
+    usage: String,
 }
 
 async fn providers(_: Admin, State(st): State<AppState>) -> Response {
@@ -417,8 +421,53 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
             ));
         }
         let kind: ProviderKind = tryr!(serde_json::from_str(row.get("kind")));
+        let auth: crate::provider::ProviderAuth = tryr!(serde_json::from_value(serde_json::json!(
+            row.get::<String, _>("auth")
+        )));
+        let name: String = row.get("name");
+        let status = if let Some(flow) = crate::oauth::Flow::from_auth(auth) {
+            status_text(tryr!(st.oauth.status(&name, flow).await))
+        } else {
+            String::new()
+        };
+        let usage_status = if auth == crate::provider::ProviderAuth::Chatgpt {
+            status_text(tryr!(
+                st.oauth.status(&name, crate::oauth::Flow::Codex).await
+            ))
+        } else {
+            String::new()
+        };
+        let usage = if auth == crate::provider::ProviderAuth::Chatgpt {
+            st.oauth
+                .usage(&name)
+                .await
+                .map(|u| {
+                    u.windows
+                        .iter()
+                        .map(|w| {
+                            format!(
+                                "{}: {}%; resets {}",
+                                w.label,
+                                w.used_percent,
+                                w.resets_at
+                                    .and_then(chrono::DateTime::from_timestamp_millis)
+                                    .map(|d| d.to_rfc3339())
+                                    .unwrap_or_else(|| "not available".into())
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_else(|| "not available".into())
+        } else {
+            String::new()
+        };
         providers.push(ProviderView {
-            name: row.get("name"),
+            name,
+            auth: auth.as_str().into(),
+            status,
+            usage_status,
+            usage,
             kind: match kind {
                 ProviderKind::Openai => "openai",
                 ProviderKind::Anthropic => "anthropic",
@@ -438,6 +487,8 @@ async fn providers(_: Admin, State(st): State<AppState>) -> Response {
 struct ProviderForm {
     name: String,
     kind: ProviderKind,
+    #[serde(default)]
+    auth: crate::provider::ProviderAuth,
     base_url: String,
     #[serde(default)]
     api_key: String,
@@ -505,6 +556,7 @@ async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderF
     cfg.providers.push(ProviderCfg {
         name: f.name.clone(),
         kind: f.kind,
+        auth: f.auth,
         base_url: f.base_url.clone(),
         api_key: None,
         api_key_env: None,
@@ -524,8 +576,22 @@ async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderF
     {
         return form_error("This provider is used by a model. Update that model first.");
     }
+    let _oauth_guard = if let Some(name) = &old {
+        Some(st.oauth.provider_write(name).await)
+    } else {
+        None
+    };
     let mut keys: Vec<String> = match &old {
         Some(name) => {
+            let old_auth: String = tryr!(
+                sqlx::query_scalar("SELECT auth FROM providers WHERE name=?")
+                    .bind(name)
+                    .fetch_one(&st.db)
+                    .await
+            );
+            if old_auth != f.auth.as_str() {
+                return form_error("Create a new Provider to change its authentication type.");
+            }
             let raw: Option<String> = tryr!(
                 sqlx::query_scalar("SELECT keys_json FROM providers WHERE name=?")
                     .bind(name)
@@ -540,34 +606,62 @@ async fn save_provider(_: Admin, st: AppState, old: Option<String>, f: ProviderF
         None => vec![],
     };
     if !f.api_key.trim().is_empty() {
+        if f.auth != crate::provider::ProviderAuth::ApiKey {
+            return form_error("Subscription Providers do not use API keys.");
+        }
         keys.push(match encode_key(&st, f.api_key.trim()) {
             Ok(v) => v,
             Err(e) => return form_error(e),
         });
     }
     let mut tx = tryr!(st.db.begin().await);
-    if let Some(name) = old {
-        tryr!(
-            sqlx::query("DELETE FROM providers WHERE name=?")
-                .bind(name)
-                .execute(&mut *tx)
-                .await
-        );
-    }
-    if let Err(e) =
-        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json) VALUES(?,?,?,?)")
-            .bind(f.name)
+    let result = if let Some(name) = old {
+        sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=? WHERE name=?")
+            .bind(&f.name)
             .bind(tryr!(serde_json::to_string(&f.kind)))
             .bind(f.base_url.trim_end_matches('/'))
             .bind(tryr!(serde_json::to_string(&keys)))
+            .bind(f.auth.as_str())
+            .bind(name)
             .execute(&mut *tx)
             .await
-    {
+    } else {
+        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json,auth) VALUES(?,?,?,?,?)")
+            .bind(&f.name)
+            .bind(tryr!(serde_json::to_string(&f.kind)))
+            .bind(f.base_url.trim_end_matches('/'))
+            .bind(tryr!(serde_json::to_string(&keys)))
+            .bind(f.auth.as_str())
+            .execute(&mut *tx)
+            .await
+    };
+    if let Err(e) = result {
         return form_error(e);
     }
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
     saved("/admin/providers")
+}
+
+fn status_text(status: crate::oauth::Status) -> String {
+    let date = |ms: Option<i64>| {
+        ms.and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_else(|| "not available".into())
+    };
+    format!(
+        "{}; account: {}; plan: {}; expires: {}; last refresh: {}; last error: {}",
+        if status.connected {
+            "Connected"
+        } else {
+            "Disconnected"
+        },
+        status.account.as_deref().unwrap_or("not available"),
+        status.plan.as_deref().unwrap_or("not available"),
+        date(status.expires_at),
+        date(status.last_refresh),
+        status.last_error.as_deref().unwrap_or("none")
+    )
 }
 
 async fn delete_provider(
@@ -587,6 +681,7 @@ async fn delete_provider(
             "This provider is used by a route or model. Remove those references first.",
         );
     }
+    let _oauth_guard = st.oauth.provider_write(&name).await;
     tryr!(
         sqlx::query("DELETE FROM providers WHERE name=?")
             .bind(name)
@@ -630,6 +725,15 @@ async fn change_keys(
     add: Option<String>,
 ) -> Response {
     let _guard = st.settings_write.lock().await;
+    let auth: Option<String> = tryr!(
+        sqlx::query_scalar("SELECT auth FROM providers WHERE name=?")
+            .bind(&name)
+            .fetch_optional(&st.db)
+            .await
+    );
+    if auth.as_deref() != Some("api_key") {
+        return form_error("Only API-key Providers have a Key Pool.");
+    }
     let raw: Option<String> = tryr!(
         sqlx::query_scalar("SELECT keys_json FROM providers WHERE name=?")
             .bind(&name)
@@ -669,6 +773,11 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
         "{}/v1/models",
         p.base_url.trim_end_matches('/').trim_end_matches("/v1")
     );
+    if p.auth != crate::provider::ProviderAuth::ApiKey {
+        return form_error(
+            "Use Sign in for this Subscription Provider. API-key tests do not apply.",
+        );
+    }
     let mut req = st
         .http()
         .get(url)

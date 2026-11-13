@@ -10,9 +10,11 @@
   <form method="post" action="/admin/providers/{{ p.name }}" hx-post="/admin/providers/{{ p.name }}" hx-target="#errors" class="row">
     <label>Name <input name="name" value="{{ p.name }}" required></label>
     <label>Kind <select name="kind"><option value="openai" {% if p.kind == "openai" %}selected{% endif %}>OpenAI</option><option value="anthropic" {% if p.kind == "anthropic" %}selected{% endif %}>Anthropic</option></select></label>
+    <input type="hidden" name="auth" value="{{ p.auth }}"><p>Authentication: {{ p.auth }}</p>
     <label>Base URL <input name="base_url" value="{{ p.base_url }}" required style="width:320px"></label>
     <button>Save</button>
   </form>
+  {% if p.auth == "api_key" %}
   <p class="muted">{{ p.keys.len() }} keys. Saved keys show only their last 4 characters.</p>
   {% for key in p.keys %}
   <form method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-post="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete" hx-target="#errors" class="inline"><code>{{ key }}</code><button class="danger">Remove key</button></form>
@@ -20,6 +22,14 @@
   <form method="post" action="/admin/providers/{{ p.name }}/keys" hx-post="/admin/providers/{{ p.name }}/keys" hx-target="#errors" class="row" style="margin-top:12px">
     <label>New key or env:NAME <input type="password" name="api_key" required autocomplete="off" style="width:300px"></label><button>Add key</button>
   </form>
+  {% else %}
+  <p>{{ p.status }}</p>
+  <div class="row"><form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="#errors"><button>Sign in</button></form>
+  <form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect"><button class="danger">Disconnect</button></form></div>
+  {% if p.auth == "chatgpt" %}<h3>Codex plan usage (optional)</h3><p>This login is used only for plan usage, not model requests.</p><p>{{ p.usage_status }}</p><p>Plan usage: {{ p.usage }}</p>
+  <div class="row"><form method="post" action="/admin/providers/{{ p.name }}/usage/start" hx-post="/admin/providers/{{ p.name }}/usage/start" hx-target="#errors"><button>Sign in for usage</button></form>
+  <form method="post" action="/admin/providers/{{ p.name }}/usage/disconnect"><button class="danger">Disconnect usage login</button></form></div>{% endif %}
+  {% endif %}
   <div class="row" style="margin-top:12px">
     <form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="#errors"><button class="ghost">Test</button></form>
     <form method="post" action="/admin/providers/{{ p.name }}/delete" hx-post="/admin/providers/{{ p.name }}/delete" hx-target="#errors"><button class="danger">Delete provider</button></form>
@@ -31,6 +41,7 @@
 <form method="post" action="/admin/providers" hx-post="/admin/providers" hx-target="#errors" class="row">
   <label>Name <input name="name" required></label>
   <label>Kind <select name="kind"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+  <label>Authentication <select name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT token sharing (OpenAI)</option><option value="claude">Claude Pro/Max (Anthropic)</option></select></label>
   <label>Base URL <input name="base_url" required placeholder="https://api.openai.com" style="width:300px"></label>
   <label>Key or env:NAME <input type="password" name="api_key" autocomplete="off" style="width:220px"></label>
   <button>Add provider</button>

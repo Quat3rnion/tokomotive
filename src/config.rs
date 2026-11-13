@@ -121,6 +121,8 @@ impl Default for Server {
 pub struct ProviderCfg {
     pub name: String,
     pub kind: ProviderKind,
+    #[serde(default)]
+    pub auth: crate::provider::ProviderAuth,
     pub base_url: String,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
@@ -210,6 +212,9 @@ pub struct TeamPriceCfg {
 #[serde(deny_unknown_fields)]
 pub struct UserCfg {
     pub name: String,
+    /// Provider Access for each newly seeded key. Empty allows API-key providers only.
+    #[serde(default)]
+    pub key_allowed_providers: Vec<String>,
     pub team: Option<String>,
     pub budget_usd: Option<f64>,
     #[serde(default)]
@@ -329,6 +334,29 @@ impl Config {
         let mut providers = std::collections::HashSet::new();
         for p in &self.providers {
             validate_name(&p.name)?;
+            use crate::provider::ProviderAuth;
+            if p.auth != ProviderAuth::ApiKey {
+                let base = if p.auth == ProviderAuth::Chatgpt {
+                    "https://api.openai.com"
+                } else {
+                    "https://api.anthropic.com"
+                };
+                if p.base_url.trim_end_matches('/') != base
+                    || p.api_key.is_some()
+                    || p.api_key_env.is_some()
+                    || !p.api_keys.is_empty()
+                    || !p.api_keys_env.is_empty()
+                {
+                    bail!("subscription providers require base URL {base} and no API keys");
+                }
+            }
+            if matches!(
+                (p.auth, p.kind),
+                (ProviderAuth::Chatgpt, ProviderKind::Anthropic)
+                    | (ProviderAuth::Claude, ProviderKind::Openai)
+            ) {
+                bail!("subscription auth does not match provider kind");
+            }
             if !providers.insert(&p.name) {
                 bail!("duplicate provider {}", p.name);
             }

@@ -144,7 +144,7 @@ pub async fn seed(db: &Db, cfg: &Config) -> Result<()> {
         };
         for k in &u.keys {
             sqlx::query(
-                "INSERT OR IGNORE INTO virtual_keys(user_id, key_hash, prefix, label, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, 'config', ?, ?, ?)",
+                "INSERT OR IGNORE INTO virtual_keys(user_id, key_hash, prefix, label, created_at, rpm_limit, tpm_limit, allowed_providers) VALUES(?, ?, ?, 'config', ?, ?, ?, ?)",
             )
             .bind(user_id)
             .bind(hash_key(k))
@@ -152,6 +152,7 @@ pub async fn seed(db: &Db, cfg: &Config) -> Result<()> {
             .bind(now_s())
             .bind(u.key_rpm_limit)
             .bind(u.key_tpm_limit)
+            .bind(serde_json::to_string(&u.key_allowed_providers)?)
             .execute(db)
             .await?;
         }
@@ -452,6 +453,7 @@ pub struct KeyAuth {
     pub user_name: String,
     pub team_id: Option<i64>,
     pub allowed_models: Vec<String>,
+    pub allowed_providers: Vec<String>,
     pub revoked: bool,
     pub user_disabled: bool,
     pub budget_micros: Option<i64>,
@@ -462,18 +464,26 @@ pub struct KeyAuth {
 
 pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
     let row = sqlx::query(
-        "SELECT k.id, k.user_id, k.allowed_models, k.revoked_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
+        "SELECT k.id, k.user_id, k.allowed_models, k.allowed_providers, k.revoked_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
             k.rpm_limit AS key_rpm, k.tpm_limit AS key_tpm, u.rpm_limit AS user_rpm, u.tpm_limit AS user_tpm
          FROM virtual_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?",
     )
     .bind(hash_key(key))
     .fetch_optional(db)
     .await?;
+    let allowed_providers: Vec<String> = match row
+        .as_ref()
+        .and_then(|r| r.get::<Option<String>, _>("allowed_providers"))
+    {
+        Some(s) => serde_json::from_str(&s).context("invalid Provider Access")?,
+        None => Vec::new(),
+    };
     Ok(row.map(|r| KeyAuth {
         key_id: r.get("id"),
         user_id: r.get("user_id"),
         user_name: r.get("name"),
         team_id: r.get("team_id"),
+        allowed_providers,
         allowed_models: r
             .get::<Option<String>, _>("allowed_models")
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -525,6 +535,7 @@ pub struct NewEntry {
     pub key_id: i64,
     pub team_id: Option<i64>,
     pub provider: String,
+    pub subscription: bool,
     pub endpoint: String,
     pub requested_model: Option<String>,
     pub model: Option<String>,
@@ -558,8 +569,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let id = sqlx::query(
         "INSERT INTO ledger(ts_ms, user_id, key_id, team_id, provider, endpoint, requested_model, model, model_id, status, streamed,
             input, output, cache_read, cache_write_5m, cache_write_1h, cost_micros, price_micros, cost_card_id, price_card_id,
-            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(e.ts_ms)
     .bind(e.user_id)
@@ -590,6 +601,7 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(u.image_output)
     .bind(e.provider_key)
     .bind(e.attempts)
+    .bind(e.subscription)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -644,7 +656,7 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
 pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
     let rows = sqlx::query(
         "SELECT id, ts_ms, user_id, team_id, requested_model, model, input, output, cache_read, cache_write_5m, cache_write_1h,
-            image_input, image_output
+            image_input, image_output, subscription
          FROM ledger WHERE unpriced = 1",
     )
     .fetch_all(db)
@@ -665,7 +677,11 @@ pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
         let model: Option<String> = r
             .get::<Option<String>, _>("model")
             .or(r.get("requested_model"));
-        let q = catalog.quote(model.as_deref(), r.get("team_id"), &usage);
+        let mut q = catalog.quote(model.as_deref(), r.get("team_id"), &usage);
+        if r.get::<bool, _>("subscription") {
+            q.cost_micros = 0;
+            q.cost_card_id = None;
+        }
         if q.unpriced {
             continue;
         }
@@ -872,6 +888,7 @@ pub struct KeyRow {
     pub prefix: String,
     pub label: String,
     pub allowed_models: Option<String>,
+    pub allowed_providers: Option<String>,
     pub revoked_at: Option<i64>,
     pub last_used_at: Option<i64>,
     pub created_at: i64,
@@ -881,11 +898,20 @@ pub struct KeyRow {
 
 pub async fn list_keys(db: &Db) -> Result<Vec<KeyRow>> {
     Ok(sqlx::query_as(
-        "SELECT k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.revoked_at, k.last_used_at, k.created_at, k.rpm_limit, k.tpm_limit
+        "SELECT k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.allowed_providers, k.revoked_at, k.last_used_at, k.created_at, k.rpm_limit, k.tpm_limit
          FROM virtual_keys k JOIN users u ON u.id = k.user_id ORDER BY k.revoked_at IS NOT NULL, u.name, k.id",
     )
     .fetch_all(db)
     .await?)
+}
+
+pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Result<()> {
+    sqlx::query("UPDATE virtual_keys SET allowed_providers=? WHERE id=?")
+        .bind(serde_json::to_string(providers)?)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

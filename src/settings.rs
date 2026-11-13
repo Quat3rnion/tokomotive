@@ -86,13 +86,16 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             for env in &p.api_keys_env {
                 keys.push(format!("env:{env}"));
             }
-            sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json) VALUES(?,?,?,?)")
-                .bind(&p.name)
-                .bind(serde_json::to_string(&p.kind)?)
-                .bind(&p.base_url)
-                .bind(serde_json::to_string(&keys)?)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO providers(name,kind,base_url,keys_json,auth) VALUES(?,?,?,?,?)",
+            )
+            .bind(&p.name)
+            .bind(serde_json::to_string(&p.kind)?)
+            .bind(&p.base_url)
+            .bind(serde_json::to_string(&keys)?)
+            .bind(p.auth.as_str())
+            .execute(&mut *tx)
+            .await?;
         }
         for r in &cfg.routes {
             sqlx::query("INSERT INTO routes(name,config_json) VALUES(?,?)")
@@ -154,6 +157,7 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
         cfg.providers.push(ProviderCfg {
             name: row.get("name"),
             kind: serde_json::from_str(row.get("kind"))?,
+            auth: serde_json::from_value(serde_json::json!(row.get::<String, _>("auth")))?,
             base_url: row.get("base_url"),
             api_key: None,
             api_key_env: None,
@@ -171,6 +175,7 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
     Ok((cfg, settings))
 }
 
+#[derive(Clone)]
 pub struct SecretKey([u8; 32]);
 
 impl SecretKey {

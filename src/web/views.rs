@@ -510,6 +510,7 @@ pub struct KeyView {
     pub prefix: String,
     pub label: String,
     pub models: String,
+    pub providers: Vec<Opt>,
     pub created: String,
     pub last_used: String,
     pub revoked: bool,
@@ -524,6 +525,7 @@ pub struct KeysPage {
     pub keys: Vec<KeyView>,
     pub users: Vec<Opt>,
     pub new_key: Option<String>,
+    pub providers: Vec<String>,
 }
 
 impl KeysPage {
@@ -532,9 +534,11 @@ impl KeysPage {
         keys: &[KeyRow],
         users: &[UserRow],
         new_key: Option<String>,
+        providers: &[String],
     ) -> KeysPage {
         KeysPage {
             base,
+            providers: providers.to_vec(),
             keys: keys
                 .iter()
                 .map(|k| KeyView {
@@ -542,6 +546,21 @@ impl KeysPage {
                     user: k.user.clone(),
                     prefix: k.prefix.clone(),
                     label: k.label.clone(),
+                    providers: {
+                        let selected: Vec<String> = k
+                            .allowed_providers
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or_default();
+                        providers
+                            .iter()
+                            .map(|p| Opt {
+                                value: p.clone(),
+                                label: p.clone(),
+                                selected: selected.contains(p),
+                            })
+                            .collect()
+                    },
                     models: k
                         .allowed_models
                         .as_deref()

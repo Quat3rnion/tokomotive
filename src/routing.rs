@@ -39,6 +39,26 @@ pub struct Deployment {
 }
 
 impl RouterTable {
+    /// Model discovery must not advance route rotation or weighted selection.
+    pub fn reachable_providers(&self, catalog: &Catalog, name: &str) -> Vec<&Provider> {
+        let mut names = Vec::new();
+        if let Some(route) = self.routes.iter().find(|r| r.name == name) {
+            names.extend(route.deployments.iter().map(|d| d.provider.as_str()));
+            for fallback in &route.fallbacks {
+                if let Some(route) = self.routes.iter().find(|r| &r.name == fallback) {
+                    names.extend(route.deployments.iter().map(|d| d.provider.as_str()));
+                } else if let Some(model) = catalog.resolve(fallback) {
+                    names.push(&model.provider);
+                }
+            }
+        } else if let Some(model) = catalog.resolve(name) {
+            names.push(&model.provider);
+        }
+        self.providers
+            .iter()
+            .filter(|p| names.contains(&p.name.as_str()))
+            .collect()
+    }
     fn prefixed<'a>(&'a self, model: &'a str) -> Option<(&'a Provider, &'a str)> {
         let (name, rest) = model.split_once('/')?;
         if rest.is_empty() {
@@ -72,10 +92,12 @@ impl RouterTable {
                 .iter()
                 .map(|p| {
                     let keys = p.keys();
-                    if keys.is_empty() {
+                    if keys.is_empty() && p.auth == crate::provider::ProviderAuth::ApiKey {
                         tracing::warn!(provider = %p.name, "no API key is set for this provider");
                     }
-                    Provider::new(&p.name, p.kind, &p.base_url, keys)
+                    let mut provider = Provider::new(&p.name, p.kind, &p.base_url, keys);
+                    provider.auth = p.auth;
+                    provider
                 })
                 .collect(),
             routes: cfg

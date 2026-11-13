@@ -6,7 +6,11 @@
 
 **Full Mode** - The default mode. It includes pricing, Budget checks, Reservations and Rate Limits.
 
-**Provider** - An upstream LLM API vendor (for example OpenAI or Anthropic) that serves the request and charges the Operator. A Provider has a name, a kind (`openai` or `anthropic`) and a base URL.
+**Provider** - An upstream LLM service that serves a request. It can use a Provider Key or a subscription.
+
+**Subscription Provider** - A Provider that uses the Operator's ChatGPT or Claude subscription. Its per-request Cost is zero. The normal Price still applies.
+
+**Provider Access** - The Providers that a Virtual Key can use. A Subscription Provider needs explicit permission. Permission to use a Route does not replace Provider Access.
 
 **Model** - A named LLM offered by a Provider. A Model can have a Cost Card and a Price Card.
 
@@ -18,9 +22,9 @@
 
 **Translation** - Conversion between the Chat Completions and Messages API formats so that a client can use a Provider with a different API format.
 
-**Fallback** - A Route or catalog Model tried after the primary Route's Deployments fail. A Virtual Key that allows the primary Route also allows its Fallbacks. Fallbacks do not expand recursively.
+**Fallback** - A Route or catalog Model tried after the primary Route's Deployments fail. Model permission for the primary Route includes its Fallbacks. Provider Access still applies. Fallbacks do not expand recursively.
 
-**Circuit Breaker** - The in-memory health state for a Provider and upstream model. After `failure_threshold` connection errors, 429 or 5xx responses in a row, it opens and starts a cooldown (`cooldown_secs`). After the cooldown, one probe request tests recovery. If every candidate is open, the Proxy can try them anyway.
+**Circuit Breaker** - The in-memory health state for a Provider and upstream model. After `failure_threshold` connection errors, 429 or 5xx responses, or subscription credential failures in a row, it opens and starts a cooldown (`cooldown_secs`). After the cooldown, one probe request tests recovery. If every candidate is open, the Proxy can try them anyway.
 
 **Token Class** - One billable category of tokens: input, output, cache read, cache write (5 minute), cache write (1 hour), image input, image output.
 
@@ -34,7 +38,7 @@
 
 **Context Tier** - A band of input size (for example above 200k input tokens) that selects a different set of rates on a Cost Card or Price Card.
 
-**Cost** - The amount the Operator owes the Provider for one request, from the Cost Card.
+**Cost** - The amount the Operator owes the Provider for one request, from the Cost Card. It is zero for a Subscription Provider.
 
 **Price** - The amount a User owes the Operator for one request, from the Price Card.
 
@@ -48,7 +52,7 @@
 
 **Provider Key** - The secret credential that the Proxy uses to call a Provider. Users never see it.
 
-**Master Key** - The secret that protects stored Provider Keys and the metrics token. It comes from `TOKOMOTIVE_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
+**Master Key** - The secret that protects stored Provider Keys, subscription credentials and the metrics token. It comes from `TOKOMOTIVE_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
 
 **Setup** - The first-use step in which the Operator sets the dashboard password and selects the mode. It runs once, on `/setup`.
 

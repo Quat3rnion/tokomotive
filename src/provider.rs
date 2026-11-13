@@ -10,6 +10,25 @@ use crate::usage::Usage;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ProviderAuth {
+    #[default]
+    ApiKey,
+    Chatgpt,
+    Claude,
+}
+
+impl ProviderAuth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApiKey => "api_key",
+            Self::Chatgpt => "chatgpt",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     /// OpenAI-compatible: `/v1/chat/completions`, `/v1/responses`.
     #[default]

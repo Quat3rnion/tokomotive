@@ -705,6 +705,74 @@ The Reservation is an estimate. The real Price of a request can be more, so a
 Budget can be exceeded by a small amount. Reservations are in memory. Run one
 Proxy process for each database.
 
+## Subscription Providers
+
+Read [ADR 0003](adr/0003-subscription-providers.md) before you connect an
+account. Claude OAuth impersonates Claude Code and can cause account
+restriction. Codex plan usage uses a private route that can stop without notice.
+
+### Sign in
+
+1. Log in to `/admin`. Open **Providers**.
+2. Add a Provider. For ChatGPT, select kind **OpenAI**, authentication
+   **ChatGPT token sharing**, and base URL `https://api.openai.com`. For Claude,
+   select kind **Anthropic**, authentication **Claude Pro/Max**, and base URL
+   `https://api.anthropic.com`. Leave the key field empty.
+3. Select **Sign in**, then **Open sign-in page**. The link opens in a new tab.
+4. Complete consent. For ChatGPT, copy the final
+   `http://localhost:1455/auth/callback?...` URL from the address bar. A browser
+   connection error at that address is expected. Tokomotive does not run a
+   callback listener on your computer. Do not copy an earlier sign-in URL.
+5. For Claude, copy the final `code#state`. Return to the Tokomotive tab. Paste
+   the URL or `code#state` in the field and select **Connect**. Complete this
+   step within 10 minutes. Start again if the attempt expires or fails.
+6. Check **Connected**, the account, the plan, the expiry and the last error.
+   Account or plan metadata can show **not available** if the issuer omits it.
+7. Open **Keys**. Select this Provider in **Provider Access** for each Virtual
+   Key that needs it. Select any API-key Providers that the same key must use.
+8. Add Models or Routes that use this Provider. Send the usual client requests.
+   Chat Completions and Messages Translation works with subscription auth too.
+
+For optional ChatGPT plan usage, select **Sign in for usage** on the same
+Provider. Complete the Codex login in a new tab. Paste the final
+`http://127.0.0.1:1455/auth/callback?...` or `http://localhost:1455/...` URL and
+select **Connect**. This separate login is used only for plan usage. The panel
+shows 5-hour and weekly percentages and reset times, or **not available**.
+Values are cached for up to 60 seconds. Reload **Providers** to update them.
+
+Select **Disconnect** to remove the model-request tokens. **Disconnect usage
+login** removes only the optional Codex tokens. API-key tests do not apply to
+Subscription Providers. To change a Provider's authentication type, create a
+new Provider.
+
+### Provider Access
+
+Create or edit Provider Access on **Keys** with the Provider checkboxes:
+
+- No selection means all API-key Providers, but no Subscription Providers.
+- A selection means only the selected Providers. Include API-key Providers
+  too if the key needs them.
+- Model permissions and Provider Access both apply. A Route's Fallback does
+  not bypass Provider Access. The `provider/model` prefix cannot bypass it.
+- A disallowed Deployment is skipped. An allowed Fallback can still serve
+  the request. If no allowed Deployment remains, the Proxy returns HTTP 403,
+  `permission_error`, with `this API key may not use provider X`.
+- `/v1/models` hides Models and Routes that the key can reach only through
+  disallowed Providers. Update Provider Access after a Provider rename.
+
+Tokens are encrypted with the Master Key and are never shown in HTML or logs.
+The Proxy refreshes them before expiry and retries once after an upstream 401.
+A failed refresh disconnects the Provider and counts as a Circuit Breaker
+failure. Routes can use their Fallbacks. Sign in again to restore the Provider.
+Only one Proxy process may use a database, because refresh coordination is in
+memory. Keep the database and Master Key together in backups.
+
+Subscription requests keep the real token usage in the Ledger. The Provider
+column identifies the account route. Cost is zero. Price still follows the
+normal Price Cards, Team overrides and Markup, even when the Operator pays
+for a subscription. Set rates if you want to charge Users. Simple Mode has
+no extra financial controls.
+
 ## Key Pools
 
 A Provider can have more than one Provider Key. The set of keys is the Key Pool.

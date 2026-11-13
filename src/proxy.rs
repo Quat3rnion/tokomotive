@@ -33,6 +33,14 @@ fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
         || translation(kind, endpoint).is_some()
 }
 
+fn provider_allowed(auth: &KeyAuth, provider: &Provider) -> bool {
+    if auth.allowed_providers.is_empty() {
+        provider.auth == crate::provider::ProviderAuth::ApiKey
+    } else {
+        auth.allowed_providers.contains(&provider.name)
+    }
+}
+
 fn translation(kind: ProviderKind, endpoint: Endpoint) -> Option<Direction> {
     match (endpoint, kind) {
         (Endpoint::ChatCompletions, ProviderKind::Anthropic) => Some(Direction::ChatToMessages),
@@ -55,6 +63,14 @@ fn prepare_body(
         )?),
         None => body.cloned(),
     };
+    if candidate.provider.auth == crate::provider::ProviderAuth::Claude
+        && target == Endpoint::Messages
+        && prepared.as_ref().is_none_or(|body| !body.is_object())
+    {
+        return Err(translate::TranslateError {
+            message: "Messages requests must be JSON objects".into(),
+        });
+    }
     if candidate.rewrite
         && let Some(v) = prepared.as_mut()
     {
@@ -63,6 +79,11 @@ fn prepare_body(
     let strip = prepared
         .as_mut()
         .is_some_and(|v| candidate.provider.kind.prepare_body(target, v));
+    if candidate.provider.auth == crate::provider::ProviderAuth::Claude
+        && let Some(body) = prepared.as_mut()
+    {
+        crate::oauth::prepare_claude(body);
+    }
     Ok((prepared, target, strip))
 }
 
@@ -143,7 +164,9 @@ async fn models_response(st: AppState, headers: HeaderMap, id: Option<String>) -
         models.insert(route.name.clone(), "router".to_owned());
     }
     let data: Vec<Value> = models.into_iter()
-        .filter(|(name, _)| table.allowed(&catalog, &auth.allowed_models, Some(name)))
+        .filter(|(name, _)| table.allowed(&catalog, &auth.allowed_models, Some(name))
+            && table.reachable_providers(&catalog,name)
+                .iter().any(|p| provider_allowed(&auth,p)))
         .map(|(name, owner)| {
             if anthropic {
                 json!({"type":"model", "id":name, "display_name":name, "created_at":"1970-01-01T00:00:00Z"})
@@ -238,6 +261,10 @@ impl Ctx {
         let catalog = self.st.catalog();
         let model = o.model.or_else(|| self.upstream_model.clone());
         let mut quote = catalog.quote(model.as_deref(), self.auth.team_id, &o.usage);
+        if self.provider.auth != crate::provider::ProviderAuth::ApiKey {
+            quote.cost_micros = 0;
+            quote.cost_card_id = None;
+        }
         // Failed requests with no usage are errors, not Unpriced Entries.
         quote.unpriced = quote.unpriced && o.status < 400;
         let entry = NewEntry {
@@ -246,6 +273,7 @@ impl Ctx {
             key_id: self.auth.key_id,
             team_id: self.auth.team_id,
             provider: self.provider.name.clone(),
+            subscription: self.provider.auth != crate::provider::ProviderAuth::ApiKey,
             endpoint: self.endpoint.name().into(),
             requested_model: self.requested_model.clone(),
             model,
@@ -378,6 +406,20 @@ pub async fn handle(
         anthropic_hint,
     );
     candidates.retain(|c| compatible(c.provider.kind, endpoint));
+    let denied = candidates
+        .iter()
+        .find(|c| !provider_allowed(&auth, &c.provider))
+        .map(|c| c.provider.name.clone());
+    candidates.retain(|c| provider_allowed(&auth, &c.provider));
+    if candidates.is_empty()
+        && let Some(name) = denied
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "permission_error",
+            &format!("this API key may not use provider {name}"),
+        );
+    }
     let Some(first) = candidates.first() else {
         return error(
             StatusCode::BAD_GATEWAY,
@@ -497,7 +539,12 @@ pub async fn handle(
                 path
             },
         );
-        let url = format!("{}{}", provider.base_url.trim_end_matches('/'), path);
+        let base = if provider.auth == crate::provider::ProviderAuth::ApiKey {
+            &provider.base_url
+        } else {
+            st.oauth.resource(provider.auth)
+        };
+        let url = format!("{}{}", base.trim_end_matches('/'), path);
         let order: Vec<Option<usize>> = match provider.key_order() {
             o if o.is_empty() => vec![None],
             o => o.into_iter().map(Some).collect(),
@@ -519,12 +566,64 @@ pub async fn handle(
             strip_usage_chunk = strip;
             direction = dir;
             upstream_endpoint = target_endpoint;
-            let key = idx.map(|i| provider.keys[i].as_str()).unwrap_or("");
+            let flow = crate::oauth::Flow::from_auth(provider.auth);
+            let oauth_token = if let Some(flow) = flow {
+                match st.oauth.token(&provider.name, flow, None).await {
+                    Ok(token) => Some(token),
+                    Err(_) => {
+                        permit.record(false);
+                        upstream = None;
+                        break;
+                    }
+                }
+            } else {
+                None
+            };
+            let key = oauth_token
+                .as_deref()
+                .unwrap_or_else(|| idx.map(|i| provider.keys[i].as_str()).unwrap_or(""));
             let req = build_request(&st, provider, key, &method, &url, &headers, anthropic_hint);
             upstream = None;
-            match req.body(upstream_body.clone()).send().await {
+            let mut result = req.body(upstream_body.clone()).send().await;
+            if let Some(flow) = flow
+                && result
+                    .as_ref()
+                    .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
+                && (ctx.attempts as usize) < table.settings.max_attempts
+            {
+                match st.oauth.token(&provider.name, flow, Some(key)).await {
+                    Ok(token) => {
+                        ctx.attempts += 1;
+                        metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
+                        result = build_request(
+                            &st,
+                            provider,
+                            &token,
+                            &method,
+                            &url,
+                            &headers,
+                            anthropic_hint,
+                        )
+                        .body(upstream_body.clone())
+                        .send()
+                        .await;
+                        if result
+                            .as_ref()
+                            .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
+                        {
+                            let _ = st.oauth.reject(&provider.name, flow, &token).await;
+                        }
+                    }
+                    Err(_) => {
+                        permit.record(false);
+                        break;
+                    }
+                }
+            }
+            match result {
                 Ok(r) => {
-                    let healthy = !retryable(r.status());
+                    let healthy = !retryable(r.status())
+                        && !(flow.is_some() && r.status() == StatusCode::UNAUTHORIZED);
                     permit.record(healthy);
                     upstream = Some(r);
                     if healthy {
@@ -663,9 +762,21 @@ fn build_request(
     for (name, value) in headers.iter() {
         if !skip_header(name)
             && !(provider.kind == ProviderKind::Openai && name.as_str().starts_with("anthropic-"))
+            && !(provider.auth == crate::provider::ProviderAuth::Claude
+                && matches!(
+                    name.as_str(),
+                    "anthropic-beta" | "user-agent" | "anthropic-version"
+                ))
         {
             req = req.header(name, value);
         }
+    }
+    if provider.auth == crate::provider::ProviderAuth::Claude {
+        return req
+            .bearer_auth(key)
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", crate::oauth::CLAUDE_BETAS)
+            .header("user-agent", crate::oauth::CLAUDE_UA);
     }
     match provider.kind {
         ProviderKind::Openai => req.bearer_auth(key),

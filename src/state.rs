@@ -19,6 +19,7 @@ use crate::routing::RouterTable;
 pub struct Provider {
     pub name: String,
     pub kind: ProviderKind,
+    pub auth: crate::provider::ProviderAuth,
     pub base_url: String,
     /// The Provider Key pool. Empty when no key is configured.
     pub keys: Arc<Vec<String>>,
@@ -30,6 +31,7 @@ impl Provider {
         Provider {
             name: name.into(),
             kind,
+            auth: crate::provider::ProviderAuth::ApiKey,
             base_url: base_url.into(),
             keys: Arc::new(keys),
             next: Arc::new(AtomicUsize::new(0)),
@@ -76,6 +78,7 @@ pub struct Inner {
     http: RwLock<reqwest::Client>,
     settings: RwLock<Arc<crate::settings::Settings>>,
     pub secret_key: crate::settings::SecretKey,
+    pub oauth: crate::oauth::OAuthManager,
     pub settings_write: tokio::sync::Mutex<()>,
     router_table: RwLock<Arc<RouterTable>>,
     pub(crate) circuits: Mutex<HashMap<(String, String), crate::routing::Circuit>>,
@@ -96,6 +99,16 @@ impl std::ops::Deref for AppState {
 
 impl AppState {
     pub async fn new(cfg: &Config, db: Db, metrics: Option<PrometheusHandle>) -> Result<AppState> {
+        Self::new_with_oauth_endpoints(cfg, db, metrics, crate::oauth::OAuthEndpoints::default())
+            .await
+    }
+
+    pub async fn new_with_oauth_endpoints(
+        cfg: &Config,
+        db: Db,
+        metrics: Option<PrometheusHandle>,
+        endpoints: crate::oauth::OAuthEndpoints,
+    ) -> Result<AppState> {
         let secret_key = crate::settings::SecretKey::load(&cfg.server.database)?;
         crate::settings::seed(&db, cfg, &secret_key).await?;
         let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
@@ -105,12 +118,15 @@ impl AppState {
             .connect_timeout(Duration::from_secs(15))
             .build()?;
         let catalog = db::load_catalog(&db).await?;
+        let oauth = crate::oauth::OAuthManager::new(db.clone(), secret_key.clone(), endpoints)?;
+        oauth.check_storage().await?;
         Ok(AppState(Arc::new(Inner {
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
             http: RwLock::new(http),
             settings: RwLock::new(Arc::new(settings)),
             secret_key,
+            oauth,
             settings_write: tokio::sync::Mutex::new(()),
             router_table: RwLock::new(Arc::new(router_table)),
             circuits: Mutex::new(HashMap::new()),

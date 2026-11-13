@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod config;
 pub mod db;
 pub mod metrics;
+pub mod oauth;
 pub mod pricing;
 pub mod provider;
 pub mod proxy;

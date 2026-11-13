@@ -2,6 +2,7 @@
 {% block nav_keys %}class="on"{% endblock %}
 {% block content %}
 <h1>Virtual Keys</h1>
+<p class="muted">Provider Access: no selection allows all API-key Providers, but no Subscription Providers. A selection allows only the selected Providers.</p>
 {% if !base.simple %}<p class="muted">RPM = requests per minute; TPM = completed tokens per minute. Blank = unlimited; 0 blocks requests. The User Rate Limits also apply.</p>{% endif %}
 {% if let Some(k) = new_key %}
 <div class="panel">
@@ -25,6 +26,9 @@
       <form class="inline" method="post" action="/admin/keys/{{ k.id }}/revoke" onsubmit="return confirm('Revoke this key?')"><button class="danger">Revoke</button></form>
     {% endif %}</td>
   </tr>
+  <tr><td colspan="9"><form method="post" action="/admin/keys/{{ k.id }}/providers" class="row"><b>Provider Access</b>
+    {% for p in k.providers %}<label><input type="checkbox" name="allowed_providers" value="{{ p.value }}" {% if p.selected %}checked{% endif %}> {{ p.label }}</label>{% endfor %}<button>Save Provider Access</button>
+  </form></td></tr>
   {% else %}
   <tr><td colspan="{% if base.simple %}7{% else %}8{% endif %}" class="muted">No keys.</td></tr>
   {% endfor %}
@@ -35,6 +39,7 @@
   <label>User <select name="user_id" required>{% for u in users %}<option value="{{ u.value }}">{{ u.label }}</option>{% endfor %}</select></label>
   <label>Label <input name="label" style="width:160px"></label>
   <label>Allowed models (comma list, empty = all) <input name="allowed_models" style="width:320px" placeholder="gpt-4o, claude-sonnet-5-5"></label>
+  <fieldset><legend>Provider Access</legend>{% for p in providers %}<label><input type="checkbox" name="allowed_providers" value="{{ p }}"> {{ p }}</label>{% endfor %}</fieldset>
   {% if !base.simple %}<label>RPM <input type="number" min="0" step="1" name="rpm_limit" placeholder="unlimited"></label>
   <label>TPM <input type="number" min="0" step="1" name="tpm_limit" placeholder="unlimited"></label>
   {% endif %}

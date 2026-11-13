@@ -34,6 +34,7 @@ macro_rules! tryr {
     };
 }
 
+mod oauth;
 mod settings;
 
 pub fn router() -> Router<AppState> {
@@ -47,6 +48,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/teams", get(teams).post(create_team))
         .route("/admin/keys", get(keys).post(create_key))
         .route("/admin/keys/{id}/limits", post(update_key_limits))
+        .route("/admin/keys/{id}/providers", post(update_key_providers))
         .route("/admin/keys/{id}/revoke", post(revoke_key))
         .route("/admin/models", get(models).post(create_model))
         .route("/admin/models/{id}", get(model_detail).post(update_model))
@@ -57,6 +59,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/ledger", get(ledger))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
+        .merge(oauth::router())
         .layer(axum::middleware::from_fn(same_origin))
         .layer(axum::middleware::from_fn(htmx_redirect))
 }
@@ -474,7 +477,19 @@ async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameFor
 async fn keys_page(st: &AppState, new_key: Option<String>) -> Response {
     let keys = tryr!(db::list_keys(&st.db).await);
     let users = tryr!(db::list_users(&st.db).await);
-    render(KeysPage::build(Base::new(st), &keys, &users, new_key))
+    let providers: Vec<String> = st
+        .router_table()
+        .providers
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    render(KeysPage::build(
+        Base::new(st),
+        &keys,
+        &users,
+        new_key,
+        &providers,
+    ))
 }
 
 async fn keys(_: Admin, State(st): State<AppState>) -> Response {
@@ -492,7 +507,33 @@ struct KeyForm {
     limits: LimitsForm,
 }
 
-async fn create_key(_: Admin, State(st): State<AppState>, Form(f): Form<KeyForm>) -> Response {
+async fn create_key(
+    _: Admin,
+    State(st): State<AppState>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let access: Vec<String> = pairs
+        .iter()
+        .filter(|(k, _)| k == "allowed_providers")
+        .map(|(_, v)| v.clone())
+        .collect();
+    if let Err(r) = validate_provider_access(&st, &access) {
+        return r;
+    }
+    let fields: std::collections::HashMap<_, _> = pairs.into_iter().collect();
+    let user_id = match fields.get("user_id").and_then(|s| s.parse().ok()) {
+        Some(id) => id,
+        None => return bad("Choose a User."),
+    };
+    let f = KeyForm {
+        user_id,
+        label: fields.get("label").cloned().unwrap_or_default(),
+        allowed_models: fields.get("allowed_models").cloned().unwrap_or_default(),
+        limits: LimitsForm {
+            rpm_limit: fields.get("rpm_limit").cloned().unwrap_or_default(),
+            tpm_limit: fields.get("tpm_limit").cloned().unwrap_or_default(),
+        },
+    };
     let limits = match f.limits.parse() {
         Ok(l) => l,
         Err(r) => return r,
@@ -503,9 +544,37 @@ async fn create_key(_: Admin, State(st): State<AppState>, Form(f): Form<KeyForm>
     } else {
         Some(allowed)
     };
-    let (_, key) =
+    let (id, key) =
         tryr!(db::create_key_with_limits(&st.db, f.user_id, f.label.trim(), allowed, limits).await);
+    tryr!(db::update_key_providers(&st.db, id, &access).await);
     keys_page(&st, Some(key)).await
+}
+
+fn validate_provider_access(st: &AppState, access: &[String]) -> Result<(), Response> {
+    if access
+        .iter()
+        .any(|name| !st.router_table().providers.iter().any(|p| &p.name == name))
+    {
+        return Err(bad("Unknown Provider in Provider Access."));
+    }
+    Ok(())
+}
+async fn update_key_providers(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let access: Vec<String> = pairs
+        .into_iter()
+        .filter(|(k, _)| k == "allowed_providers")
+        .map(|(_, v)| v)
+        .collect();
+    if let Err(r) = validate_provider_access(&st, &access) {
+        return r;
+    }
+    tryr!(db::update_key_providers(&st.db, id, &access).await);
+    Redirect::to("/admin/keys").into_response()
 }
 
 async fn update_key_limits(

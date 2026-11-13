@@ -38,6 +38,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Lists the Routes and Models that a Virtual Key can use at `GET /v1/models`
   and `GET /v1/models/{id}`, in OpenAI or Anthropic format.
 - Accepts the Virtual Key in `Authorization: Bearer` or in `x-api-key`.
+- Supports [Subscription Providers](docs/usage.md#subscription-providers):
+  ChatGPT token sharing, Claude OAuth and optional Codex plan usage, with
+  explicit access for each Virtual Key.
 
 ### Accounting
 
