@@ -312,7 +312,17 @@ fn inputs(html: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// Free-form labels whose names look like references but name nothing in the
+/// database. Keep this list short and give each entry a reason.
+const FREE_FORM: &[&str] = &[
+    // OpenTelemetry `service.name` resource attribute: any label.
+    "service_name",
+];
+
 fn identifier_like(name: &str) -> bool {
+    if FREE_FORM.contains(&name) {
+        return false;
+    }
     matches!(
         name,
         "user" | "users" | "team" | "teams" | "provider" | "providers" | "route" | "routes"
