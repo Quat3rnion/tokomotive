@@ -1706,6 +1706,8 @@ struct RatesForm {
     #[serde(default)]
     service_units: String,
     #[serde(default)]
+    batch_multiplier_bp: String,
+    #[serde(default)]
     tiers: String,
     /// The check box "Input and Output are $0 on purpose".
     #[serde(default)]
@@ -1803,7 +1805,23 @@ impl RatesForm {
                 }
             }));
         }
-        Ok(Some(CardRates { base, tiers }))
+        let batch_multiplier_bp = if self.batch_multiplier_bp.trim().is_empty() {
+            None
+        } else {
+            Some(
+                self.batch_multiplier_bp
+                    .trim()
+                    .parse::<u16>()
+                    .map_err(|_| {
+                        bad("Batch multiplier must be whole basis points from 0 to 65535.")
+                    })?,
+            )
+        };
+        Ok(Some(CardRates {
+            base,
+            tiers,
+            batch_multiplier_bp,
+        }))
     }
 }
 

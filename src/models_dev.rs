@@ -130,6 +130,7 @@ pub fn cost_card(cost: &Value, anthropic: bool) -> Result<CardRates> {
         }
     }
     Ok(CardRates {
+        batch_multiplier_bp: None,
         base,
         tiers: tiers
             .into_iter()
@@ -471,8 +472,11 @@ async fn sync_cards(conn: &mut SqliteConnection, source: &str) -> Result<()> {
                 card = cost_card(&c, true)?;
             }
         }
-        let spec = serde_json::to_string(&card)?;
         let old: Option<String> = sqlx::query_scalar("SELECT spec FROM cards WHERE model_id=? AND kind='cost' AND team_id IS NULL ORDER BY id DESC LIMIT 1").bind(id).fetch_optional(&mut *conn).await?;
+        if let Some(old) = &old {
+            card.batch_multiplier_bp = serde_json::from_str::<CardRates>(old)?.batch_multiplier_bp;
+        }
+        let spec = serde_json::to_string(&card)?;
         if old
             .as_ref()
             .is_some_and(|s| serde_json::from_str::<CardRates>(s).ok().as_ref() == Some(&card))

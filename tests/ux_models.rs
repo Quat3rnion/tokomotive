@@ -52,6 +52,7 @@ async fn models_dev_details_mapping_pin_and_settings_are_visible() {
     assert!(settings.contains("Refresh model data"));
     assert!(settings.contains("https://models.dev/api.json"));
     let cost = CardRates {
+        batch_multiplier_bp: None,
         base: Rates {
             input: 1_000_000,
             ..Default::default()
@@ -502,6 +503,7 @@ async fn explicit_price_rates_are_saved_as_entered() {
     assert_eq!(
         m.price.as_ref().unwrap().1,
         PriceSpec::Rates(CardRates {
+            batch_multiplier_bp: None,
             base: Rates {
                 input: 200_000,
                 output: 1_000_000,

@@ -124,6 +124,7 @@ struct ServerForm {
     upstream_timeout_secs: String,
     reserve_output_tokens: Option<String>,
     audio_upload_limit_mib: Option<String>,
+    file_upload_limit_mib: Option<String>,
     session_days: String,
     failure_threshold: String,
     cooldown_secs: String,
@@ -167,6 +168,11 @@ impl ServerForm {
                 .parse()
                 .context("Enter the audio upload limit as whole MiB from 1 to 63.")?;
         }
+        if let Some(value) = &self.file_upload_limit_mib {
+            cfg.server.file_upload_limit_mib = value
+                .parse()
+                .context("Enter the file upload limit as whole MiB from 1 to 63.")?;
+        }
         cfg.router.failure_threshold = self
             .failure_threshold
             .parse()
@@ -199,6 +205,7 @@ impl ServerForm {
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             audio_upload_limit_mib: cfg.server.audio_upload_limit_mib,
+            file_upload_limit_mib: cfg.server.file_upload_limit_mib,
             session_days: cfg.server.session_days,
             mode: mode.to_owned(),
             router: cfg.router.clone(),
@@ -217,6 +224,7 @@ async fn save_settings(
     cfg.server.default_markup_percent = st.catalog().default_markup_bp as f64 / 100.0;
     cfg.server.reserve_output_tokens = st.settings().reserve_output_tokens;
     cfg.server.audio_upload_limit_mib = st.settings().audio_upload_limit_mib;
+    cfg.server.file_upload_limit_mib = st.settings().file_upload_limit_mib;
     let (cfg, mut settings) = match f.parse(cfg, &st.settings().mode) {
         Ok(v) => v,
         Err(e) => return form_error(e),

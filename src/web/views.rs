@@ -938,6 +938,7 @@ impl KeysPage {
 /// form: no value in any field.
 #[derive(Clone, Default)]
 pub struct RatesView {
+    pub batch_multiplier_bp: String,
     pub service_units: String,
     pub input: String,
     pub output: String,
@@ -968,6 +969,10 @@ impl RatesView {
         };
         let b = r(&c.base);
         RatesView {
+            batch_multiplier_bp: c
+                .batch_multiplier_bp
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             input: b[0].clone(),
             output: b[1].clone(),
             cache_read: b[2].clone(),

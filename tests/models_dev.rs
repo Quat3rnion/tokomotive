@@ -127,6 +127,23 @@ async fn sync_versions_changes_pins_subscriptions_and_mapping() {
     assert_eq!(db::card_history(&db, id).await.unwrap().len(), 2);
 }
 
+#[tokio::test]
+async fn sync_keeps_the_operator_batch_multiplier_in_new_card_versions() {
+    let db = db::connect("sqlite::memory:").await.unwrap();
+    sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json,preset) VALUES('p','\"openai\"','https://example.org/v1','[]','test')").execute(&db).await.unwrap();
+    let id = db::create_model(&db, "m", "p", &[]).await.unwrap();
+    let mut card = models_dev::cost_card(&json!({"input":1,"output":2}), false).unwrap();
+    card.batch_multiplier_bp = Some(5000);
+    db::add_cost_card(&db, id, &card).await.unwrap();
+    models_dev::import(&db, &payload(), Some("v2"))
+        .await
+        .unwrap();
+    let catalog = db::load_catalog(&db).await.unwrap();
+    let latest = &catalog.resolve("m").unwrap().cost.as_ref().unwrap().1;
+    assert_eq!(latest.base.input, 2_000_000);
+    assert_eq!(latest.batch_multiplier_bp, Some(5000));
+}
+
 #[test]
 fn maps_cache_reasoning_and_context_tiers() {
     let card = models_dev::cost_card(&json!({"input":3,"output":10,"reasoning":15,"cache_read":0.3,"cache_write":3.75,

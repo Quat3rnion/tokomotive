@@ -176,6 +176,92 @@ charge. Use a separate Model for each unit type; one Model card has one Service
 unit rate. Audio requests use the same Model permissions, Provider Access,
 Rate Limits, Budgets, Ledger and metrics as other accounted endpoints.
 
+#### Files and batches
+
+The OpenAI file endpoints are `POST /v1/files`, `GET /v1/files`,
+`GET /v1/files/{id}`, `DELETE /v1/files/{id}` and
+`GET /v1/files/{id}/content`. Batch endpoints are `POST /v1/batches`,
+`GET /v1/batches`, `GET /v1/batches/{id}` and
+`POST /v1/batches/{id}/cancel`. Each object belongs to one Virtual Key.
+Other Virtual Keys get 404, even when they belong to the same User.
+Lists use the local ownership table, not the upstream list. Set `limit` from
+1 to 100 (default 20) and `after` to the last ID of a previous page. Results
+use descending creation time, then descending ID. File lists also accept `purpose`.
+
+Set `x-tokomotive-provider` on each upload to the name of an `openai`
+API-key Provider. Provider Access applies. The Proxy selects the first key
+in that Provider's Key Pool. It stores the Provider, base URL, key index and
+key fingerprint with the object. All later calls use that same credential,
+even if the pool order changes. There is no key retry, Route selection,
+Translation or Model rewrite. If the credential is removed or the base URL
+changes, restore it to access the object. A batch uses the Provider and
+credential of its input file; it does not need the header again.
+
+Upload one multipart `purpose` field and one `file` field. The Proxy buffers
+the multipart body to check batch Model permissions before it sends data
+upstream. The default limit is 16 MiB for the whole request. Set
+`server.file_upload_limit_mib` in the seed file, or **File upload limit (MiB)**
+in Settings, to a whole number from 1 to 63. File content downloads stream
+without whole-file buffering. Uploads and file operations have no inference
+Ledger Entry or money charge. Full Mode request Rate Limits apply to file
+and batch API calls. Batch create counts as one request, not one per input line.
+
+For `purpose=batch`, the file must contain JSONL. Each file can have at most
+10,000 non-empty lines, with at most 1 MiB per line. Each line needs a unique
+`custom_id`, `method=POST`, `url` and `body.model`. Use catalog Model names
+from the selected Provider. The Virtual Key Model allowlist is checked at
+upload and again at batch create. Supported batch endpoints are
+`/v1/chat/completions`, `/v1/responses` and `/v1/embeddings`. Every line must
+match the create request's `endpoint`. Set `completion_window` to `24h`.
+Chat generation lines need `max_tokens` or `max_completion_tokens`.
+Responses lines need `max_output_tokens`. Set exactly one output limit,
+from 1 to 1,000,000. Function tools are supported; paid built-in tools are not.
+Streaming, nested background requests, multiple output choices, stored context
+and external or non-text inputs are not supported.
+
+Full Mode batch create needs at least one enabled User, Team or Virtual Key
+Budget and a Cost Card for every Model. The Proxy reserves the total estimated
+Price. Each line allows one input token per JSONL byte and the explicit maximum
+output tokens. It uses the highest applicable class rate across all Context
+Tiers, applies the batch multiplier, then rounds the Reservation up per line.
+This is deliberately conservative. The Reservation is stored before create
+is sent upstream. It survives a restart and counts against all applicable
+Budgets until accounting succeeds, including after a Budget period changes.
+Synchronous requests also see these stored Reservations.
+
+Cost and explicit Price Cards have an optional `batch_multiplier_bp` field.
+It is a whole number of basis points from 0 to 65535. For example,
+`cost={input=1.0,output=2.0,batch_multiplier_bp=5000}` uses 50% of normal Cost
+rates for batches. A blank multiplier uses normal rates. A Markup Price
+inherits the Cost Card multiplier; an explicit Price Card sets its own.
+The card form has the same optional field. A card change makes a new Card
+Version. The batch stores the Cost and Price Card Versions and resolved rates
+at create. Later card edits do not change its amounts (ADR 0002). The Proxy
+rounds money once per line after the multiplier is applied.
+
+On GET, cancel, and a background check every five minutes, the Proxy checks
+for `completed`, `failed`, `expired` or `cancelled`. Each background check
+handles at most 20 unaccounted batches, oldest check first. Checks do not
+overlap. The Proxy reads the output and error JSONL files with a combined
+64 MiB limit, a 1 MiB line limit and at most 10,000 result lines. It writes
+one Ledger Entry per submitted line, using the reported usage for successful
+lines and zero usage for requests that did not run. Entries use endpoint
+`batch`. A database transaction commits the entries and releases the
+Reservation once. Repeated GETs and background checks cannot charge twice.
+Reported completed tokens consume TPM when accounting commits in Full Mode.
+Output and error files have the same Virtual Key ownership as the batch.
+Files required by an unaccounted batch cannot be deleted.
+
+An unavailable or invalid output keeps the Reservation and is checked again.
+A timeout, 5xx response or process failure during create can leave an uncertain
+upstream result. The Proxy does not retry create and keeps its durable
+Reservation. The Operator must inspect that upstream account before manual
+recovery. Do not remove such a Reservation without checking for charges.
+Simple Mode requires no Budget, applies no Rate Limits, and writes zero money
+amounts. Model permissions and ownership still apply. The create-time mode
+also applies when the batch completes. Tests use a local mock OpenAI service;
+live OpenAI account access is not verified.
+
 | Path ends with                             | Native Provider kind | Usage that the Proxy records                  |
 | ------------------------------------------ | ------------- | --------------------------------------------- |
 | `/chat/completions`                        | `openai`      | Input, output, cache read                     |
@@ -186,8 +272,9 @@ Rate Limits, Budgets, Ledger and metrics as other accounted endpoints.
 | `/v1/rerank` (exact path)                   | `cohere` or `openai` | Search units or input tokens |
 | `/v1/audio/transcriptions`, `/v1/audio/translations` (exact paths) | `openai` | Audio seconds |
 | `/v1/audio/speech` (exact path)             | `openai` | Input characters |
+| `/v1/batches` and owned batch objects      | `openai` | Per-line input, output and cache read at completion |
 
-The Proxy forwards every path under `/v1/` to the Provider, for all HTTP
+Except for the owned file and batch endpoints, the Proxy forwards paths under `/v1/` to the Provider, for all HTTP
 methods. The Proxy does not read usage for other paths. It records them as
 Ledger Entries with the endpoint `other`. If the Proxy cannot find a Model for
 the request, the Ledger Entry is an Unpriced Entry.

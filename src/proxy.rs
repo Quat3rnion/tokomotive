@@ -39,7 +39,10 @@ fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -
 const MAX_UPSTREAM_BODY: usize = 64 * 1024 * 1024;
 
 /// Read a response body, and stop with an error when it passes `max` bytes.
-async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Result<Bytes> {
+pub(crate) async fn read_capped(
+    mut response: reqwest::Response,
+    max: usize,
+) -> anyhow::Result<Bytes> {
     if response.content_length().is_some_and(|n| n > max as u64) {
         anyhow::bail!("upstream body is larger than {max} bytes");
     }
@@ -71,7 +74,7 @@ fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
         || translation(kind, endpoint).is_some()
 }
 
-fn provider_allowed(auth: &KeyAuth, provider: &Provider) -> bool {
+pub(crate) fn provider_allowed(auth: &KeyAuth, provider: &Provider) -> bool {
     if auth.allowed_providers.is_empty() {
         provider.auth == crate::provider::ProviderAuth::ApiKey
     } else {
@@ -248,7 +251,7 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_owned())
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     st: &AppState,
     headers: &HeaderMap,
     anthropic: bool,
@@ -649,6 +652,13 @@ pub async fn handle(
             );
         }
     };
+    if crate::batches::reserved_path(uri.path()) {
+        return error(
+            StatusCode::NOT_FOUND,
+            "invalid_request_error",
+            "Object not found.",
+        );
+    }
     if has_dot_segment(uri.path()) {
         return error(
             StatusCode::BAD_REQUEST,

@@ -142,7 +142,17 @@ pub async fn applicable(db: &Db, auth: &KeyAuth, now: i64) -> Result<Vec<Budget>
     for subject in subjects(auth) {
         let budget = load(db, subject, now, false).await?;
         if budget.limit.is_some() {
-            budgets.push(budget);
+            let (column, _, id) = subject.columns();
+            let held: i64 = sqlx::query_scalar(&format!(
+                "SELECT IFNULL(SUM(held_micros),0) FROM batch_jobs WHERE {column}=? AND accounted=0"
+            ))
+            .bind(id)
+            .fetch_one(db)
+            .await?;
+            budgets.push(Budget {
+                spent: budget.spent.saturating_add(held),
+                ..budget
+            });
         }
     }
     Ok(budgets)

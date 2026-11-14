@@ -39,6 +39,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   or input-token accounting.
 - Supports multipart `POST /v1/audio/transcriptions` and `/v1/audio/translations`,
   plus binary streaming at `/v1/audio/speech`, with Model-level audio rates.
+- Supports OpenAI `/v1/files` upload, list, get, delete and content download,
+  plus `/v1/batches` create, list, get and cancel. Each Virtual Key owns its
+  objects. Batch completion has versioned rates and durable Budget Reservations.
 - Translates between Chat Completions and Messages, with streaming and tools.
   A Chat Completions client can use an Anthropic Provider. A Messages client
   can use an OpenAI Provider. See [Translation](docs/usage.md#routing-and-translation)
@@ -194,11 +197,11 @@ dashboard. An optional `--config PATH` file seeds the database once. See
 
 ## Limits
 
-- The Proxy does not record usage for audio. It forwards these requests and
-  records them as Unpriced Entries.
-- The Proxy reads the Model name from a JSON request body only. A multipart
-  request has no Model name. The Proxy records it as an Unpriced Entry unless
-  the response names the Model.
+- File uploads need `x-tokomotive-provider` and keep one Provider Key.
+  Batch files support bounded, text-only requests with explicit output limits.
+  See [files and batches](docs/usage.md#files-and-batches) for limits and recovery.
+- The Proxy reads the Model name from JSON or multipart audio. Other multipart
+  requests are Unpriced unless the response names the Model.
 - Translation rejects `n` greater than 1 and JSON-schema response formats. It
   drops thinking blocks, signatures and cache hints. It translates choice 0
   only. See [docs/usage.md](docs/usage.md#routing-and-translation).
@@ -206,9 +209,9 @@ dashboard. An optional `--config PATH` file seeds the database once. See
   than its Reservation, for example when it refers to files or cached content
   that is not in the request body. Thus, a Budget can be exceeded by a small
   amount.
-- Reservations, Rate Limits, Circuit Breaker state and Key Pool rotation are in
-  memory. They reset when the process restarts. Run one Proxy process for each
-  database.
+- Synchronous Reservations, Rate Limits, Circuit Breaker state and Key Pool
+  rotation are in memory. They reset when the process restarts. Batch
+  Reservations are stored in the database. Run one Proxy process for each database.
 - On the image endpoints, the Proxy treats cached tokens as text tokens. Cached
   image input tokens are recorded as image input, not as cache read.
 - `/metrics` has no authentication when no metrics token is set.

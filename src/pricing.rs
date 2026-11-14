@@ -49,6 +49,10 @@ impl Rates {
 
     /// Amount in micro-dollars for the usage. Rounds once, half away from zero.
     pub fn amount(&self, u: &Usage) -> i64 {
+        self.scaled_amount(u, 10_000)
+    }
+
+    fn scaled_amount(&self, u: &Usage, multiplier_bp: u16) -> i64 {
         let sum: i128 = u.input as i128 * self.input as i128
             + u.output as i128 * self.output as i128
             + u.cache_read as i128 * self.cache_read as i128
@@ -57,7 +61,7 @@ impl Rates {
             + u.image_input as i128 * self.image_input as i128
             + u.image_output as i128 * self.image_output as i128
             + u.service_units as i128 * self.service_units as i128;
-        div_round(sum, 1_000_000) as i64
+        div_round(sum * multiplier_bp as i128, 10_000_000_000) as i64
     }
 }
 
@@ -74,6 +78,9 @@ pub struct ContextTier {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CardRates {
     pub base: Rates,
+    /// Batch rates as basis points of normal rates; absent means 100%.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_multiplier_bp: Option<u16>,
     #[serde(default)]
     pub tiers: Vec<ContextTier>,
 }
@@ -95,8 +102,14 @@ impl CardRates {
         self.rates_for(u).amount(u)
     }
 
+    pub fn batch_amount(&self, u: &Usage) -> i64 {
+        self.rates_for(u)
+            .scaled_amount(u, self.batch_multiplier_bp.unwrap_or(10_000))
+    }
+
     pub fn marked_up(&self, markup_bp: i64) -> CardRates {
         CardRates {
+            batch_multiplier_bp: self.batch_multiplier_bp,
             base: self.base.marked_up(markup_bp),
             tiers: self
                 .tiers
@@ -184,6 +197,7 @@ mod tests {
 
     fn sonnet() -> CardRates {
         CardRates {
+            batch_multiplier_bp: None,
             base: Rates {
                 input: 3_000_000,
                 output: 15_000_000,

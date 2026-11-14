@@ -24,7 +24,7 @@ pub struct Catalog {
 }
 
 /// The computed amounts for one request.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Quote {
     pub model_id: Option<i64>,
     /// The name of the matched Model (not the dated name from the response).
@@ -125,6 +125,7 @@ mod tests {
             cost: Some((
                 id * 10,
                 CardRates {
+                    batch_multiplier_bp: None,
                     base: Rates {
                         input: 1_000_000,
                         ..Default::default()

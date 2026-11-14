@@ -2,6 +2,7 @@
 
 mod affinity;
 pub mod alerts;
+pub mod batches;
 pub mod budgets;
 pub mod catalog;
 pub mod config;
@@ -59,6 +60,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/audio/transcriptions", post(proxy::handle))
         .route("/v1/audio/translations", post(proxy::handle))
         .route("/v1/audio/speech", post(proxy::handle))
+        .route("/v1/files", any(batches::handle))
+        .route("/v1/files/{*rest}", any(batches::handle))
+        .route("/v1/batches", any(batches::handle))
+        .route("/v1/batches/{*rest}", any(batches::handle))
         .route("/v1/{*rest}", any(proxy::handle))
         .merge(web::router())
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))

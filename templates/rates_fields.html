@@ -14,6 +14,8 @@
   <label>Image output <input name="image_output" value="{{ r.image_output }}" inputmode="decimal" autocomplete="off"></label>
   <label>Service units <input name="service_units" value="{{ r.service_units }}" inputmode="decimal" autocomplete="off"></label>
 </div>
+<label>Batch multiplier (basis points, optional) <input name="batch_multiplier_bp" value="{{ r.batch_multiplier_bp }}" inputmode="numeric" autocomplete="off"></label>
+<p class="hint">Batch only. 5000 is 50% of normal rates. Blank uses normal rates. A Markup Price uses the Cost Card multiplier.</p>
 <p class="hint">Dollars per million tokens or Service units. Service units are non-token counts defined by the endpoint. A blank rate is 0.</p>
 <div class="field tiers">
   <label for="{{ id }}-tiers">Context Tiers (optional)</label>

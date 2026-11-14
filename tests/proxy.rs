@@ -1829,6 +1829,7 @@ async fn unpriced_model_is_flagged_then_repriced() {
         .await
         .unwrap();
     let card = tokomotive::pricing::CardRates {
+        batch_multiplier_bp: None,
         base: tokomotive::pricing::Rates {
             input: 1_000_000,
             output: 1_000_000,

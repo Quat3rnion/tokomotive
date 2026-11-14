@@ -868,6 +868,7 @@ key_allowed_providers=['sub']
         &st.db,
         id,
         &tokomotive::pricing::CardRates {
+            batch_multiplier_bp: None,
             base: tokomotive::pricing::Rates {
                 input: 2_000_000,
                 output: 4_000_000,

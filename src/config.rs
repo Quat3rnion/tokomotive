@@ -112,6 +112,7 @@ pub struct Server {
     /// not set a maximum.
     pub reserve_output_tokens: i64,
     pub audio_upload_limit_mib: usize,
+    pub file_upload_limit_mib: usize,
     pub session_days: i64,
     pub mode: String,
 }
@@ -129,6 +130,7 @@ impl Default for Server {
             metrics_token_env: Some("TOKOMOTIVE_METRICS_TOKEN".into()),
             reserve_output_tokens: 4096,
             audio_upload_limit_mib: default_audio_upload_limit_mib(),
+            file_upload_limit_mib: default_file_upload_limit_mib(),
             session_days: 7,
             mode: "full".into(),
         }
@@ -211,6 +213,7 @@ pub struct TierCfg {
 // No deny_unknown_fields: serde does not support it with flatten.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CardCfg {
+    pub batch_multiplier_bp: Option<u16>,
     #[serde(flatten)]
     pub base: RatesCfg,
     #[serde(default)]
@@ -220,6 +223,7 @@ pub struct CardCfg {
 // No deny_unknown_fields: serde does not support it with flatten.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PriceCfg {
+    pub batch_multiplier_bp: Option<u16>,
     pub markup_percent: Option<f64>,
     #[serde(flatten)]
     pub base: Option<RatesCfg>,
@@ -286,6 +290,9 @@ impl UserCfg {
 pub fn default_audio_upload_limit_mib() -> usize {
     25
 }
+pub fn default_file_upload_limit_mib() -> usize {
+    16
+}
 
 pub fn usd_to_micros(v: f64) -> i64 {
     (v * 1_000_000.0).round() as i64
@@ -326,6 +333,7 @@ fn tiers(t: &[TierCfg]) -> Vec<ContextTier> {
 impl CardCfg {
     pub fn to_card(&self) -> CardRates {
         CardRates {
+            batch_multiplier_bp: self.batch_multiplier_bp,
             base: self.base.to_rates(),
             tiers: tiers(&self.tiers),
         }
@@ -334,11 +342,17 @@ impl CardCfg {
 
 impl PriceCfg {
     pub fn to_spec(&self) -> Result<PriceSpec> {
+        if self.markup_percent.is_some() && self.batch_multiplier_bp.is_some() {
+            bail!(
+                "A Markup Price inherits the Cost Card batch multiplier. Set the multiplier on that Cost Card."
+            );
+        }
         let has_rates = self.base.as_ref().is_some_and(|b| !b.is_zero()) || !self.tiers.is_empty();
         match (self.markup_percent, has_rates) {
             (Some(_), true) => bail!("A Price Card has markup_percent and rates. Set only one."),
             (Some(p), false) => Ok(PriceSpec::MarkupBp(percent_to_bp(p))),
             (None, true) => Ok(PriceSpec::Rates(CardRates {
+                batch_multiplier_bp: self.batch_multiplier_bp,
                 base: self.base.clone().unwrap_or_default().to_rates(),
                 tiers: tiers(&self.tiers),
             })),
@@ -358,6 +372,9 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !(1..=63).contains(&self.server.file_upload_limit_mib) {
+            bail!("The file upload limit must be whole MiB from 1 to 63.");
+        }
         if !(1..=63).contains(&self.server.audio_upload_limit_mib) {
             bail!("The audio upload limit must be whole MiB from 1 to 63.");
         }

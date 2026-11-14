@@ -609,6 +609,12 @@ fn rollup_model(e: &NewEntry) -> String {
 
 pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let mut tx = db.begin().await?;
+    let id = insert_entry_in(&mut tx, e).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+pub(crate) async fn insert_entry_in(tx: &mut sqlx::SqliteConnection, e: &NewEntry) -> Result<i64> {
     let u = &e.usage;
     let q = &e.quote;
     let id = sqlx::query(
@@ -697,7 +703,6 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
         .bind(e.key_id)
         .execute(&mut *tx)
         .await?;
-    tx.commit().await?;
     Ok(id)
 }
 

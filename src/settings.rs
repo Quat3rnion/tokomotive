@@ -17,6 +17,8 @@ pub struct Settings {
     pub reserve_output_tokens: i64,
     #[serde(default = "crate::config::default_audio_upload_limit_mib")]
     pub audio_upload_limit_mib: usize,
+    #[serde(default = "crate::config::default_file_upload_limit_mib")]
+    pub file_upload_limit_mib: usize,
     pub session_days: i64,
     pub mode: String,
     pub router: RouterCfg,
@@ -77,6 +79,7 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             audio_upload_limit_mib: cfg.server.audio_upload_limit_mib,
+            file_upload_limit_mib: cfg.server.file_upload_limit_mib,
             session_days: cfg.server.session_days,
             mode: cfg.server.mode.clone(),
             router: cfg.router.clone(),
