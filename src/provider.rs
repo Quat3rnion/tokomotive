@@ -19,6 +19,9 @@ pub enum ProviderAuth {
     HuggingFace,
     Entra,
     GoogleVertex,
+    GithubCopilot,
+    QwenCode,
+    KimiCode,
 }
 
 impl ProviderAuth {
@@ -31,10 +34,21 @@ impl ProviderAuth {
             Self::HuggingFace => "hugging_face",
             Self::Entra => "entra",
             Self::GoogleVertex => "google_vertex",
+            Self::GithubCopilot => "github_copilot",
+            Self::QwenCode => "qwen_code",
+            Self::KimiCode => "kimi_code",
         }
     }
     pub fn is_subscription(self) -> bool {
-        matches!(self, Self::Chatgpt | Self::Codex | Self::Claude)
+        matches!(
+            self,
+            Self::Chatgpt
+                | Self::Codex
+                | Self::Claude
+                | Self::GithubCopilot
+                | Self::QwenCode
+                | Self::KimiCode
+        )
     }
 }
 

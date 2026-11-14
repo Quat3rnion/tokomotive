@@ -39,6 +39,20 @@ pub enum InferenceBase {
         field: String,
         origin: String,
     },
+    TokenResource {
+        field: String,
+        fallback: String,
+        hosts: Vec<String>,
+        version: String,
+    },
+    UserResource {
+        url: String,
+        pointer: String,
+        fallback: String,
+        hosts: Vec<String>,
+        headers: Vec<(String, String)>,
+        entitlement: String,
+    },
     AdapterPending,
 }
 #[derive(Clone)]
@@ -86,6 +100,95 @@ impl OAuthManager {
             basic_secret: false,
         };
         match flow {
+            Flow::GithubCopilot => {
+                c.flow_type = FlowType::DeviceCode;
+                c.device = Some(e.copilot_device.clone());
+                c.token = e.copilot_token.clone();
+                c.client_id = "Ov23li8tweQw6odWQebz".into();
+                c.client_secret = None;
+                c.scopes = "read:user".into();
+                c.token_encoding = TokenEncoding::Json;
+                c.refresh = RefreshRule::None;
+                c.headers = vec![
+                    ("accept".into(), "application/json".into()),
+                    ("user-agent".into(), "Tokomotive/0.1.0".into()),
+                ];
+                let mut user = e.copilot_user.clone();
+                let mut fallback = e.copilot_resource.clone();
+                let mut hosts = vec!["githubcopilot.com".into()];
+                if !o.tenant.is_empty() {
+                    let domain = o
+                        .tenant
+                        .trim()
+                        .trim_start_matches("https://")
+                        .trim_end_matches('/');
+                    let url = reqwest::Url::parse(&format!("https://{domain}"))?;
+                    if url.host_str() != Some(domain)
+                        || domain.parse::<std::net::IpAddr>().is_ok()
+                        || !domain.contains('.')
+                        || url.port().is_some()
+                        || !url.username().is_empty()
+                        || url.password().is_some()
+                        || url.path() != "/"
+                        || url.query().is_some()
+                        || url.fragment().is_some()
+                    {
+                        bail!("Enter a public GitHub Enterprise domain");
+                    }
+                    c.device = Some(format!("https://{domain}/login/device/code"));
+                    c.token = format!("https://{domain}/login/oauth/access_token");
+                    user = format!("https://api.{domain}/copilot_internal/user");
+                    fallback = format!("https://copilot-api.{domain}");
+                    hosts = vec![format!("copilot-api.{domain}")];
+                }
+                c.inference_base = InferenceBase::UserResource {
+                    url: user,
+                    pointer: "/endpoints/api".into(),
+                    fallback,
+                    hosts,
+                    headers: vec![
+                        ("user-agent".into(), "Tokomotive/0.1.0".into()),
+                        ("x-github-api-version".into(), "2025-04-01".into()),
+                    ],
+                    entitlement: "/chat_enabled".into(),
+                };
+            }
+            Flow::QwenCode => {
+                c.flow_type = FlowType::DeviceCode;
+                c.device = Some(e.qwen_device.clone());
+                c.token = e.qwen_token.clone();
+                c.client_id = "f0304373b74a44d2b584a3fb70ca9e56".into();
+                c.client_secret = None;
+                c.scopes = "openid profile email model.completion".into();
+                c.device_pkce = true;
+                c.refresh = RefreshRule::Rotating;
+                c.inference_base = InferenceBase::TokenResource {
+                    field: "resource_url".into(),
+                    fallback: e.qwen_resource.clone(),
+                    hosts: [
+                        "dashscope.aliyuncs.com",
+                        "dashscope-intl.aliyuncs.com",
+                        "dashscope-us.aliyuncs.com",
+                        "portal.qwen.ai",
+                        "maas.aliyuncs.com",
+                        "maas.qianwenaiapi.com",
+                        "maas.qwencloudapi.com",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
+                    version: "v1".into(),
+                };
+            }
+            Flow::KimiCode => {
+                c.flow_type = FlowType::DeviceCode;
+                c.device = Some(e.kimi_device.clone());
+                c.token = e.kimi_token.clone();
+                c.client_id = "17e5f671-d194-4dfb-9706-5516cb48c098".into();
+                c.client_secret = None;
+                c.refresh = RefreshRule::Rotating;
+                c.headers = kimi_headers(&saved.host_id);
+                c.inference_base = InferenceBase::Fixed(e.kimi_resource.clone());
+            }
             Flow::Chatgpt => {
                 c.authorize = format!("{}/api/accounts/authorize", e.issuer);
                 c.token = format!("{}/api/accounts/oauth/token", e.issuer);

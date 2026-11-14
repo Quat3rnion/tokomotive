@@ -1424,3 +1424,65 @@ The Proxy stores and refreshes the token. The UI marks this Provider
 **sign-in ready, adapter pending**. It is not available for routing or Model
 discovery until the Vertex adapter is implemented. No inference request uses
 this token yet.
+
+## Unofficial subscription sign-in
+
+These flows use public client IDs and private Provider routes. They can stop
+without notice. Third-party use can break the service terms and can cause
+account restriction. The owner accepted this risk. Use an API-key Provider
+instead if these terms do not permit your use.
+
+Each Provider needs explicit Provider Access on each Virtual Key. Cost is 0;
+Price uses the Rate Cards. Tokens stay encrypted in SQLite. Do not share the
+device code. Keep the sign-in panel open until it connects. These three flows
+have no redirect-paste fallback. Disconnect removes the login, not the Provider.
+
+### Sign in with GitHub Copilot
+
+1. Add a Provider with authentication **GitHub Copilot (unofficial)**.
+2. For GitHub Enterprise, open **GitHub Enterprise (optional)**. Enter the
+   deployment domain, such as `company.ghe.com`, and save it before sign-in.
+   Leave it empty for github.com. Saving disconnects an existing login.
+3. Select **Sign in with a device code**. Open the verification page, sign in
+   to GitHub, and enter the displayed code.
+4. Grant access. The Proxy checks Copilot access and reads the account's API
+   endpoint. A rejected entitlement or untrusted endpoint prevents connection.
+5. Use the OpenAI API format for Chat Completions and Responses models. Select
+   Anthropic for Claude Messages models. Add Models and grant Provider Access.
+
+The OAuth bearer is used directly, as in the pinned opencode source. No
+short-lived Copilot token exchange is needed. A rejected token needs a new
+sign-in. Tokomotive sends its own identity, not VS Code editor headers. Live
+model discovery and Copilot Auto session tokens are not supported. See
+[ADR 0006](adr/0006-github-copilot.md).
+
+### Sign in with Qwen Code
+
+1. Add a Provider with authentication **Qwen Code (unofficial)**.
+2. Select **Sign in with a device code**. Open the verification page, sign in
+   to Qwen, and enter the code.
+3. Grant the displayed scope. Wait for the panel to connect.
+4. Add Models and grant Provider Access. Use the OpenAI API format.
+
+The Proxy uses PKCE and rotating refresh tokens. It reads `resource_url` from
+the token response and accepts only the trusted HTTPS domains in
+[ADR 0007](adr/0007-qwen-code.md). When no resource is supplied, the base is
+`https://dashscope.aliyuncs.com/compatible-mode/v1`. Only Chat Completions model
+requests can carry this bearer. Existing Messages Translation can use Chat.
+Tokomotive sends the OAuth AuthType and its own DashScope UserAgent header.
+
+### Sign in with Kimi Code
+
+1. Add a Provider with authentication **Kimi Code (unofficial)**.
+2. Select **Sign in with a device code**. Open the verification page, sign in
+   to Kimi, and enter the code.
+3. Wait for the panel to connect. Add Models and grant Provider Access.
+4. Keep the default OpenAI format for OpenAI-like or Responses models. Select
+   Anthropic for models that require Messages. The Proxy adds `?beta=true`
+   for that endpoint. Protocol support is per model.
+
+The fixed base is `https://api.kimi.com/coding/v1`. The global `.ai` region is
+not selected by this flow. Tokomotive sends `X-Msh-*` identity headers with
+platform `tokomotive`. Its random device ID is encrypted and stays the same
+when you reconnect this Provider. Refresh tokens rotate. Live acceptance of
+the Tokomotive platform is not yet verified. See [ADR 0008](adr/0008-kimi-code.md).

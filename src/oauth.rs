@@ -37,6 +37,9 @@ impl Flow {
     pub const Entra: Self = Self("entra");
     pub const GoogleVertex: Self = Self("google_vertex");
     pub const OpenRouter: Self = Self("openrouter");
+    pub const GithubCopilot: Self = Self("github_copilot");
+    pub const QwenCode: Self = Self("qwen_code");
+    pub const KimiCode: Self = Self("kimi_code");
     pub fn as_str(self) -> &'static str {
         self.0
     }
@@ -49,6 +52,9 @@ impl Flow {
             ProviderAuth::HuggingFace => Some(Self::HuggingFace),
             ProviderAuth::Entra => Some(Self::Entra),
             ProviderAuth::GoogleVertex => Some(Self::GoogleVertex),
+            ProviderAuth::GithubCopilot => Some(Self::GithubCopilot),
+            ProviderAuth::QwenCode => Some(Self::QwenCode),
+            ProviderAuth::KimiCode => Some(Self::KimiCode),
         }
     }
     pub fn redirect(self) -> &'static str {
@@ -60,7 +66,18 @@ impl Flow {
         }
     }
     pub fn device(self) -> bool {
-        matches!(self, Self::Codex | Self::HuggingFace | Self::Entra)
+        matches!(
+            self,
+            Self::Codex
+                | Self::HuggingFace
+                | Self::Entra
+                | Self::GithubCopilot
+                | Self::QwenCode
+                | Self::KimiCode
+        )
+    }
+    pub fn paste_supported(self) -> bool {
+        !matches!(self, Self::GithubCopilot | Self::QwenCode | Self::KimiCode)
     }
 }
 
@@ -84,6 +101,16 @@ pub struct OAuthEndpoints {
     pub google_token: String,
     pub openrouter_authorize: String,
     pub openrouter_token: String,
+    pub copilot_device: String,
+    pub copilot_token: String,
+    pub copilot_user: String,
+    pub copilot_resource: String,
+    pub qwen_device: String,
+    pub qwen_token: String,
+    pub qwen_resource: String,
+    pub kimi_device: String,
+    pub kimi_token: String,
+    pub kimi_resource: String,
 }
 impl Default for OAuthEndpoints {
     fn default() -> Self {
@@ -105,6 +132,16 @@ impl Default for OAuthEndpoints {
             google_token: "https://oauth2.googleapis.com/token".into(),
             openrouter_authorize: "https://openrouter.ai/auth".into(),
             openrouter_token: "https://openrouter.ai/api/v1/auth/keys".into(),
+            copilot_device: "https://github.com/login/device/code".into(),
+            copilot_token: "https://github.com/login/oauth/access_token".into(),
+            copilot_user: "https://api.github.com/copilot_internal/user".into(),
+            copilot_resource: "https://api.githubcopilot.com".into(),
+            qwen_device: "https://chat.qwen.ai/api/v1/oauth2/device/code".into(),
+            qwen_token: "https://chat.qwen.ai/api/v1/oauth2/token".into(),
+            qwen_resource: "https://dashscope.aliyuncs.com/compatible-mode/v1".into(),
+            kimi_device: "https://auth.kimi.com/api/oauth/device_authorization".into(),
+            kimi_token: "https://auth.kimi.com/api/oauth/token".into(),
+            kimi_resource: "https://api.kimi.com/coding/v1".into(),
         }
     }
 }
@@ -227,6 +264,49 @@ fn uuid() -> String {
 }
 pub(crate) fn session_id() -> String {
     uuid()
+}
+pub fn kimi_headers(device: &str) -> Vec<(String, String)> {
+    [
+        ("user-agent", "Tokomotive/0.1.0".to_owned()),
+        ("x-msh-platform", "tokomotive".into()),
+        ("x-msh-version", env!("CARGO_PKG_VERSION").into()),
+        ("x-msh-device-name", "Tokomotive server".into()),
+        ("x-msh-device-model", std::env::consts::ARCH.into()),
+        ("x-msh-os-version", std::env::consts::OS.into()),
+        ("x-msh-device-id", device.into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), v))
+    .collect()
+}
+fn trusted_resource(value: &str, hosts: &[String], version: Option<&str>) -> Result<String> {
+    let value = if version.is_some() && !value.contains("://") {
+        format!("https://{value}")
+    } else {
+        value.into()
+    };
+    let url = reqwest::Url::parse(&value).context("Invalid inference base URL")?;
+    let host = url.host_str().context("Invalid inference base URL")?;
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !hosts
+            .iter()
+            .any(|h| host == h || host.ends_with(&format!(".{h}")))
+    {
+        bail!("Untrusted inference base URL");
+    }
+    let mut base = url.as_str().trim_end_matches('/').to_owned();
+    if let Some(v) = version
+        && !base.ends_with(&format!("/{v}"))
+    {
+        base.push('/');
+        base.push_str(v);
+    }
+    Ok(base)
 }
 fn has_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == SHARING_SCOPE)
@@ -423,7 +503,10 @@ impl OAuthManager {
         lock.lock_owned().await
     }
     /// Keep provider rename/delete atomic with in-flight credential writes.
-    pub(crate) async fn provider_write(&self, name: &str) -> [tokio::sync::OwnedMutexGuard<()>; 7] {
+    pub(crate) async fn provider_write(
+        &self,
+        name: &str,
+    ) -> [tokio::sync::OwnedMutexGuard<()>; 10] {
         [
             self.flight(name, Flow::Chatgpt).await,
             self.flight(name, Flow::Claude).await,
@@ -432,6 +515,9 @@ impl OAuthManager {
             self.flight(name, Flow::Entra).await,
             self.flight(name, Flow::GoogleVertex).await,
             self.flight(name, Flow::OpenRouter).await,
+            self.flight(name, Flow::GithubCopilot).await,
+            self.flight(name, Flow::QwenCode).await,
+            self.flight(name, Flow::KimiCode).await,
         ]
     }
     async fn load(&self, name: &str, flow: Flow) -> Result<Saved> {
@@ -484,6 +570,9 @@ impl OAuthManager {
             ProviderAuth::Claude => &self.endpoints.claude_resource,
             ProviderAuth::Codex => &self.endpoints.codex_resource,
             ProviderAuth::HuggingFace => &self.endpoints.hf_resource,
+            ProviderAuth::GithubCopilot => &self.endpoints.copilot_resource,
+            ProviderAuth::QwenCode => &self.endpoints.qwen_resource,
+            ProviderAuth::KimiCode => &self.endpoints.kimi_resource,
             _ => self.endpoints.openai_resource.trim_end_matches("/v1"),
         }
     }
@@ -525,7 +614,10 @@ impl OAuthManager {
     ) -> Result<()> {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
-        if !matches!(flow, Flow::HuggingFace | Flow::Entra | Flow::GoogleVertex) {
+        if !matches!(
+            flow,
+            Flow::HuggingFace | Flow::Entra | Flow::GoogleVertex | Flow::GithubCopilot
+        ) {
             bail!("This sign-in has a fixed client configuration");
         }
         if [
@@ -603,6 +695,9 @@ impl OAuthManager {
         self.devices.lock().await.remove(&(name.into(), flow));
         let mut s = self.load(name, flow).await?;
         let config = self.config(flow, &s)?;
+        if config.flow_type == FlowType::DeviceCode && config.authorize.is_empty() {
+            bail!("Use device sign-in for this Provider");
+        }
         if s.host_id.is_empty() {
             s.host_id = format!("urn:uuid:{}", uuid());
             self.save(name, flow, &s).await?;
@@ -693,6 +788,14 @@ impl OAuthManager {
         s.last_error = Some("Refresh did not complete; sign in again".into());
         self.save(name, flow, &s).await?;
         let t = self.tokens(name,flow,json!({"grant_type":"refresh_token","client_id":client,"refresh_token":refresh,"resource":self.endpoints.openai_resource})).await?;
+        let inference_base = if let InferenceBase::TokenResource { field, .. } =
+            &config.inference_base
+            && !t.extra.contains_key(field)
+        {
+            s.credential.as_ref().and_then(|c| c.inference_base.clone())
+        } else {
+            self.derive_inference(&config, &t).await?
+        };
         let c = s.credential.as_mut().expect("credential checked");
         let scope = t.scope.unwrap_or_else(|| c.scope.clone());
         if flow == Flow::Chatgpt && !has_scope(&scope) {
@@ -708,6 +811,7 @@ impl OAuthManager {
         c.scope = scope;
         c.expires_at = self.now() + t.expires_in.unwrap_or(3600) * 1000;
         c.last_refresh = Some(self.now());
+        c.inference_base = inference_base;
         let token = c.access_token.clone();
         s.last_error = None;
         self.save(name, flow, &s).await?;
@@ -947,7 +1051,11 @@ impl OAuthManager {
             access_token: tokens.access_token,
             refresh_token: refresh,
             scope,
-            expires_at: self.now() + tokens.expires_in.unwrap_or(3600) * 1000,
+            expires_at: if config.refresh == RefreshRule::None && tokens.expires_in.is_none() {
+                i64::MAX
+            } else {
+                self.now() + tokens.expires_in.unwrap_or(3600) * 1000
+            },
             last_refresh: None,
             account,
             plan,
@@ -964,6 +1072,54 @@ impl OAuthManager {
         tokens: &Tokens,
     ) -> Result<Option<String>> {
         let (value, origin) = match &config.inference_base {
+            InferenceBase::TokenResource {
+                field,
+                fallback,
+                hosts,
+                version,
+            } => {
+                return match tokens.extra.get(field) {
+                    None => Ok(Some(fallback.clone())),
+                    Some(value) => Ok(Some(trusted_resource(
+                        value.as_str().context("Invalid inference base URL")?,
+                        hosts,
+                        Some(version),
+                    )?)),
+                };
+            }
+            InferenceBase::UserResource {
+                url,
+                pointer,
+                fallback,
+                hosts,
+                headers,
+                entitlement,
+            } => {
+                let mut request = self
+                    .http
+                    .get(url)
+                    .bearer_auth(&tokens.access_token)
+                    .header("accept", "application/json");
+                for (k, v) in headers {
+                    request = request.header(k, v);
+                }
+                let response = request.send().await.context("Inference discovery failed")?;
+                if !response.status().is_success() {
+                    bail!("Inference discovery rejected");
+                }
+                let value = bounded_json(response).await?;
+                if value.pointer(entitlement).and_then(Value::as_bool) == Some(false) {
+                    bail!("Subscription access is not enabled");
+                }
+                return match value.pointer(pointer) {
+                    None => Ok(Some(fallback.clone())),
+                    Some(base) => Ok(Some(trusted_resource(
+                        base.as_str().context("Invalid inference base URL")?,
+                        hosts,
+                        None,
+                    )?)),
+                };
+            }
             InferenceBase::Fixed(base) => return Ok((!base.is_empty()).then(|| base.clone())),
             InferenceBase::AdapterPending => return Ok(None),
             InferenceBase::TokenField { field, origin } => (
@@ -1016,13 +1172,26 @@ impl OAuthManager {
             .and_then(|c| c.account_id)
             .context("Missing Codex account")
     }
+    pub async fn device_id(&self, name: &str, flow: Flow) -> Result<String> {
+        self.validate(name, flow).await?;
+        let id = self.load(name, flow).await?.host_id;
+        if id.is_empty() {
+            bail!("Sign in to create the device identity");
+        }
+        Ok(id)
+    }
 
     /// OpenAI's Codex device flow is not RFC 8628. It first yields a PKCE
     /// authorization code, which is exchanged at the normal token endpoint.
     pub async fn start_device(&self, name: &str, flow: Flow) -> Result<DeviceStatus> {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
-        let config = self.config(flow, &self.load(name, flow).await?)?;
+        let mut saved = self.load(name, flow).await?;
+        if saved.host_id.is_empty() {
+            saved.host_id = uuid();
+            self.save(name, flow, &saved).await?;
+        }
+        let config = self.config(flow, &saved)?;
         if config.device.is_none() {
             bail!("Device sign-in is not supported for this flow");
         }
@@ -1030,7 +1199,7 @@ impl OAuthManager {
         self.devices.lock().await.remove(&(name.into(), flow));
         let verifier = config.device_pkce.then(|| random(64));
         let mut body = json!({"client_id":config.client_id});
-        if flow != Flow::Codex {
+        if flow != Flow::Codex && !config.scopes.is_empty() {
             body["scope"] = json!(config.scopes);
         }
         if let Some(v) = &verifier {
@@ -1085,7 +1254,9 @@ impl OAuthManager {
             verification_url: if flow == Flow::Codex {
                 format!("{}/codex/device", self.endpoints.issuer)
             } else {
-                let uri = field("verification_uri").or_else(|_| field("verification_url"))?;
+                let uri = field("verification_uri_complete")
+                    .or_else(|_| field("verification_uri"))
+                    .or_else(|_| field("verification_url"))?;
                 let parsed = reqwest::Url::parse(&uri)?;
                 if parsed.scheme() != "https"
                     || !parsed.username().is_empty()
@@ -1230,7 +1401,7 @@ impl OAuthManager {
         // Never log issuer bodies. 403 and 404 with no OAuth error are pending
         // in Codex's protocol; an explicit denial is terminal.
         let value = bounded_json(response).await.unwrap_or(Value::Null);
-        if !status.is_success() {
+        if !status.is_success() || value.get("error").is_some() {
             return Ok(
                 match value["error"]
                     .as_str()

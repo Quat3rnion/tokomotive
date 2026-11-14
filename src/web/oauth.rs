@@ -139,6 +139,7 @@ struct DevicePage {
     name: String,
     path: &'static str,
     device: crate::oauth::DeviceStatus,
+    paste: bool,
 }
 async fn begin_device(st: AppState, name: String, flow: Flow, path: &'static str) -> Response {
     match st.oauth.start_device(&name, flow).await {
@@ -157,9 +158,18 @@ async fn begin_device(st: AppState, name: String, flow: Flow, path: &'static str
                     }
                 }
             });
-            render(DevicePage { name, path, device })
+            render(DevicePage {
+                name,
+                path,
+                device,
+                paste: flow.paste_supported(),
+            })
         }
-        Err(_) => render(DeviceUnavailable { name, path }),
+        Err(_) => render(DeviceUnavailable {
+            name,
+            path,
+            paste: flow.paste_supported(),
+        }),
     }
 }
 #[derive(Template)]
@@ -167,6 +177,7 @@ async fn begin_device(st: AppState, name: String, flow: Flow, path: &'static str
 struct DeviceUnavailable {
     name: String,
     path: &'static str,
+    paste: bool,
 }
 #[derive(Deserialize)]
 struct DeviceQuery {
@@ -183,8 +194,17 @@ async fn device_progress(
         Ok(device) if device.state == "connected" => {
             saved("/admin/providers", &format!("Provider {name} connected."))
         }
-        Ok(device) => render(DevicePage { name, path, device }),
-        Err(_) => render(DeviceUnavailable { name, path }),
+        Ok(device) => render(DevicePage {
+            name,
+            path,
+            device,
+            paste: flow.paste_supported(),
+        }),
+        Err(_) => render(DeviceUnavailable {
+            name,
+            path,
+            paste: flow.paste_supported(),
+        }),
     }
 }
 async fn device_status(

@@ -702,6 +702,27 @@ pub async fn handle(
             },
         );
         let codex = provider.auth == crate::provider::ProviderAuth::Codex;
+        let unofficial = matches!(
+            provider.auth,
+            crate::provider::ProviderAuth::GithubCopilot
+                | crate::provider::ProviderAuth::QwenCode
+                | crate::provider::ProviderAuth::KimiCode
+        );
+        if unofficial
+            && (method != Method::POST
+                || !subscription_path_allowed(endpoint, path_q)
+                || !matches!(
+                    target_endpoint,
+                    Endpoint::ChatCompletions | Endpoint::Responses | Endpoint::Messages
+                )
+                || (provider.auth == crate::provider::ProviderAuth::QwenCode
+                    && target_endpoint != Endpoint::ChatCompletions))
+        {
+            translation_error = Some(translate::TranslateError {
+                message: "This subscription accepts only canonical model request paths".into(),
+            });
+            continue;
+        }
         if codex && (method != Method::POST || !subscription_path_allowed(endpoint, path_q)) {
             translation_error = Some(translate::TranslateError {
                 message: "Codex accepts only canonical model request paths".into(),
@@ -722,6 +743,16 @@ pub async fn handle(
                 ),
             });
             continue;
+        }
+        if provider.auth == crate::provider::ProviderAuth::GithubCopilot
+            && target_endpoint != Endpoint::Messages
+        {
+            path = path.strip_prefix("/v1").unwrap_or(&path).into();
+        }
+        if provider.auth == crate::provider::ProviderAuth::KimiCode
+            && target_endpoint == Endpoint::Messages
+        {
+            path = "/v1/messages?beta=true".into();
         }
         let order: Vec<Option<usize>> = match provider.key_order() {
             o if o.is_empty() => vec![None],
@@ -770,13 +801,29 @@ pub async fn handle(
             };
             // API-key Providers keep the version-aware join from the presets
             // (an `/api/v1` base and a `/v1/...` path do not double `/v1`).
-            let url = if provider.auth == crate::provider::ProviderAuth::ApiKey {
+            let url = if matches!(
+                provider.auth,
+                crate::provider::ProviderAuth::ApiKey
+                    | crate::provider::ProviderAuth::QwenCode
+                    | crate::provider::ProviderAuth::KimiCode
+            ) {
                 crate::provider::upstream_url(&base, &path)
             } else {
                 format!("{}{}", base.trim_end_matches('/'), path)
             };
-            let Some(req) =
-                build_request(&st, provider, key, &method, &url, &headers, anthropic_hint).await
+            let Some(req) = build_request(
+                &st,
+                provider,
+                key,
+                &method,
+                &url,
+                &headers,
+                RequestHints {
+                    anthropic: anthropic_hint,
+                    body: &upstream_body,
+                },
+            )
+            .await
             else {
                 permit.record(false);
                 break;
@@ -793,6 +840,23 @@ pub async fn handle(
                     Ok(token) => {
                         ctx.attempts += 1;
                         metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
+                        let Ok(base) = st
+                            .oauth
+                            .inference_resource(&provider.name, provider.auth, &provider.base_url)
+                            .await
+                        else {
+                            permit.record(false);
+                            break;
+                        };
+                        let url = if matches!(
+                            provider.auth,
+                            crate::provider::ProviderAuth::QwenCode
+                                | crate::provider::ProviderAuth::KimiCode
+                        ) {
+                            crate::provider::upstream_url(&base, &path)
+                        } else {
+                            format!("{}{}", base.trim_end_matches('/'), path)
+                        };
                         let Some(req) = build_request(
                             &st,
                             provider,
@@ -800,7 +864,10 @@ pub async fn handle(
                             &method,
                             &url,
                             &headers,
-                            anthropic_hint,
+                            RequestHints {
+                                anthropic: anthropic_hint,
+                                body: &upstream_body,
+                            },
                         )
                         .await
                         else {
@@ -987,6 +1054,60 @@ fn retryable(s: StatusCode) -> bool {
     s == StatusCode::TOO_MANY_REQUESTS || s.is_server_error()
 }
 
+struct RequestHints<'a> {
+    anthropic: bool,
+    body: &'a [u8],
+}
+
+fn copilot_metadata(url: &str, body: &[u8]) -> (bool, bool) {
+    let Ok(body) = serde_json::from_slice::<Value>(body) else {
+        return (false, false);
+    };
+    let has = |parts: &Value, kind: &str| {
+        parts
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|part| part["type"] == kind))
+    };
+    if let Some(input) = body["input"].as_array() {
+        return (
+            input.last().is_none_or(|item| item["role"] != "user"),
+            input.iter().any(|item| {
+                has(&item["content"], "input_image") || has(&item["output"], "input_image")
+            }),
+        );
+    }
+    let Some(messages) = body["messages"].as_array() else {
+        return (false, false);
+    };
+    let last = messages.last();
+    if url.contains("completions") {
+        return (
+            last.is_none_or(|m| m["role"] != "user")
+                || messages
+                    .len()
+                    .checked_sub(2)
+                    .is_some_and(|i| messages[i]["role"] == "tool"),
+            messages.iter().any(|m| has(&m["content"], "image_url")),
+        );
+    }
+    (
+        last.is_none_or(|m| {
+            m["role"] != "user"
+                || !m["content"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["type"] != "tool_result"))
+        }),
+        messages.iter().any(|m| {
+            m["content"].as_array().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    part["type"] == "image"
+                        || (part["type"] == "tool_result" && has(&part["content"], "image"))
+                })
+            })
+        }),
+    )
+}
+
 async fn build_request(
     st: &AppState,
     provider: &Provider,
@@ -994,11 +1115,33 @@ async fn build_request(
     method: &Method,
     url: &str,
     headers: &HeaderMap,
-    anthropic_hint: bool,
+    hints: RequestHints<'_>,
 ) -> Option<reqwest::RequestBuilder> {
     let mut req = st.http().request(method.clone(), url);
     for (name, value) in headers.iter() {
         if !skip_header(name)
+            && !(matches!(
+                provider.auth,
+                crate::provider::ProviderAuth::GithubCopilot
+                    | crate::provider::ProviderAuth::QwenCode
+                    | crate::provider::ProviderAuth::KimiCode
+            ) && (matches!(
+                name.as_str(),
+                "user-agent"
+                    | "cookie"
+                    | "openai-organization"
+                    | "openai-project"
+                    | "editor-version"
+                    | "editor-plugin-version"
+                    | "copilot-integration-id"
+                    | "openai-intent"
+                    | "x-github-api-version"
+                    | "x-initiator"
+                    | "x-interaction-type"
+                    | "x-interaction-id"
+            ) || name.as_str().starts_with("x-msh-")
+                || name.as_str().starts_with("x-dashscope-")
+                || name.as_str().starts_with("copilot-")))
             && !(provider.auth == crate::provider::ProviderAuth::Codex
                 && matches!(
                     name.as_str(),
@@ -1059,8 +1202,41 @@ async fn build_request(
     } else {
         req.bearer_auth(key)
     };
+    let mut req = req;
+    match provider.auth {
+        crate::provider::ProviderAuth::GithubCopilot => {
+            let (agent, vision) = copilot_metadata(url, hints.body);
+            req = req
+                .header("user-agent", "Tokomotive/0.1.0")
+                .header("openai-intent", "conversation-edits")
+                .header("x-github-api-version", "2026-08-01")
+                .header("x-initiator", if agent { "agent" } else { "user" })
+                .header("x-interaction-type", "conversation-agent")
+                .header("x-interaction-id", crate::oauth::session_id());
+            if vision {
+                req = req.header("copilot-vision-request", "true");
+            }
+        }
+        crate::provider::ProviderAuth::QwenCode => {
+            req = req
+                .header("user-agent", "Tokomotive/0.1.0")
+                .header("x-dashscope-authtype", "qwen-oauth")
+                .header("x-dashscope-useragent", "Tokomotive/0.1.0");
+        }
+        crate::provider::ProviderAuth::KimiCode => {
+            let device = st
+                .oauth
+                .device_id(&provider.name, crate::oauth::Flow::KimiCode)
+                .await
+                .ok()?;
+            for (k, v) in crate::oauth::kimi_headers(&device) {
+                req = req.header(k, v);
+            }
+        }
+        _ => {}
+    }
     Some(
-        if provider.kind == ProviderKind::Anthropic && !anthropic_hint {
+        if provider.kind == ProviderKind::Anthropic && !hints.anthropic {
             req.header("anthropic-version", "2023-06-01")
         } else {
             req

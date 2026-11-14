@@ -352,6 +352,9 @@ impl Config {
                     ProviderAuth::Claude => "https://api.anthropic.com",
                     ProviderAuth::HuggingFace => "https://router.huggingface.co",
                     ProviderAuth::GoogleVertex => "https://aiplatform.googleapis.com",
+                    ProviderAuth::GithubCopilot => "https://api.githubcopilot.com",
+                    ProviderAuth::QwenCode => "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    ProviderAuth::KimiCode => "https://api.kimi.com/coding/v1",
                     _ => p.base_url.as_str(),
                 };
                 if p.base_url.trim_end_matches('/') != base
@@ -372,7 +375,8 @@ impl Config {
                         | ProviderAuth::Entra
                         | ProviderAuth::GoogleVertex,
                     ProviderKind::Anthropic
-                ) | (ProviderAuth::Claude, ProviderKind::Openai)
+                ) | (ProviderAuth::QwenCode, ProviderKind::Anthropic)
+                    | (ProviderAuth::Claude, ProviderKind::Openai)
             ) {
                 bail!(
                     "The authentication of Provider {} does not match its API format.",

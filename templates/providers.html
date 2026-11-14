@@ -32,10 +32,10 @@
     <input type="hidden" name="auth" value="{{ p.auth }}">
     <div class="row">
       <div class="field"><label for="p-{{ p.name }}-name">Name</label><input id="p-{{ p.name }}-name" name="name" value="{{ p.name }}" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-name-help"><p class="hint" id="p-{{ p.name }}-name-help">Renaming changes the name that Routes, Models and clients use.</p></div>
-      <div class="field"><label for="p-{{ p.name }}-kind">API format</label>{% if p.auth == "api_key" %}<select id="p-{{ p.name }}-kind" name="kind"><option value="openai"{% if p.kind == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if p.kind == "anthropic" %} selected{% endif %}>Anthropic</option></select>{% else %}<input id="p-{{ p.name }}-kind" value="{% if p.kind == "openai" %}OpenAI{% else %}Anthropic{% endif %}" readonly aria-describedby="p-{{ p.name }}-fixed"><input type="hidden" name="kind" value="{{ p.kind }}">{% endif %}</div>
+      <div class="field"><label for="p-{{ p.name }}-kind">API format</label>{% if p.auth == "api_key" || p.auth == "github_copilot" || p.auth == "kimi_code" %}<select id="p-{{ p.name }}-kind" name="kind"><option value="openai"{% if p.kind == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if p.kind == "anthropic" %} selected{% endif %}>Anthropic</option></select>{% else %}<input id="p-{{ p.name }}-kind" value="{% if p.kind == "openai" %}OpenAI{% else %}Anthropic{% endif %}" readonly aria-describedby="p-{{ p.name }}-fixed"><input type="hidden" name="kind" value="{{ p.kind }}">{% endif %}</div>
       <div class="field grow"><label for="p-{{ p.name }}-url">Base URL</label><input id="p-{{ p.name }}-url" name="base_url" value="{{ p.base_url }}" required{% if p.auth != "api_key" && p.auth != "entra" %} readonly aria-describedby="p-{{ p.name }}-fixed"{% endif %} autocomplete="off" spellcheck="false"></div>
     </div>
-        {% if p.auth != "api_key" %}<p class="hint" id="p-{{ p.name }}-fixed">A {{ p.auth_label }} Provider uses a fixed API format.{% if p.auth == "entra" %} Set its Azure resource URL, for example https://RESOURCE.openai.azure.com/openai (without /v1).{% else %} Its base URL is fixed.{% endif %}</p>{% endif %}
+        {% if p.auth != "api_key" %}<p class="hint" id="p-{{ p.name }}-fixed">{% if p.auth == "github_copilot" || p.auth == "kimi_code" %}Select the API format for the models you use.{% else %}A {{ p.auth_label }} Provider uses a fixed API format.{% endif %}{% if p.auth == "entra" %} Set its Azure resource URL, for example https://RESOURCE.openai.azure.com/openai (without /v1).{% else %} Its base URL is fixed.{% endif %}</p>{% endif %}
     {% if p.auth == "api_key" %}
     <div class="row">
       <div class="field"><label for="p-{{ p.name }}-header">Key header</label><select id="p-{{ p.name }}-header" name="key_header"><option value="bearer"{% if p.key_header == "bearer" %} selected{% endif %}>Authorization: Bearer</option><option value="x-api-key"{% if p.key_header == "x-api-key" %} selected{% endif %}>x-api-key</option><option value="api-key"{% if p.key_header == "api-key" %} selected{% endif %}>api-key (Azure)</option></select></div>
@@ -99,10 +99,12 @@
   </details>
   {% endif %}
   {% if p.auth == "codex" %}<p class="hint warn-note">Legacy Codex OAuth uses a private ChatGPT route. It can change without notice and can break the service terms. ChatGPT token sharing is recommended.</p>{% endif %}
+  {% if p.auth == "github_copilot" || p.auth == "qwen_code" || p.auth == "kimi_code" %}<p class="hint warn-note">This unofficial sign-in uses private routes. They can change without notice. Use can break the service terms. Cost is 0. Price follows the Rate Card. Each Virtual Key needs explicit Provider Access.</p>{% endif %}
+  {% if p.auth == "github_copilot" %}<details><summary>GitHub Enterprise (optional)</summary><form method="post" action="/admin/providers/{{ p.name }}/oauth/configure" class="stack"><div class="field"><label for="enterprise-{{ p.name }}">GitHub Enterprise domain</label><input id="enterprise-{{ p.name }}" name="tenant" placeholder="company.ghe.com" autocomplete="off"><p class="hint">Leave empty for github.com. Saving disconnects this login. The saved domain is encrypted.</p></div><div><button>Save GitHub domain</button></div><div class="form-error" role="alert" tabindex="-1"></div></form></details>{% endif %}
   {% if let Some(s) = p.status %}
   {% call status_list(s) %}
   <div class="row">
-    <form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="next .signin" hx-swap="innerHTML"><button{% if s.connected %} class="ghost"{% endif %} data-busy="Starting..." aria-label="{% if s.connected %}Reconnect{% else %}Sign in to{% endif %} {{ p.name }}">{% if p.auth == "codex" || p.auth == "hugging_face" || p.auth == "entra" %}Sign in with a device code{% else if s.connected %}Reconnect{% else %}Sign in{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+    <form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="next .signin" hx-swap="innerHTML"><button{% if s.connected %} class="ghost"{% endif %} data-busy="Starting..." aria-label="{% if s.connected %}Reconnect{% else %}Sign in to{% endif %} {{ p.name }}">{% if p.auth == "codex" || p.auth == "hugging_face" || p.auth == "entra" || p.auth == "github_copilot" || p.auth == "qwen_code" || p.auth == "kimi_code" %}Sign in with a device code{% else if s.connected %}Reconnect{% else %}Sign in{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
     {% if s.connected %}<form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect" data-confirm="Disconnect {{ p.name }}? Requests to this Provider fail until you sign in again."><button class="danger" aria-label="Disconnect {{ p.name }}">Disconnect</button></form>{% endif %}
   </div>
   <div class="signin"></div>
@@ -150,7 +152,7 @@
     <div class="row">
       <input type="hidden" name="preset" id="np-preset-id" value="{{ preset.name }}">
       <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" value="{{ preset.name }}" required autocomplete="off" spellcheck="false" placeholder="openai" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Letters, digits, dot, underscore or hyphen.</p></div>
-      <div class="field"><label for="np-auth">Authentication</label><select id="np-auth" name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT subscription (recommended)</option><option value="codex">ChatGPT via Codex (legacy)</option><option value="claude">Claude Pro/Max</option><option value="hugging_face">Hugging Face OAuth</option><option value="entra">Azure Entra ID</option><option value="google_vertex">Google Vertex (adapter pending)</option></select></div>
+      <div class="field"><label for="np-auth">Authentication</label><select id="np-auth" name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT subscription (recommended)</option><option value="codex">ChatGPT via Codex (legacy)</option><option value="claude">Claude Pro/Max</option><option value="hugging_face">Hugging Face OAuth</option><option value="entra">Azure Entra ID</option><option value="google_vertex">Google Vertex (adapter pending)</option><option value="github_copilot">GitHub Copilot (unofficial)</option><option value="qwen_code">Qwen Code (unofficial)</option><option value="kimi_code">Kimi Code (unofficial)</option></select></div>
       <div class="field"><label for="np-kind">API format</label><select id="np-kind" name="kind"><option value="openai"{% if preset.kind_name() == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if preset.kind_name() == "anthropic" %} selected{% endif %}>Anthropic</option></select></div>
     </div>
     <div class="row">
@@ -207,13 +209,13 @@
   const kind = form.querySelector('#np-kind');
   const url = form.querySelector('#np-url');
   const keyField = form.querySelector('[data-key-field]');
-  const fixed = { chatgpt: ['openai', 'https://api.openai.com'], codex: ['openai', 'https://chatgpt.com/backend-api/codex'], claude: ['anthropic', 'https://api.anthropic.com'], hugging_face: ['openai', 'https://router.huggingface.co'], google_vertex: ['openai', 'https://aiplatform.googleapis.com'], entra: ['openai', ''] };
+  const fixed = { chatgpt: ['openai', 'https://api.openai.com'], codex: ['openai', 'https://chatgpt.com/backend-api/codex'], claude: ['anthropic', 'https://api.anthropic.com'], hugging_face: ['openai', 'https://router.huggingface.co'], google_vertex: ['openai', 'https://aiplatform.googleapis.com'], entra: ['openai', ''], github_copilot: ['openai', 'https://api.githubcopilot.com'], qwen_code: ['openai', 'https://dashscope.aliyuncs.com/compatible-mode/v1'], kimi_code: ['openai', 'https://api.kimi.com/coding/v1'] };
   let auto = '';
   const sync = () => {
     const f = fixed[auth.value];
     keyField.hidden = !!f;
     url.readOnly = !!f && auth.value !== 'entra';
-    [...kind.options].forEach(o => { o.disabled = !!f && o.value !== f[0]; });
+    [...kind.options].forEach(o => { o.disabled = !!f && !['github_copilot', 'kimi_code'].includes(auth.value) && o.value !== f[0]; });
     if (f) {
       kind.value = f[0];
       url.value = auto = f[1];

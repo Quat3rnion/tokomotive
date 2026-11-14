@@ -729,6 +729,9 @@ fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
         crate::provider::ProviderAuth::Claude => "Claude Pro/Max",
         crate::provider::ProviderAuth::HuggingFace => "Hugging Face OAuth",
         crate::provider::ProviderAuth::Entra => "Azure Entra ID",
+        crate::provider::ProviderAuth::GithubCopilot => "GitHub Copilot",
+        crate::provider::ProviderAuth::QwenCode => "Qwen Code",
+        crate::provider::ProviderAuth::KimiCode => "Kimi Code",
         crate::provider::ProviderAuth::GoogleVertex => {
             "Google Vertex: sign-in ready, adapter pending"
         }
@@ -950,15 +953,19 @@ async fn save_provider(
     // A Subscription Provider has one fixed address and API format. Accept
     // the address with /v1, as the Provider documentation often shows it.
     match f.auth {
-        ProviderAuth::ApiKey => {}
+        ProviderAuth::ApiKey | ProviderAuth::GithubCopilot | ProviderAuth::KimiCode => {}
         ProviderAuth::Chatgpt
         | ProviderAuth::Codex
         | ProviderAuth::HuggingFace
         | ProviderAuth::Entra
-        | ProviderAuth::GoogleVertex => f.kind = ProviderKind::Openai,
+        | ProviderAuth::GoogleVertex
+        | ProviderAuth::QwenCode => f.kind = ProviderKind::Openai,
         ProviderAuth::Claude => f.kind = ProviderKind::Anthropic,
     }
-    if f.auth != ProviderAuth::ApiKey {
+    if !matches!(
+        f.auth,
+        ProviderAuth::ApiKey | ProviderAuth::QwenCode | ProviderAuth::KimiCode
+    ) {
         f.base_url = f.base_url.trim_end_matches("/v1").into();
     }
     let _guard = st.settings_write.lock().await;

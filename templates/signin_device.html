@@ -11,10 +11,10 @@
   {% else if device.state == "expired" %}
   <p role="status">The code expired. Start sign-in again.</p>
   {% else %}
-  <p role="status">Device sign-in failed. Start again, or use the redirect URL.</p>
+  <p role="status">Device sign-in failed. Start again{% if paste %}, or use the redirect URL{% endif %}.</p>
   {% endif %}
   <div class="row">
     {% if device.state != "pending" %}<form method="post" action="/admin/providers/{{ name }}/{{ path }}/start" hx-post="/admin/providers/{{ name }}/{{ path }}/start" hx-target="closest .signin" hx-swap="innerHTML"><button>Sign in again</button><div class="form-error" role="alert" tabindex="-1"></div></form>{% endif %}
-    <form method="post" action="/admin/providers/{{ name }}/{{ path }}/paste" hx-post="/admin/providers/{{ name }}/{{ path }}/paste" hx-target="closest .signin" hx-swap="innerHTML"><button class="ghost">Paste the redirect URL instead</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+    {% if paste %}<form method="post" action="/admin/providers/{{ name }}/{{ path }}/paste" hx-post="/admin/providers/{{ name }}/{{ path }}/paste" hx-target="closest .signin" hx-swap="innerHTML"><button class="ghost">Paste the redirect URL instead</button><div class="form-error" role="alert" tabindex="-1"></div></form>{% endif %}
   </div>
 </div>

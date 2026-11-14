@@ -1367,7 +1367,7 @@ impl ControlChoice {
 pub async fn small_choices(db: &Db, kind: &str) -> Result<Option<Vec<ControlChoice>>> {
     let sql = match kind {
         "providers" => {
-            "SELECT name,auth IN ('chatgpt','claude','codex') AS subscription FROM providers WHERE auth != 'google_vertex' ORDER BY name LIMIT 31"
+            "SELECT name,auth IN ('chatgpt','claude','codex','github_copilot','qwen_code','kimi_code') AS subscription FROM providers WHERE auth != 'google_vertex' ORDER BY name LIMIT 31"
         }
         "teams" => "SELECT name,0 AS subscription FROM teams ORDER BY name LIMIT 31",
         _ => anyhow::bail!("unsupported control choices"),
