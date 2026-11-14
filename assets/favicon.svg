@@ -1,1 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#2563eb"/><path d="M7 11h18M16 11v14" stroke="#fff" stroke-width="4" stroke-linecap="round" fill="none"/><circle cx="24" cy="23" r="3" fill="#93c5fd"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Tokomotive</title>
+  <rect width="32" height="32" rx="7" fill="#0f1115"/>
+  <circle cx="22" cy="6.5" r="3.5" fill="#f59e0b"/>
+  <rect x="4" y="9" width="8" height="12" rx="1.5" fill="#2563eb"/>
+  <rect x="10" y="13" width="17" height="8" rx="3" fill="#2563eb"/>
+  <rect x="20" y="9.5" width="3.5" height="4.5" fill="#2563eb"/>
+  <circle cx="9" cy="23" r="2.6" fill="#e6e8ee"/>
+  <circle cx="16" cy="23" r="2.6" fill="#e6e8ee"/>
+  <circle cx="23" cy="23" r="2.6" fill="#e6e8ee"/>
+  <path d="M3 27.5 H29" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+</svg>

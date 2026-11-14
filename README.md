@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/wordmark.svg" alt="Tokomotive" width="420"></p>
+
 # Tokomotive
 
 Tokomotive is an LLM router and Proxy with optional cost accounting. Clients
