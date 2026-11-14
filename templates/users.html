@@ -43,8 +43,8 @@
     <th scope="row"><span class="name">{{ u.name }}</span></th>
     <td data-label="Team">{{ u.team }}</td>
     {% if !base.simple %}
-    <td data-label="Budget">{{ u.budget_view.period }} <span class="sub">Resets at {{ u.budget_view.resets }}</span></td>
-    <td data-label="Spend" class="n">{{ u.budget_view.summary }} <span class="sub">spent this period / budget{% if u.budget_view.period == "monthly" %} (this month){% endif %}</span></td>
+    <td data-label="Budget" class="wrap">{{ u.budget_view.period }} <span class="sub">Resets at {{ u.budget_view.resets }}</span></td>
+    <td data-label="Spend" class="n wrap">{{ u.budget_view.summary }} <span class="sub">spent this period / budget{% if u.budget_view.period == "monthly" %} (this month){% endif %}</span></td>
     <td data-label="Used" class="n">{% if u.over %}<span class="tag bad">{{ u.used }}, over Budget</span>{% else %}{{ u.used }}{% endif %}</td>
     <td data-label="Rate Limits">{{ u.limits }}</td>
     {% endif %}

@@ -941,6 +941,58 @@ impl ProviderView {
     fn has_unset_env(&self) -> bool {
         self.keys.iter().any(|k| k.env_set == Some(false))
     }
+    fn disconnected(&self) -> bool {
+        self.status.as_ref().is_some_and(|s| !s.connected)
+    }
+    fn skipped(&self) -> usize {
+        self.quota.iter().filter(|a| a.skipped).count()
+    }
+    /// Quota and health start open only when they have observations to show:
+    /// quota windows, or an account that is skipped, limited or disconnected.
+    fn health_open(&self) -> bool {
+        !self.quota.is_empty()
+            && (self.disconnected()
+                || self
+                    .quota
+                    .iter()
+                    .any(|a| a.skipped || a.state != "ok" || !a.windows.is_empty()))
+    }
+    /// Tag class of the compact health status in the card.
+    fn health_class(&self) -> &'static str {
+        if self.skipped() > 0 || self.quota.iter().any(|a| a.state == "credentials_invalid") {
+            "bad"
+        } else if self.disconnected() || self.quota.iter().any(|a| a.state != "ok") {
+            "warn"
+        } else if self.quota.is_empty() {
+            ""
+        } else {
+            "good"
+        }
+    }
+    fn health_text(&self) -> String {
+        let skipped = self.skipped();
+        if skipped == 1 {
+            "1 account skipped".into()
+        } else if skipped > 1 {
+            format!("{skipped} accounts skipped")
+        } else if self.disconnected() {
+            "Disabled".into()
+        } else if self.quota.iter().any(|a| a.state != "ok") {
+            "Rate limited".into()
+        } else if self.quota.is_empty() {
+            "No data yet".into()
+        } else {
+            let used = self
+                .quota
+                .iter()
+                .flat_map(|a| a.windows.iter().filter_map(|w| w.percent))
+                .fold(None, |m: Option<f64>, p| Some(m.map_or(p, |m| m.max(p))));
+            match used {
+                Some(p) => format!("Healthy, highest use {p:.0}%"),
+                None => "Healthy".into(),
+            }
+        }
+    }
 }
 /// One entry of a Key Pool. Never more than the last 4 characters.
 struct KeyView {

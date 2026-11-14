@@ -51,7 +51,11 @@ SHARED DASHBOARD MECHANISMS. Page templates use these; do not add new ones.
    pre.code, copy-row, vh (visually hidden), empty (empty-state line),
    field (label + control + hint; add `grow` to widen), checks (inline
    checkboxes), trunc (ellipsis with the full text in `title`), sub (second
-   line in a cell), actions (buttons in a cell), edit-row + edit-panel.
+   line in a cell), actions (buttons in a cell), edit-row + edit-panel,
+   fields (grid of .field; add `wide` for a full row), subform (a small
+   second form at the end of a card, such as body capture), item (a
+   repeated entry in a card), toc (in-page links), clamp (2-line cell).
+   Checkboxes always use label.check: the box left of its text.
    Controls are at least 24 px high; checkboxes and radios are 18 px.
 
 COPY SHEET (GLOSSARY.md)
@@ -145,7 +149,9 @@ main:focus { outline:none; }
 
 header { display:flex; align-items:center; gap:var(--sp-3) var(--sp-5); padding:var(--sp-2) var(--sp-5); border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
 .brand { display:inline-block; padding:var(--sp-1) 0; font-weight:700; font-size:15px; color:var(--text); text-decoration:none; white-space:nowrap; }
-header nav { flex:1; min-width:0; }
+/* The nav keeps its width; when it does not fit, the header wraps. */
+header { flex-wrap:wrap; }
+header nav { flex:1 1 auto; }
 header nav ul { display:flex; align-items:center; list-style:none; margin:0; padding:0; gap:2px; }
 header nav li.gs { margin-left:var(--sp-2); padding-left:var(--sp-2); border-left:1px solid var(--line); }
 header nav a { display:block; padding:6px 10px; border-radius:6px; color:var(--muted); text-decoration:none; white-space:nowrap; }
@@ -182,7 +188,9 @@ caption { text-align:left; color:var(--muted); font-size:12px; padding-bottom:va
   background-image:linear-gradient(to right, var(--panel) 30%, transparent), linear-gradient(to left, var(--panel) 30%, transparent), radial-gradient(farthest-side at 0 50%, rgba(147,197,253,.28), transparent), radial-gradient(farthest-side at 100% 50%, rgba(147,197,253,.28), transparent);
   background-position:left center, right center, left center, right center; background-repeat:no-repeat;
   background-size:40px 100%, 40px 100%, 14px 100%, 14px 100%; background-attachment:local, local, scroll, scroll; }
-.scroll > table th:first-child, .scroll > table td:first-child:not([colspan]) { position:sticky; left:0; z-index:1; background:var(--panel); box-shadow:inset -1px 0 0 var(--line); min-width:min(18ch, 40vw); max-width:28ch; white-space:normal; overflow-wrap:break-word; }
+/* A panel pads its scroll box; the sticky column covers that padding too. */
+.panel.scroll { --scroll-pad:var(--sp-4); }
+.scroll > table th:first-child, .scroll > table td:first-child:not([colspan]) { position:sticky; left:calc(-1 * var(--scroll-pad, 0px)); z-index:1; background:var(--panel); box-shadow:inset -1px 0 0 var(--line); min-width:min(18ch, 40vw); max-width:28ch; white-space:normal; overflow-wrap:break-word; }
 /* Long lists in a cell wrap instead of widening the table. */
 td.wrap { white-space:normal; min-width:16ch; max-width:40ch; }
 td.n a, td.wrap a { display:inline-block; min-width:24px; min-height:24px; line-height:24px; }
@@ -233,6 +241,7 @@ label.choice span span { display:block; color:var(--muted); font-size:13px; }
 .checks { display:flex; flex-wrap:wrap; gap:0 var(--sp-4); }
 .stack > fieldset { align-self:stretch; }
 .stack > label.check { align-self:flex-start; }
+.stack > .field.wide { align-self:stretch; }
 .trunc { display:inline-block; max-width:24ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
 tbody th { color:var(--text); font-weight:400; font-size:inherit; }
 td .sub, th .sub { display:block; max-width:20ch; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:12px; }
@@ -298,12 +307,17 @@ details > summary { cursor:pointer; color:var(--link); min-height:24px; }
 .checklist li.next .mark { border-color:var(--link); color:var(--text); }
 .checklist li p { margin:0; }
 
+/* Below this width the nav does not fit next to the brand: it gets its own line. */
+@media (max-width: 1080px) {
+  header { row-gap:var(--sp-1); }
+  header nav { order:3; flex-basis:100%; min-width:0; overflow-x:auto; padding-bottom:2px; }
+}
 @media (max-width: 720px) {
-  header { position:static; flex-wrap:wrap; padding:var(--sp-2) var(--sp-4); row-gap:var(--sp-1); }
-  header nav { order:3; flex-basis:100%; overflow-x:auto; padding-bottom:2px; }
+  header { position:static; padding:var(--sp-2) var(--sp-4); }
   main { padding:var(--sp-4); }
   .toolbar .end { margin-left:0; }
   .panel { padding:var(--sp-3); }
+  .panel.scroll { --scroll-pad:var(--sp-3); }
 }
 /* 11. Card tables: `table.cards-sm` shows each row as a card below 720 px.
    Give each td a `data-label`; the row header (th scope=row) is the title. */
@@ -330,7 +344,7 @@ details > summary { cursor:pointer; color:var(--link); min-height:24px; }
 .crumbs li + li::before { content:"/"; padding:0 var(--sp-2); }
 .crumbs a { display:inline-block; min-height:24px; line-height:24px; }
 .crumbs li { line-height:24px; }
-section.panel[id] { scroll-margin-top:72px; }
+section.panel[id], main h2[id] { scroll-margin-top:72px; }
 .opt { display:flex; flex-direction:column; gap:var(--sp-2); padding:var(--sp-3); border:1px solid var(--line-input); border-radius:8px; min-width:0; }
 .opt:has(> label input[type=radio]:checked) { border-color:var(--link); }
 .opt > label.check { align-self:flex-start; }
@@ -394,6 +408,54 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 .list-filter .field input[type=search] { width:100%; }
 nav.pager { margin-top:var(--sp-2); }
 .hint.warn-note { margin-bottom:var(--sp-2); }
+/* Forms: a grid of fields (label, control, hint) with equal columns. */
+.fields { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(17em, 100%), 1fr)); gap:var(--sp-3) var(--sp-4); align-items:start; align-self:stretch; }
+.fields > .field input:not([type=checkbox]):not([type=radio]), .fields > .field select { width:100%; max-width:20em; }
+.fields > .field.wide { grid-column:1 / -1; }
+.field.wide input:not([type=checkbox]):not([type=radio]), .field.wide textarea { width:100%; max-width:40em; }
+.fields > .field.wide input:not([type=checkbox]):not([type=radio]), .fields > .field.wide textarea { max-width:40em; }
+.field textarea { min-height:4em; }
+.fields .hint { max-width:40em; }
+fieldset > .fields, fieldset > label.check { margin-bottom:var(--sp-2); }
+fieldset > :last-child { margin-bottom:0; }
+fieldset > .hint:first-of-type { margin:0 0 var(--sp-2); }
+.row label input[type=datetime-local], .field input[type=datetime-local]:not([type=checkbox]):not([type=radio]) { width:auto; }
+.field.narrow-field input:not([type=checkbox]):not([type=radio]) { width:7em; }
+.row.filters .field input:not([type=checkbox]):not([type=radio]):not([type=datetime-local]):not([type=number]) { width:13em; }
+/* A field row with hints: buttons line up with the controls, not the hints. */
+.row:has(> .field .hint) > button { align-self:flex-start; margin-top:22px; }
+/* A separate small form at the end of a card (body capture). */
+form.subform { align-self:stretch; margin-top:var(--sp-4); }
+form.subform fieldset { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2) var(--sp-4); }
+form.subform label.check { align-self:center; }
+form.subform .hint { flex-basis:100%; margin:0; }
+form.subform .form-error { margin-top:0; }
+/* In-page table of contents. */
+nav.toc { margin:0 0 var(--sp-4); }
+nav.toc ul { display:flex; flex-wrap:wrap; gap:var(--sp-1) var(--sp-2); list-style:none; margin:0; padding:0; }
+nav.toc a { display:inline-block; min-height:28px; padding:3px 10px; border:1px solid var(--line); border-radius:14px; color:var(--muted); text-decoration:none; font-size:13px; }
+nav.toc a:hover { color:var(--text); background:var(--hover); }
+/* A repeated item in a card (webhook, account): a divider, no nested panel. */
+.item { display:flex; flex-direction:column; gap:var(--sp-3); align-items:flex-start; padding:var(--sp-3) 0 var(--sp-4); border-bottom:1px solid var(--line); }
+.item:first-of-type { border-top:1px solid var(--line); }
+.item > form.row { align-self:stretch; }
+.item-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--sp-1) var(--sp-3); }
+.item-head h3 { margin:0; overflow-wrap:anywhere; }
+section.panel > .item + h3 { margin-top:var(--sp-5); }
+/* Cells with lists: wrap, and clamp very long lists to 2 lines (full text in title). */
+td.wrap .sub { max-width:none; white-space:normal; }
+table.keys td.wrap { min-width:10ch; max-width:30ch; }
+.clamp { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+/* Quota and account health on a Provider card. */
+details.health { margin-top:var(--sp-4); }
+details.health > summary { display:list-item; }
+details.health > summary .tag { margin-left:var(--sp-2); }
+details.health[open] { padding:var(--sp-3); border:1px solid var(--line); border-radius:8px; }
+details.health[open] > summary { margin-bottom:var(--sp-2); }
+.quota-account { gap:var(--sp-1); padding:var(--sp-2) 0; }
+.quota-account + .quota-account { border-top:1px solid var(--line); }
+.quota-account p { margin:0; }
+.quota-account ul.meters { margin:var(--sp-1) 0 0; }
 /* 13. Model picker (combobox). */
 .cb { position:relative; display:block; max-width:100%; min-width:0; }
 .field.grow .cb > input, .cb[data-picker=multi] > input { width:100%; }

@@ -3,13 +3,14 @@
 {% block content %}
 <h1>Audit log</h1>
 <p>Times are UTC. Secret values and URLs are not recorded. Interrupted operations show an unknown outcome.</p>
-<form method="get" action="/admin/audit" class="panel row">
-<label>Account <input name="account" value="{{ q.account }}"></label>
-<label>Action <input name="action" value="{{ q.action }}" placeholder="POST /admin/teams"></label>
-<label>Target type or ID <input name="target" value="{{ q.target }}"></label>
-<label>From (UTC) <input type="datetime-local" name="since" value="{{ q.since }}"></label>
-<label>Until (UTC) <input type="datetime-local" name="until" value="{{ q.until }}"></label>
-<label>Page size <input type="number" name="limit" min="1" max="200" value="{{ q.page.limit() }}"></label><button>Filter</button>
+<form method="get" action="/admin/audit" class="panel row filters" aria-label="Filter the audit log">
+<div class="field"><label for="au-account">Account</label><input id="au-account" name="account" value="{{ q.account }}" autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="au-action">Action</label><input id="au-action" name="action" value="{{ q.action }}" placeholder="POST /admin/teams" autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="au-target">Target type or ID</label><input id="au-target" name="target" value="{{ q.target }}" autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="au-since">From (UTC)</label><input id="au-since" type="datetime-local" name="since" value="{{ q.since }}"></div>
+<div class="field"><label for="au-until">Until (UTC)</label><input id="au-until" type="datetime-local" name="until" value="{{ q.until }}"></div>
+<div class="field narrow-field"><label for="au-limit">Page size</label><input id="au-limit" type="number" name="limit" min="1" max="200" value="{{ q.page.limit() }}" inputmode="numeric"></div>
+<button>Filter</button>
 </form>
 <div class="panel scroll" role="region" aria-label="Audit entries" tabindex="0">
 <table class="audit-table">

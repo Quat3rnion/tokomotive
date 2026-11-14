@@ -63,12 +63,6 @@
     </form>{% endif %}
   </div>{% endif %}
 
-  <details open><summary>Subscription quota and account health</summary>
-    {% if let Some(s) = p.status %}{% if !s.connected %}<p><span class="tag warn">Disabled</span> - No active subscription sign-in. Saved observations below do not show current access.</p>{% endif %}{% endif %}
-    {% let quota = p.quota %}{% include "quota.html" %}
-    <p class="hint">At most 50 observed accounts. Exhausted accounts and invalid credentials are skipped.</p>
-  </details>
-
   <form method="post" action="/admin/providers/{{ p.name }}" class="stack" aria-label="Edit Provider {{ p.name }}">
     <input type="hidden" name="auth" value="{{ p.auth }}">
     <div class="row">
@@ -84,7 +78,7 @@
       <div class="field grow"><label for="p-{{ p.name }}-secret">AWS secret access key</label><input id="p-{{ p.name }}-secret" type="password" name="aws_secret_key" autocomplete="new-password"></div>
       <div class="field grow"><label for="p-{{ p.name }}-token">AWS session token (optional)</label><input id="p-{{ p.name }}-token" type="password" name="aws_session_token" autocomplete="off"></div>
     </div>
-    <label><input type="checkbox" name="aws_clear_token" value="true"> Clear saved session token</label>
+    <label class="check"><input type="checkbox" name="aws_clear_token" value="true"> Clear saved session token</label>
     <p class="hint">{% if p.aws_saved %}AWS credentials saved. {% endif %}Saved credentials are encrypted and are not shown again. Empty fields keep saved values. The region sets the fixed AWS host.</p>
     {% else if p.auth == "api_key" && p.kind != "cohere" %}
     <div class="row">
@@ -101,6 +95,13 @@
     <div class="form-error" role="alert" tabindex="-1"></div>
     <div><button aria-label="Save Provider {{ p.name }}">Save</button></div>
   </form>
+
+  <details class="health" id="health-{{ p.name }}"{% if p.health_open() %} open{% endif %}>
+    <summary><span class="health-title">Subscription quota and account health</span> <span class="tag {{ p.health_class() }}">{{ p.health_text() }}</span></summary>
+    {% if let Some(s) = p.status %}{% if !s.connected %}<p><span class="tag warn">Disabled</span> - No active subscription sign-in. Saved observations below do not show current access.</p>{% endif %}{% endif %}
+    {% let quota = p.quota %}{% include "quota.html" %}
+    <p class="hint">At most 50 observed accounts. Exhausted accounts and invalid credentials are skipped.</p>
+  </details>
 
   {% if p.kind == "bedrock" %}
   <p class="hint">SigV4 signs Converse requests. Add Models by model ID or inference profile ARN. Model discovery and the connection test are not available for this API format.</p>

@@ -3,57 +3,22 @@
 {% block nav_settings %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Settings</h1>
-<section class="panel" id="observability" aria-labelledby="observability-h">
-<h2 id="observability-h">Traces and body capture</h2>
-<p>OTLP/HTTP JSON export is off by default. Export uses a bounded queue. A full queue drops traces, not requests. Body capture is off by default. Enable it on a Route or Virtual Key. Only Admins can read captured bodies.</p>
-<form method="post" action="/admin/settings/observability" class="stack">
-<label><input type="checkbox" name="enabled"{% if observability.enabled %} checked{% endif %}> Export traces</label>
-<label>Collector endpoint <input name="endpoint" type="url" value="{{ observability.endpoint }}" placeholder="http://collector:4318/v1/traces"></label>
-<label>Collector headers <textarea name="headers" autocomplete="off" placeholder="Blank keeps saved headers. One Header: value per line."></textarea></label>
-<p class="hint">Headers: {% if export_headers_set %}******** (saved, encrypted){% else %}Not set{% endif %}</p>
-<label><input type="checkbox" name="clear_headers"> Clear saved headers</label>
-<label>Service name <input name="service_name" value="{{ observability.service_name }}" required maxlength="256"></label>
-<label>Sample ratio <input name="sample_ratio" type="number" min="0" max="1" step="any" value="{{ observability.sample_ratio }}" required></label>
-<label>Body size cap (bytes) <input name="body_cap" type="number" min="1" max="1048576" value="{{ observability.body_cap }}" required></label>
-<label>Body retention (days) <input name="retention_days" type="number" min="1" max="3650" value="{{ observability.retention_days }}" required></label>
-<p class="hint">Bodies are redacted and encrypted with the Master Key. Redaction cannot remove all personal data. The size cap applies to each body. The purge runs once per minute, up to 500 bodies per pass.</p>
-<div class="form-error" role="alert" tabindex="-1"></div><button>Save observability settings</button>
-</form></section>
-{% if !base.simple %}
-<section class="panel" id="alerts" aria-labelledby="alerts-h">
-<h2 id="alerts-h">Usage alerts and webhooks</h2>
-<p>Budget thresholds are percentages. Each subject sends each threshold once per period. Delivery does not block requests. The URL is encrypted and is not shown again.</p>
-<form method="post" action="/admin/settings/alerts" class="stack">
-<label>Webhook URL <input type="url" name="url" required autocomplete="off" placeholder="https://example.com/webhook"></label>
-<label>Format <select name="format"><option value="generic">Generic JSON</option><option value="discord">Discord</option><option value="slack">Slack</option></select></label>
-<label>Thresholds (%) <input name="thresholds" value="{{ alert_thresholds }}" required></label>
-<label><input type="checkbox" name="enabled" checked> Enabled</label>
-<div class="form-error" role="alert" tabindex="-1"></div><button>Add webhook</button>
-</form>
-{% for hook in webhooks %}
-<h3>{{ hook.host }}</h3><p>Last delivery: {{ hook.last_status }}</p>
-<form method="post" action="/admin/settings/alerts" class="stack">
-<input type="hidden" name="id" value="{{ hook.id }}">
-<label>New webhook URL <input type="url" name="url" autocomplete="off" placeholder="Blank keeps the URL"></label>
-<label>Format <select name="format"><option value="generic"{% if hook.format == "generic" %} selected{% endif %}>Generic JSON</option><option value="discord"{% if hook.format == "discord" %} selected{% endif %}>Discord</option><option value="slack"{% if hook.format == "slack" %} selected{% endif %}>Slack</option></select></label>
-<label>Thresholds (%) <input name="thresholds" value="{{ alert_thresholds }}" required></label>
-<label><input type="checkbox" name="enabled"{% if hook.enabled %} checked{% endif %}> Enabled</label>
-<div class="form-error" role="alert" tabindex="-1"></div><button>Save webhook</button>
-</form>
-<form method="post" action="/admin/settings/alerts/{{ hook.id }}/test"><button class="ghost">Send test</button></form>
-<form method="post" action="/admin/settings/alerts/{{ hook.id }}/delete"><button class="danger">Delete webhook</button></form>
-{% endfor %}
-</section>
-{% endif %}
+<nav class="toc" aria-label="Settings sections">
+  <ul>
+    <li><a href="#mode-h">Mode</a></li>
+    <li><a href="#proxy-h">Proxy address</a></li>
+    <li><a href="#server-h">Server and router</a></li>
+    {% if !base.simple %}<li><a href="#markup-h">Pricing</a></li>{% endif %}
+    <li><a href="#models-dev-h">models.dev Sync</a></li>
+    {% if !base.simple %}<li><a href="#alerts-h">Usage alerts</a></li>{% endif %}
+    <li><a href="#observability-h">Traces and body capture</a></li>
+    <li><a href="#password-h">Change password</a></li>
+    {% if base.owner %}<li><a href="#accounts-h">Admin accounts</a></li>{% endif %}
+    {% if !base.viewer %}<li><a href="#audit-h">Audit log</a></li>{% endif %}
+  </ul>
+</nav>
 
-<section class="panel" aria-labelledby="proxy-h">
-  <h2 id="proxy-h">Proxy address</h2>
-  <p>Clients send requests to this base URL with a Virtual Key:</p>
-  <div class="copy-row"><code class="url">{{ base.proxy_url }}</code><button type="button" class="ghost" data-copy="{{ base.proxy_url }}" aria-label="Copy the Proxy base URL">Copy</button></div>
-  <p class="hint">The address comes from this browser request. Behind a reverse proxy, it uses X-Forwarded-Host and X-Forwarded-Proto.</p>
-</section>
-
-<section class="panel" aria-labelledby="mode-h">
+<section class="panel" id="mode" aria-labelledby="mode-h">
   <h2 id="mode-h">Mode</h2>
   <p>Current mode: <strong>{% if base.simple %}Simple Mode{% else %}Full Mode{% endif %}</strong>.</p>
   {% if base.simple %}
@@ -73,8 +38,62 @@
   {% endif %}
 </section>
 
+<section class="panel" id="proxy" aria-labelledby="proxy-h">
+  <h2 id="proxy-h">Proxy address</h2>
+  <p>Clients send requests to this base URL with a Virtual Key:</p>
+  <div class="copy-row"><code class="url">{{ base.proxy_url }}</code><button type="button" class="ghost" data-copy="{{ base.proxy_url }}" aria-label="Copy the Proxy base URL">Copy</button></div>
+  <p class="hint">The address comes from this browser request. Behind a reverse proxy, it uses X-Forwarded-Host and X-Forwarded-Proto.</p>
+</section>
+
+<section class="panel" id="server" aria-labelledby="server-h">
+<h2 id="server-h">Server and router</h2>
+<p class="muted">Changes apply at once, without a restart. The listen address and the database path are process options.</p>
+<form method="post" action="/admin/settings" class="stack" aria-labelledby="server-h">
+  <fieldset>
+    <legend>Requests</legend>
+    <div class="fields">
+      <div class="field"><label for="s-timeout">Upstream timeout (seconds)</label><input id="s-timeout" type="number" min="1" name="upstream_timeout_secs" value="{{ settings.upstream_timeout_secs }}" required inputmode="numeric" aria-describedby="s-timeout-help"><p class="hint" id="s-timeout-help">The longest time for one request to a Provider, including the response body.</p></div>
+      <div class="field"><label for="s-audio-limit">Audio upload limit (MiB)</label><input id="s-audio-limit" type="number" min="1" max="63" name="audio_upload_limit_mib" value="{{ settings.audio_upload_limit_mib }}" required inputmode="numeric"><p class="hint">Total multipart body size. Default: 25 MiB. Text fields also have a 64 KiB limit.</p></div>
+      <div class="field"><label for="s-file-limit">File upload limit (MiB)</label><input id="s-file-limit" type="number" min="1" max="63" name="file_upload_limit_mib" value="{{ settings.file_upload_limit_mib }}" required inputmode="numeric"><p class="hint">Total multipart body size for /v1/files. Default: 16 MiB.</p></div>
+      {% if !base.simple %}<div class="field"><label for="s-reserve">Reserved output tokens</label><input id="s-reserve" type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required inputmode="numeric" aria-describedby="s-reserve-help"><p class="hint" id="s-reserve-help">For a request with no output maximum, use the models.dev output limit. This value is the fallback for an unmapped Model or a missing limit. It does not cap the model limit. The Reservation counts against the Budget until the Ledger Entry is written.</p></div>{% endif %}
+      <div class="field"><label for="s-days">Session days</label><input id="s-days" type="number" min="1" max="3650" name="session_days" value="{{ settings.session_days }}" required inputmode="numeric" aria-describedby="s-days-help"><p class="hint" id="s-days-help">How long a dashboard login stays valid. Applies to new logins.</p></div>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Router</legend>
+    <div class="fields">
+      <div class="field"><label for="s-quota">Quota exhaustion threshold (%)</label><input id="s-quota" name="quota_exhausted_percent" type="number" min="0" max="100" step="any" value="{{ settings.router.quota_exhausted_percent }}" required><p class="hint">Skip an account at this used percentage until its quota resets. Default: 98%.</p></div>
+      <div class="field"><label for="s-threshold">Failure threshold</label><input id="s-threshold" type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required inputmode="numeric" aria-describedby="s-threshold-help"><p class="hint" id="s-threshold-help">Failures in a row (connection errors, 5xx, or 429 without a known reset) before the Proxy stops using a Provider and model for a cooldown.</p></div>
+      <div class="field"><label for="s-cooldown">Cooldown (seconds)</label><input id="s-cooldown" type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required inputmode="numeric" aria-describedby="s-cooldown-help"><p class="hint" id="s-cooldown-help">After the cooldown, one probe request tests whether the Provider works again.</p></div>
+      <div class="field"><label for="s-attempts">Maximum attempts</label><input id="s-attempts" type="number" min="1" name="max_attempts" value="{{ settings.router.max_attempts }}" required inputmode="numeric" aria-describedby="s-attempts-help"><p class="hint" id="s-attempts-help">The most upstream tries for one request. Each Deployment, Fallback and Provider Key try counts.</p></div>
+      <div class="field"><label for="s-affinity-ttl">Session affinity lifetime (seconds)</label><input id="s-affinity-ttl" type="number" min="1" name="session_affinity_ttl_secs" value="{{ settings.router.session_affinity_ttl_secs }}" required inputmode="numeric" aria-describedby="s-affinity-ttl-help"><p class="hint" id="s-affinity-ttl-help">Remove a session pin after this time without use. Default: 1800 seconds (30 minutes). This is not the dashboard login lifetime.</p></div>
+      <div class="field"><label for="s-affinity-capacity">Session affinity capacity</label><input id="s-affinity-capacity" type="number" min="1" name="session_affinity_capacity" value="{{ settings.router.session_affinity_capacity }}" required inputmode="numeric" aria-describedby="s-affinity-capacity-help"><p class="hint" id="s-affinity-capacity-help">Maximum session pins in this process. When full, remove the least recently used pin. Default: 100000.</p></div>
+    </div>
+  </fieldset>
+  <fieldset aria-describedby="s-cache-help">
+    <legend>Exact response cache</legend>
+    <p class="hint" id="s-cache-help">Enable the cache on each Route. Stored responses use the Master Key. Limits include encryption and metadata. Zero entries or bytes disables storage.</p>
+    <div class="fields">
+      <div class="field"><label for="s-cache-entries">Maximum entries</label><input id="s-cache-entries" name="cache_max_entries" type="number" min="0" value="{{ settings.cache.max_entries }}" required inputmode="numeric"></div>
+      <div class="field"><label for="s-cache-bytes">Maximum total bytes</label><input id="s-cache-bytes" name="cache_max_bytes" type="number" min="0" value="{{ settings.cache.max_bytes }}" required inputmode="numeric"></div>
+      <div class="field"><label for="s-cache-entry-bytes">Maximum entry bytes</label><input id="s-cache-entry-bytes" name="cache_max_entry_bytes" type="number" min="0" value="{{ settings.cache.max_entry_bytes }}" required inputmode="numeric"></div>
+      {% if !base.simple %}<div class="field"><label for="s-cache-price">Hit Price (microdollars per request)</label><input id="s-cache-price" name="cache_hit_price_micros" type="number" min="0" value="{{ settings.cache.hit_price_micros }}" required inputmode="numeric"></div>{% endif %}
+    </div>
+  </fieldset>
+  {% if base.owner %}<fieldset>
+    <legend>Metrics token</legend>
+    <div class="row">
+      <div class="field wide"><label for="s-token">New metrics token</label><input id="s-token" type="password" name="metrics_token" autocomplete="new-password" spellcheck="false" aria-describedby="s-token-help"><p class="hint" id="s-token-help">{% if metrics_set %}A token is set. /metrics needs it as a bearer token. Leave the field blank to keep it.{% else %}No token is set, so /metrics is public. Enter a token to protect it.{% endif %}</p></div>
+      {% if metrics_set %}<label class="check"><input type="checkbox" name="clear_metrics_token" id="s-clear" data-clears="s-token"> Remove the token</label>{% endif %}
+    </div>
+  </fieldset>{% endif %}
+  <div class="form-error" role="alert" tabindex="-1"></div>
+  <button>Save settings</button>
+</form>
+</section>
+
 {% if !base.simple %}
-<section class="panel" aria-labelledby="markup-h">
+<section class="panel" id="pricing" aria-labelledby="markup-h">
   <h2 id="markup-h">Pricing</h2>
   <p>Default Markup: {{ markup }}% <a class="pad" href="/admin/models#markup">Change on Models</a></p>
 </section>
@@ -85,7 +104,7 @@
   <p>Last accepted data check: {{ models_dev_updated }}. The bundled snapshot works offline.{% if !base.simple %} Sync updates unpinned Cost Cards, not old Ledger Entries.{% endif %}</p>
   {% if !models_dev_error.is_empty() %}<p class="bad" role="alert">{{ models_dev_error }}. Old data is kept.</p>{% endif %}
   <form method="post" action="/admin/settings/models-dev" class="stack">
-    <div class="field"><label for="md-url">Model data URL</label><input id="md-url" type="url" name="url" value="{{ models_dev_url }}" required spellcheck="false"></div>
+    <div class="field wide"><label for="md-url">Model data URL</label><input id="md-url" type="url" name="url" value="{{ models_dev_url }}" required spellcheck="false"></div>
     <label class="check"><input type="checkbox" name="enabled" {% if models_dev_enabled %}checked{% endif %}> Sync model data once a day</label>
     <div class="form-error" role="alert" tabindex="-1"></div><button>Save model data settings</button>
   </form>
@@ -95,92 +114,110 @@
   </form>
 </section>
 
-<section class="panel" aria-labelledby="server-h">
-<h2 id="server-h">Server and router</h2>
-<p class="muted">Changes apply at once, without a restart. The listen address and the database path are process options.</p>
-<form method="post" action="/admin/settings" class="stack" aria-labelledby="server-h">
-  <fieldset>
-    <legend>Requests</legend>
-    <div class="row">
-      <div class="field"><label for="s-timeout">Upstream timeout (seconds)</label><input id="s-timeout" type="number" min="1" name="upstream_timeout_secs" value="{{ settings.upstream_timeout_secs }}" required inputmode="numeric" aria-describedby="s-timeout-help"><p class="hint" id="s-timeout-help">The longest time for one request to a Provider, including the response body.</p></div>
-      <div class="field"><label for="s-audio-limit">Audio upload limit (MiB)</label><input id="s-audio-limit" type="number" min="1" max="63" name="audio_upload_limit_mib" value="{{ settings.audio_upload_limit_mib }}" required inputmode="numeric"><p class="hint">Total multipart body size. Default: 25 MiB. Text fields also have a 64 KiB limit.</p></div>
-      <div class="field"><label for="s-file-limit">File upload limit (MiB)</label><input id="s-file-limit" type="number" min="1" max="63" name="file_upload_limit_mib" value="{{ settings.file_upload_limit_mib }}" required inputmode="numeric"><p class="hint">Total multipart body size for /v1/files. Default: 16 MiB.</p></div>
-      {% if !base.simple %}<div class="field"><label for="s-reserve">Reserved output tokens</label><input id="s-reserve" type="number" min="0" name="reserve_output_tokens" value="{{ settings.reserve_output_tokens }}" required inputmode="numeric" aria-describedby="s-reserve-help"><p class="hint" id="s-reserve-help">For a request with no output maximum, use the models.dev output limit. This value is the fallback for an unmapped Model or a missing limit. It does not cap the model limit. The Reservation counts against the Budget until the Ledger Entry is written.</p></div>{% endif %}
-      <div class="field"><label for="s-days">Session days</label><input id="s-days" type="number" min="1" max="3650" name="session_days" value="{{ settings.session_days }}" required inputmode="numeric" aria-describedby="s-days-help"><p class="hint" id="s-days-help">How long a dashboard login stays valid. Applies to new logins.</p></div>
-    </div>
-  </fieldset>
-  <fieldset>
-    <legend>Router</legend>
-    <div class="row">
-      <div class="field"><label for="s-quota">Quota exhaustion threshold (%)</label><input id="s-quota" name="quota_exhausted_percent" type="number" min="0" max="100" step="any" value="{{ settings.router.quota_exhausted_percent }}" required><p class="hint">Skip an account at this used percentage until its quota resets. Default: 98%.</p></div>
-      <div class="field"><label for="s-threshold">Failure threshold</label><input id="s-threshold" type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required inputmode="numeric" aria-describedby="s-threshold-help"><p class="hint" id="s-threshold-help">Failures in a row (connection errors, 5xx, or 429 without a known reset) before the Proxy stops using a Provider and model for a cooldown.</p></div>
-      <div class="field"><label for="s-cooldown">Cooldown (seconds)</label><input id="s-cooldown" type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required inputmode="numeric" aria-describedby="s-cooldown-help"><p class="hint" id="s-cooldown-help">After the cooldown, one probe request tests whether the Provider works again.</p></div>
-      <div class="field"><label for="s-attempts">Maximum attempts</label><input id="s-attempts" type="number" min="1" name="max_attempts" value="{{ settings.router.max_attempts }}" required inputmode="numeric" aria-describedby="s-attempts-help"><p class="hint" id="s-attempts-help">The most upstream tries for one request. Each Deployment, Fallback and Provider Key try counts.</p></div>
-      <div class="field"><label for="s-affinity-ttl">Session affinity lifetime (seconds)</label><input id="s-affinity-ttl" type="number" min="1" name="session_affinity_ttl_secs" value="{{ settings.router.session_affinity_ttl_secs }}" required inputmode="numeric" aria-describedby="s-affinity-ttl-help"><p class="hint" id="s-affinity-ttl-help">Remove a session pin after this time without use. Default: 1800 seconds (30 minutes). This is not the dashboard login lifetime.</p></div>
-      <div class="field"><label for="s-affinity-capacity">Session affinity capacity</label><input id="s-affinity-capacity" type="number" min="1" name="session_affinity_capacity" value="{{ settings.router.session_affinity_capacity }}" required inputmode="numeric" aria-describedby="s-affinity-capacity-help"><p class="hint" id="s-affinity-capacity-help">Maximum session pins in this process. When full, remove the least recently used pin. Default: 100000.</p></div>
-    </div>
-  </fieldset>
-  <fieldset aria-describedby="s-token-help">
-    <legend>Exact response cache</legend>
-    <p class="hint">Enable the cache on each Route. Stored responses use the Master Key. Limits include encryption and metadata. Zero entries or bytes disables storage.</p>
-    <div class="row">
-      <label>Maximum entries <input name="cache_max_entries" type="number" min="0" value="{{ settings.cache.max_entries }}" required></label>
-      <label>Maximum total bytes <input name="cache_max_bytes" type="number" min="0" value="{{ settings.cache.max_bytes }}" required></label>
-      <label>Maximum entry bytes <input name="cache_max_entry_bytes" type="number" min="0" value="{{ settings.cache.max_entry_bytes }}" required></label>
-      {% if !base.simple %}<label>Hit Price (microdollars per request) <input name="cache_hit_price_micros" type="number" min="0" value="{{ settings.cache.hit_price_micros }}" required></label>{% endif %}
-    </div>
-  </fieldset>
-  {% if base.owner %}<fieldset aria-describedby="s-token-help">
-    <legend>Metrics token</legend>
-    <p class="hint" id="s-token-help">{% if metrics_set %}A token is set. /metrics needs it as a bearer token. Leave the field blank to keep it.{% else %}No token is set, so /metrics is public. Enter a token to protect it.{% endif %}</p>
-    <div class="row">
-      <div class="field grow"><label for="s-token">New metrics token</label><input id="s-token" type="password" name="metrics_token" autocomplete="new-password" spellcheck="false"></div>
-      {% if metrics_set %}<label class="check"><input type="checkbox" name="clear_metrics_token" id="s-clear" data-clears="s-token"> Remove the token</label>{% endif %}
-    </div>
-  </fieldset>{% endif %}
-  <div class="form-error" role="alert" tabindex="-1"></div>
-  <button>Save settings</button>
+{% if !base.simple %}
+<section class="panel" id="alerts" aria-labelledby="alerts-h">
+<h2 id="alerts-h">Usage alerts and webhooks</h2>
+<p class="muted">Budget thresholds are percentages. Each subject sends each threshold once per period. Delivery does not block requests. The URL is encrypted and is not shown again.</p>
+{% for hook in webhooks %}
+<div class="item" aria-labelledby="hook-{{ hook.id }}-h">
+<div class="item-head"><h3 id="hook-{{ hook.id }}-h">{{ hook.host }}</h3><span class="muted">Last delivery: {{ hook.last_status }}</span></div>
+<form method="post" action="/admin/settings/alerts" class="stack" aria-label="Edit webhook {{ hook.host }}">
+<input type="hidden" name="id" value="{{ hook.id }}">
+<div class="fields">
+<div class="field wide"><label for="hook-{{ hook.id }}-url">New webhook URL</label><input id="hook-{{ hook.id }}-url" type="url" name="url" autocomplete="off" placeholder="Blank keeps the URL"></div>
+<div class="field"><label for="hook-{{ hook.id }}-format">Format</label><select id="hook-{{ hook.id }}-format" name="format"><option value="generic"{% if hook.format == "generic" %} selected{% endif %}>Generic JSON</option><option value="discord"{% if hook.format == "discord" %} selected{% endif %}>Discord</option><option value="slack"{% if hook.format == "slack" %} selected{% endif %}>Slack</option></select></div>
+<div class="field"><label for="hook-{{ hook.id }}-thresholds">Thresholds (%)</label><input id="hook-{{ hook.id }}-thresholds" name="thresholds" value="{{ alert_thresholds }}" required><p class="hint">Comma-separated, for example 50,80,100.</p></div>
+</div>
+<label class="check"><input type="checkbox" name="enabled"{% if hook.enabled %} checked{% endif %}> Enabled</label>
+<div class="form-error" role="alert" tabindex="-1"></div>
+<div class="row"><button>Save webhook</button></div>
+</form>
+<div class="row">
+<form method="post" action="/admin/settings/alerts/{{ hook.id }}/test" class="inline"><button class="ghost" aria-label="Send a test to {{ hook.host }}">Send test</button></form>
+<form method="post" action="/admin/settings/alerts/{{ hook.id }}/delete" class="inline"><button class="danger" aria-label="Delete webhook {{ hook.host }}">Delete webhook</button></form>
+</div>
+</div>
+{% endfor %}
+<h3>Add a webhook</h3>
+<form method="post" action="/admin/settings/alerts" class="stack" aria-label="Add a webhook">
+<div class="fields">
+<div class="field wide"><label for="alert-url">Webhook URL</label><input id="alert-url" type="url" name="url" required autocomplete="off" placeholder="https://example.com/webhook"></div>
+<div class="field"><label for="alert-format">Format</label><select id="alert-format" name="format"><option value="generic">Generic JSON</option><option value="discord">Discord</option><option value="slack">Slack</option></select></div>
+<div class="field"><label for="alert-thresholds">Thresholds (%)</label><input id="alert-thresholds" name="thresholds" value="{{ alert_thresholds }}" required aria-describedby="alert-thresholds-help"><p class="hint" id="alert-thresholds-help">Comma-separated, for example 50,80,100.</p></div>
+</div>
+<label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
+<div class="form-error" role="alert" tabindex="-1"></div><button>Add webhook</button>
 </form>
 </section>
+{% endif %}
 
-<section class="panel" aria-labelledby="password-h">
+<section class="panel" id="observability" aria-labelledby="observability-h">
+<h2 id="observability-h">Traces and body capture</h2>
+<p class="muted">OTLP/HTTP JSON export is off by default. Export uses a bounded queue. A full queue drops traces, not requests. Body capture is off by default. Enable it on a Route or Virtual Key. Only Admins can read captured bodies.</p>
+<form method="post" action="/admin/settings/observability" class="stack" aria-labelledby="observability-h">
+<fieldset>
+<legend>Trace export</legend>
+<label class="check"><input type="checkbox" name="enabled"{% if observability.enabled %} checked{% endif %}> Export traces</label>
+<div class="fields">
+<div class="field wide"><label for="o-endpoint">Collector endpoint</label><input id="o-endpoint" name="endpoint" type="url" value="{{ observability.endpoint }}" placeholder="http://collector:4318/v1/traces" spellcheck="false"></div>
+<div class="field"><label for="o-service">Service name</label><input id="o-service" name="service_name" value="{{ observability.service_name }}" required maxlength="256"></div>
+<div class="field"><label for="o-ratio">Sample ratio</label><input id="o-ratio" name="sample_ratio" type="number" min="0" max="1" step="any" value="{{ observability.sample_ratio }}" required aria-describedby="o-ratio-help"><p class="hint" id="o-ratio-help">From 0 to 1. 1 exports all traces.</p></div>
+<div class="field wide"><label for="o-headers">Collector headers</label><textarea id="o-headers" name="headers" rows="2" autocomplete="off" spellcheck="false" placeholder="Blank keeps saved headers. One Header: value per line." aria-describedby="o-headers-help"></textarea><p class="hint" id="o-headers-help">Headers: {% if export_headers_set %}******** (saved, encrypted){% else %}Not set{% endif %}</p></div>
+</div>
+<label class="check"><input type="checkbox" name="clear_headers"> Clear saved headers</label>
+</fieldset>
+<fieldset aria-describedby="o-body-help">
+<legend>Body capture</legend>
+<div class="fields">
+<div class="field"><label for="o-cap">Body size cap (bytes)</label><input id="o-cap" name="body_cap" type="number" min="1" max="1048576" value="{{ observability.body_cap }}" required inputmode="numeric"></div>
+<div class="field"><label for="o-days">Body retention (days)</label><input id="o-days" name="retention_days" type="number" min="1" max="3650" value="{{ observability.retention_days }}" required inputmode="numeric"></div>
+</div>
+<p class="hint" id="o-body-help">Bodies are redacted and encrypted with the Master Key. Redaction cannot remove all personal data. The size cap applies to each body. The purge runs once per minute, up to 500 bodies per pass.</p>
+</fieldset>
+<div class="form-error" role="alert" tabindex="-1"></div><button>Save observability settings</button>
+</form></section>
+
+<section class="panel" id="password" aria-labelledby="password-h">
 <h2 id="password-h">Change password</h2>
 <p class="muted">Your sessions end when you change your password. Other accounts stay logged in. The environment password resets the admin account at the next start.</p>
-<form method="post" action="/admin/settings/password" class="row" aria-labelledby="password-h">
-  <div class="field"><label for="s-current">Current password</label><input id="s-current" type="password" name="current_password" autocomplete="current-password" required></div>
-  <div class="field"><label for="s-new">New password</label><input id="s-new" type="password" name="password" minlength="8" autocomplete="new-password" required aria-describedby="s-new-help"><p class="hint" id="s-new-help">At least 8 characters.</p></div>
-  <button>Change password</button>
+<form method="post" action="/admin/settings/password" class="stack" aria-labelledby="password-h">
+  <div class="fields">
+    <div class="field"><label for="s-current">Current password</label><input id="s-current" type="password" name="current_password" autocomplete="current-password" required></div>
+    <div class="field"><label for="s-new">New password</label><input id="s-new" type="password" name="password" minlength="8" autocomplete="new-password" required aria-describedby="s-new-help"><p class="hint" id="s-new-help">At least 8 characters.</p></div>
+  </div>
   <div class="form-error" role="alert" tabindex="-1"></div>
+  <button>Change password</button>
 </form>
 </section>
+{% if base.owner %}
+<section class="panel" id="accounts" aria-labelledby="accounts-h">
+<h2 id="accounts-h">Admin accounts</h2>
+<p class="muted">Owner: all settings and accounts. Admin: configuration without accounts or metrics credentials. Viewer: read-only, with own password and logout.</p>
+{% for account in accounts %}
+<div class="item">
+<form method="post" action="/admin/settings/accounts/{{ account.id }}" class="row" aria-label="Edit account {{ account.username }}">
+<div class="field"><label for="acc-{{ account.id }}-name">Username</label><input id="acc-{{ account.id }}-name" name="username" value="{{ account.username }}" maxlength="64" required autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="acc-{{ account.id }}-role">Role</label><select id="acc-{{ account.id }}-role" name="role"><option value="owner" {% if account.role == "owner" %}selected{% endif %}>Owner</option><option value="admin" {% if account.role == "admin" %}selected{% endif %}>Admin</option><option value="viewer" {% if account.role == "viewer" %}selected{% endif %}>Viewer</option></select></div>
+<div class="field"><label for="acc-{{ account.id }}-pw">New password</label><input id="acc-{{ account.id }}-pw" name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Leave blank to keep"></div>
+<button aria-label="Save account {{ account.username }}">Save</button>
+</form>
+<form method="post" action="/admin/settings/accounts/{{ account.id }}/delete" class="inline" data-confirm="Delete account {{ account.username }}? Its sessions will end."><button class="danger" aria-label="Delete account {{ account.username }}">Delete account</button></form>
+</div>
+{% endfor %}
+<h3>Add an admin account</h3>
+<form method="post" action="/admin/settings/accounts" class="row" aria-label="Add an admin account">
+<div class="field"><label for="acc-new-name">Username</label><input id="acc-new-name" name="username" maxlength="64" required autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="acc-new-role">Role</label><select id="acc-new-role" name="role"><option value="viewer">Viewer</option><option value="admin">Admin</option><option value="owner">Owner</option></select></div>
+<div class="field"><label for="acc-new-pw">Password</label><input id="acc-new-pw" name="password" type="password" minlength="8" required autocomplete="new-password" aria-describedby="acc-new-pw-help"><p class="hint" id="acc-new-pw-help">At least 8 characters.</p></div>
+<button>Add account</button>
+</form>
+</section>
+{% endif %}
 {% if !base.viewer %}
 <section class="panel" id="audit" aria-labelledby="audit-h">
 <h2 id="audit-h">Audit log</h2>
 <p><a href="/admin/audit">Open the audit log</a>. Secrets and URLs are not recorded.</p>
-{% if base.owner %}<form method="post" action="/admin/settings/audit" class="row"><label>Retention (days) <input type="number" name="days" min="1" max="36500" value="{{ audit_retention_days }}" required></label><button>Save retention</button></form>{% endif %}
-</section>
-{% endif %}
-{% if base.owner %}
-<section class="panel" id="accounts" aria-labelledby="accounts-h">
-<h2 id="accounts-h">Admin accounts</h2>
-<p>Owner: all settings and accounts. Admin: configuration without accounts or metrics credentials. Viewer: read-only, with own password and logout.</p>
-{% for account in accounts %}
-<div class="panel">
-<form method="post" action="/admin/settings/accounts/{{ account.id }}" class="row">
-<label>Username <input name="username" value="{{ account.username }}" maxlength="64" required autocomplete="off"></label>
-<label>Role <select name="role"><option value="owner" {% if account.role == "owner" %}selected{% endif %}>Owner</option><option value="admin" {% if account.role == "admin" %}selected{% endif %}>Admin</option><option value="viewer" {% if account.role == "viewer" %}selected{% endif %}>Viewer</option></select></label>
-<label>New password <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Leave blank to keep"></label>
-<button>Save</button>
-</form>
-<form method="post" action="/admin/settings/accounts/{{ account.id }}/delete" data-confirm="Delete account {{ account.username }}? Its sessions will end."><button class="danger">Delete account</button></form>
-</div>
-{% endfor %}
-<h3>Add an admin account</h3>
-<form method="post" action="/admin/settings/accounts" class="row">
-<label>Username <input name="username" maxlength="64" required autocomplete="off"></label>
-<label>Role <select name="role"><option value="viewer">Viewer</option><option value="admin">Admin</option><option value="owner">Owner</option></select></label>
-<label>Password <input name="password" type="password" minlength="8" required autocomplete="new-password"></label><button>Add account</button>
-</form>
+{% if base.owner %}<form method="post" action="/admin/settings/audit" class="row" aria-labelledby="audit-h"><div class="field"><label for="audit-days">Retention (days)</label><input id="audit-days" type="number" name="days" min="1" max="36500" value="{{ audit_retention_days }}" required inputmode="numeric" aria-describedby="audit-days-help"><p class="hint" id="audit-days-help">Older entries are deleted. Default: 365 days.</p></div><button>Save retention</button></form>{% endif %}
 </section>
 {% endif %}
 {% endblock %}

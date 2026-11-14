@@ -29,7 +29,21 @@ async function capture() {
       assert(response && response.ok(), `GET ${route}: ${response && response.status()}`);
       assert.equal(new URL(page.url()).pathname, new URL(base + route).pathname, `redirect from ${route}`);
       await page.evaluate(() => document.fonts.ready);
+      // Full-page captures: the sticky header must not show in the middle.
+      await page.addStyleTag({ content: 'header{position:static!important}' });
     };
+    // Before a capture: no focus ring, no sideways table scroll, page at the
+    // top, and no open picker list unless the recipe wants one.
+    const settle = keepLists => page.evaluate(keep => {
+      if (!keep) {
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        document.querySelectorAll('.cb-pop').forEach(pop => { pop.hidden = true; });
+        document.querySelectorAll('[role=combobox][aria-expanded=true]').forEach(input => input.setAttribute('aria-expanded', 'false'));
+      }
+      document.querySelectorAll('.scroll').forEach(box => { box.scrollLeft = 0; });
+      window.scrollTo(0, 0);
+    }, keepLists);
+    const keepLists = new Set(['add-provider']);
     await go('/admin/login');
     await page.fill('input[name=password]', process.env.SHOTS_PASSWORD || 'demo-password-2026');
     await Promise.all([page.waitForURL(base + '/admin'), page.press('input[name=password]', 'Enter')]);
@@ -106,6 +120,7 @@ async function capture() {
       assert(recipes[entry.recipe], `Missing recipe ${entry.recipe}`);
       await go(entry.page);
       const [top, bottom] = await recipes[entry.recipe](entry);
+      await settle(keepLists.has(entry.recipe));
       await page.screenshot({ path: path.join(out, entry.image), fullPage: true,
         clip: { x: 0, y: top, width, height: Math.min(bottom, await full()) - top } });
       captured.add(entry.image);
