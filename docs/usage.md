@@ -465,7 +465,9 @@ Routes in your dashboard, or a `provider/model` name.
 | `/admin/users`                          | GET, POST | Users page. POST adds a User.                                    |
 | `/admin/users/{id}`                     | POST     | Changes the Team, the Budget and the status of a User.            |
 | `/admin/teams`                          | GET, POST | Teams page. POST adds a Team.                                    |
+| `/admin/teams/{id}`                     | POST     | Changes the Team name, Budget and period.                        |
 | `/admin/keys`                           | GET, POST | Keys page. POST creates a Virtual Key.                           |
+| `/admin/keys/{id}`                      | POST     | Changes Provider Access, limits, Budget, period and expiry.       |
 | `/admin/keys/{id}/limits`               | POST     | Changes the Rate Limits of a Virtual Key.                        |
 | `/admin/keys/{id}/revoke`               | POST     | Revokes a Virtual Key.                                            |
 | `/admin/models`                         | GET, POST | Models page. POST adds a Model.                                  |
@@ -475,6 +477,9 @@ Routes in your dashboard, or a `provider/model` name.
 | `/admin/models/{id}/team-price`         | POST     | Sets or removes a Team override.                                  |
 | `/setup` | GET, POST | Sets the first admin password and the mode; refuses later setup requests. |
 | `/admin/providers` | GET, POST | Lists or creates Providers. |
+| `/admin/settings/alerts` | POST | Adds or changes an encrypted webhook and shared thresholds. |
+| `/admin/settings/alerts/{id}/test` | POST | Queues a test event for an enabled webhook. |
+| `/admin/settings/alerts/{id}/delete` | POST | Deletes a webhook. |
 | `/admin/providers/{name}` | POST | Changes the name, kind and base URL of a Provider. |
 | `/admin/providers/{name}/delete` | POST | Deletes a Provider. |
 | `/admin/providers/{name}/keys` | POST | Adds a Provider Key or an `env:NAME` reference. |
@@ -799,8 +804,8 @@ The **Users** page lists the Users. Each row has these fields:
 - **Team**: the Team of the User, or `(no team)`.
 - **Budget (USD)**: the limit on the total Price for the User. Leave it empty
   for no Budget.
-- **monthly**: if selected, the Budget starts again on the first day of each
-  month (UTC). If not, the Budget is for all time.
+- **Budget period (UTC)**: none (lifetime), daily, weekly (Monday), or monthly.
+  The default is none. The page shows spend / Budget and the next reset time.
 - **disabled**: if selected, the Proxy rejects all Virtual Keys of the User with
   HTTP 401.
 - **Spend this period** and **Used**: the Price so far in the current period and
@@ -1164,9 +1169,17 @@ output tokens is above the limit:
 
 ## Budgets and Reservations
 
-A Budget is a limit on the total Price for a User. The period is all time, or the
-current calendar month (UTC) if **monthly** is selected for the User. A User with
-no Budget has no limit and no Reservations.
+A Budget limits the total Price for a User, Team or Virtual Key. Set it on the
+**Users**, **Teams** or **Virtual Keys** page. Leave the amount blank for no limit.
+A request must fit every applicable Budget, including the Team of the User.
+
+Select **none** for a lifetime Budget (the default), **daily**, **weekly** or
+**monthly**. All boundaries use UTC. A daily period starts at 00:00. A weekly
+period starts on Monday at 00:00. A monthly period starts on the first day of
+the month at 00:00. The page shows spend this period / Budget and the reset time.
+The Proxy sums the frozen Price amounts from indexed Ledger Entries in the
+current period. A reset does not change or delete Ledger Entries. Team spend
+uses the Team recorded on each Entry, not the current Team of an old User.
 
 Before the Proxy sends a request to the Provider, it makes a Reservation for the
 worst-case Price of the request:
@@ -1183,7 +1196,7 @@ worst-case Price of the request:
 The Proxy rejects the request with HTTP 402 in these cases:
 
 - The Price so far in the period is equal to or more than the Budget.
-- The Price so far, plus the open Reservations of the User, plus the new
+- The Price so far, plus the open Reservations for the subject and period, plus the new
   Reservation, is more than the Budget.
 
 The Proxy releases the Reservation after it writes the Ledger Entry.
@@ -1198,6 +1211,42 @@ rejects the request.
 The Reservation is an estimate. The real Price of a request can be more, so a
 Budget can be exceeded by a small amount. Reservations are in memory. Run one
 Proxy process for each database.
+
+### Usage alerts
+
+On **Settings**, add a webhook URL and select **Generic JSON**, **Discord** or
+**Slack**. Select **Enabled** to send events. Set the comma-separated Budget
+thresholds, for example `50,80,100` (the default). Thresholds must be from 1 to
+100 percent. All webhooks use the same thresholds. Each User, Team and Virtual
+Key sends each threshold once per period, after committed spend reaches it.
+The database keeps this record across restarts. A large request can cross more
+than one threshold. Lifetime Budgets do not reset their alerts.
+
+The Proxy also sends `model_price_change` events for models.dev price alerts.
+The internal `alerts::emit` API can send Provider health events. Generic JSON
+has `kind`, `subject`, `message` and `details` fields. Discord uses `content`;
+Slack uses `text`. Budget details include the threshold, period, start, reset
+time, spend and Budget in micro-dollars.
+
+The URL is encrypted with the Master Key, like a Provider Key. The page shows
+only its host. Leave the new URL blank to keep it. Use **Send test**, then
+reload Settings to see the last delivery status. Disabled webhooks do not send
+test events. Keep the Master Key backup with the database backup.
+
+Delivery runs in the background. It does not delay or fail a client request.
+Each attempt has a 10-second timeout. Connection failures, HTTP 429 and HTTP
+5xx get at most two retries. Redirects are not followed. Other HTTP failures
+are not retried. Failed events are not replayed after the retries or a restart.
+Use trusted endpoints: the Operator's URL can access the Proxy host's network.
+Simple Mode hides Budgets and alerts and does not send money alerts.
+
+### Virtual Key expiry
+
+Set **Expires at (UTC)** when you add or edit a Virtual Key. Leave it blank for
+no expiry. The date-time field always uses UTC, not browser local time.
+At or after that time, both API formats return HTTP 401 with the message
+`Virtual Key expired`. The Keys page shows the expiry and an `expired` badge.
+Expiry also applies in Simple Mode. It does not stop a request already admitted.
 
 ## Subscription Providers
 
@@ -1432,7 +1481,7 @@ For `/v1/messages`, the body also has the top-level field `"type": "error"`.
 | 401         | `authentication_error` | `missing API key`                                               | No `Authorization: Bearer` header and no `x-api-key` header.   |
 | 401         | `authentication_error` | `invalid API key`                                               | The key is unknown or revoked, or the User is disabled.        |
 | 403         | `permission_error`     | `this API key may not use this model`                           | The key has an allowed-Models list and the Model is not in it. |
-| 402         | `budget_exceeded`      | `the budget for this user does not cover this request`          | The Budget check failed. See "Budgets and Reservations".       |
+| 402         | `budget_exceeded`      | `a Virtual Key, User or Team budget does not cover this request` | The Budget check failed. See "Budgets and Reservations".       |
 | 400         | `invalid_request_error` | Details of the unsupported request.                          | Translation could not convert the request, or the Chat output limits conflict. |
 | 404         | `not_found_error`      | `model not found`                                               | `GET /v1/models/{id}` names a Model or Route that the key cannot see. |
 | 429         | `rate_limit_error`     | The key or User request or token limit was exceeded.           | A Rate Limit check failed. The response has `Retry-After`.     |

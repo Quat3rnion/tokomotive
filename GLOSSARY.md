@@ -78,7 +78,7 @@
 
 **Estimated Entry** - A Ledger Entry whose token counts are partly estimated, because the Provider did not report full usage.
 
-**Budget** - A limit on the total Price for a User, optionally reset each month. When the User reaches it, the Proxy rejects new requests.
+**Budget** - A limit on the total Price for a User, Team or Virtual Key. It is for a lifetime, day, week (Monday) or month in UTC. Every applicable Budget must permit a request.
 
 **Reservation** - The worst-case Price of a request in progress. It counts against the Budget until the Ledger Entry for the request is written.
 

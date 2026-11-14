@@ -23,7 +23,7 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-fn now_s() -> i64 {
+pub fn now_s() -> i64 {
     now_ms() / 1000
 }
 
@@ -364,11 +364,12 @@ pub async fn create_user_with_limits(
     monthly: bool,
     limits: Limits,
 ) -> Result<i64> {
-    Ok(sqlx::query("INSERT INTO users(name, team_id, budget_micros, budget_monthly, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, ?, ?, ?, ?)")
+    Ok(sqlx::query("INSERT INTO users(name, team_id, budget_micros, budget_monthly, budget_period, created_at, rpm_limit, tpm_limit) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(name)
         .bind(team)
         .bind(budget)
         .bind(monthly)
+        .bind(if monthly {"monthly"}else{"none"})
         .bind(now_s())
         .bind(limits.rpm)
         .bind(limits.tpm)
@@ -385,10 +386,11 @@ pub async fn update_user(
     monthly: bool,
     disabled: bool,
 ) -> Result<()> {
-    sqlx::query("UPDATE users SET team_id = ?, budget_micros = ?, budget_monthly = ?, disabled = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET team_id = ?, budget_micros = ?, budget_monthly = ?, budget_period = ?, disabled = ? WHERE id = ?")
         .bind(team)
         .bind(budget)
         .bind(monthly)
+        .bind(if monthly {"monthly"}else{"none"})
         .bind(disabled)
         .bind(id)
         .execute(db)
@@ -405,10 +407,11 @@ pub async fn update_user_with_limits(
     disabled: bool,
     limits: Limits,
 ) -> Result<()> {
-    sqlx::query("UPDATE users SET team_id = ?, budget_micros = ?, budget_monthly = ?, disabled = ?, rpm_limit = ?, tpm_limit = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET team_id = ?, budget_micros = ?, budget_monthly = ?, budget_period = ?, disabled = ?, rpm_limit = ?, tpm_limit = ? WHERE id = ?")
         .bind(team)
         .bind(budget)
         .bind(monthly)
+        .bind(if monthly {"monthly"}else{"none"})
         .bind(disabled)
         .bind(limits.rpm)
         .bind(limits.tpm)
@@ -494,6 +497,7 @@ pub struct KeyAuth {
     pub allowed_providers: Vec<String>,
     pub revoked: bool,
     pub user_disabled: bool,
+    pub expires_at: Option<i64>,
     pub budget_micros: Option<i64>,
     pub budget_monthly: bool,
     pub key_limits: Limits,
@@ -502,7 +506,7 @@ pub struct KeyAuth {
 
 pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
     let row = sqlx::query(
-        "SELECT k.id, k.user_id, k.allowed_models, k.allowed_providers, k.revoked_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
+        "SELECT k.id, k.user_id, k.allowed_models, k.allowed_providers, k.revoked_at, k.expires_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
             k.rpm_limit AS key_rpm, k.tpm_limit AS key_tpm, u.rpm_limit AS user_rpm, u.tpm_limit AS user_tpm
          FROM virtual_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?",
     )
@@ -528,6 +532,7 @@ pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
             .unwrap_or_default(),
         revoked: r.get::<Option<i64>, _>("revoked_at").is_some(),
         user_disabled: r.get::<i64, _>("disabled") != 0,
+        expires_at: r.get("expires_at"),
         budget_micros: r.get("budget_micros"),
         budget_monthly: r.get::<i64, _>("budget_monthly") != 0,
         key_limits: Limits {
@@ -556,7 +561,7 @@ pub fn budget_period_start(monthly: bool) -> i64 {
 /// Total Price for a User since `since_s`.
 pub async fn spend_since(db: &Db, user_id: i64, since_s: i64) -> Result<i64> {
     Ok(sqlx::query_scalar(
-        "SELECT IFNULL(SUM(price_micros), 0) FROM rollup_hourly WHERE user_id = ? AND hour >= ?",
+        "SELECT IFNULL(SUM(price_micros), 0) FROM ledger WHERE user_id = ? AND ts_ms >= ? * 1000",
     )
     .bind(user_id)
     .bind(since_s)
@@ -989,8 +994,8 @@ pub async fn list_users(db: &Db) -> Result<Vec<UserRow>> {
     let month = budget_period_start(true);
     Ok(sqlx::query_as(
         "SELECT u.id, u.name, u.team_id, t.name AS team, u.budget_micros, u.budget_monthly, u.disabled, u.rpm_limit, u.tpm_limit,
-            (SELECT IFNULL(SUM(price_micros), 0) FROM rollup_hourly r WHERE r.user_id = u.id
-               AND r.hour >= CASE WHEN u.budget_monthly THEN ? ELSE 0 END) AS period_spend,
+            (SELECT IFNULL(SUM(price_micros), 0) FROM ledger r WHERE r.user_id = u.id
+               AND r.ts_ms >= 1000 * CASE u.budget_period WHEN 'monthly' THEN ? WHEN 'daily' THEN strftime('%s','now','start of day') WHEN 'weekly' THEN strftime('%s','now','start of day','-' || ((strftime('%w','now')+6)%7) || ' days') ELSE 0 END) AS period_spend,
             (SELECT COUNT(*) FROM virtual_keys k WHERE k.user_id = u.id AND k.revoked_at IS NULL) AS keys
          FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name LIMIT 200",
     )
@@ -1242,9 +1247,9 @@ pub async fn card_history(db: &Db, model_id: i64) -> Result<Vec<CardHistoryRow>>
 pub async fn users_page(db: &Db, q: &PageQuery, team: Option<i64>) -> Result<Page<UserRow>> {
     let mut b = sqlx::QueryBuilder::new(
         "SELECT u.id, u.name, u.team_id, t.name AS team, u.budget_micros, u.budget_monthly, u.disabled, u.rpm_limit, u.tpm_limit,
-        (SELECT IFNULL(SUM(price_micros),0) FROM rollup_hourly r WHERE r.user_id=u.id AND r.hour >= CASE WHEN u.budget_monthly THEN ");
+        (SELECT IFNULL(SUM(price_micros),0) FROM ledger r WHERE r.user_id=u.id AND r.ts_ms >= 1000 * CASE u.budget_period WHEN 'monthly' THEN ");
     b.push_bind(budget_period_start(true)).push(
-        " ELSE 0 END) AS period_spend,
+        " WHEN 'daily' THEN strftime('%s','now','start of day') WHEN 'weekly' THEN strftime('%s','now','start of day','-' || ((strftime('%w','now')+6)%7) || ' days') ELSE 0 END) AS period_spend,
         (SELECT COUNT(*) FROM virtual_keys k WHERE k.user_id=u.id AND k.revoked_at IS NULL) AS keys
         FROM users u LEFT JOIN teams t ON t.id=u.team_id WHERE instr(lower(u.name),lower(",
     );

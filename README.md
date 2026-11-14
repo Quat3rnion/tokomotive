@@ -54,8 +54,11 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Keeps every change to a card as a Card Version. A Ledger Entry does not change
   when you change a card.
 - Records Models without cards as Unpriced Entries. You can price them later.
-- Rejects requests with HTTP 402 when the Budget of the User does not cover the
-  worst-case Price of the request (the Reservation).
+- Applies lifetime, daily, weekly and monthly UTC Budgets to Users, Teams and
+  Virtual Keys. Every Budget must cover the worst-case Price (the Reservation).
+- Sends Budget threshold and models.dev price alerts to encrypted webhook
+  URLs in generic JSON, Discord or Slack format. Delivery runs in the background.
+- Supports optional Virtual Key expiry with HTTP 401 after the expiry time.
 - Applies RPM and TPM Rate Limits to each Virtual Key and each User. A request
   over a limit gets HTTP 429 and a `Retry-After` header.
 

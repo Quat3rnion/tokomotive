@@ -559,7 +559,33 @@ and skips the override.
 | `name`           | string           | none    | Required. The name of the User.                                                                      |
 | `team`           | string           | none    | The `name` of a `[[teams]]` item. Without it, the User has no Team.                                  |
 | `budget_usd`     | float            | none    | The Budget in USD. Without it, the User has no Budget.                                               |
-| `budget_monthly` | boolean          | `false` | If `true`, the Budget starts again on the first day of each month (UTC). If `false`, it is for all time. |
+| `budget_monthly` | boolean          | `false` | Legacy seed option. If `true`, selects a monthly Budget. If `false`, selects a lifetime Budget. Use the dashboard for other periods. |
+
+### Budget periods, alerts and key expiry
+
+Use the dashboard for these settings. No file change is needed. On **Users**,
+**Teams** and **Virtual Keys**, set the Budget amount and period. Periods are
+none (lifetime, the default), daily, weekly (Monday), and monthly. All periods
+start at 00:00 UTC. Every applicable Budget must permit the Reservation.
+Spend comes from the frozen Ledger amounts for the current period. Existing
+monthly User Budgets stay monthly when the database is upgraded.
+
+On **Settings**, add webhook URLs, select Generic JSON, Discord or Slack, and
+enable each webhook. The shared thresholds default to `50,80,100` percent.
+The Proxy stores URLs encrypted with the Master Key. It shows only the host,
+not the URL path or token. A blank URL in an edit keeps the saved secret.
+**Send test** queues a test event. Reload the page for the last delivery status.
+Delivery uses a 10-second timeout, no redirects and at most three attempts.
+Only connection failures, HTTP 429 and HTTP 5xx are retried.
+
+Budget threshold events are sent once per subject, threshold and period.
+models.dev price alerts also send webhook events. Delivery failures do not
+fail client requests. Failed events are not replayed after the retries or a
+restart. Use trusted webhook endpoints with the required network access.
+
+On **Virtual Keys**, set the optional expiry date and time in UTC. A blank
+value means no expiry. Expired keys return HTTP 401 in both API formats.
+Simple Mode hides money controls and money alerts but still applies key expiry.
 | `rpm_limit`      | integer          | none    | Requests per minute across all Virtual Keys of the User. |
 | `tpm_limit`      | integer          | none    | Completed tokens per minute across all Virtual Keys of the User. |
 | `key_rpm_limit`  | integer          | none    | Requests per minute for each new Virtual Key in `keys`. |

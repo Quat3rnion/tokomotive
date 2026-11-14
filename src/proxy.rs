@@ -238,6 +238,16 @@ async fn authenticate(
         )));
     };
     match db::lookup_key(&st.db, &key).await {
+        Ok(Some(a))
+            if !a.revoked && !a.user_disabled && a.expires_at.is_some_and(|t| t <= db::now_s()) =>
+        {
+            Err(Box::new(formatted_error(
+                StatusCode::UNAUTHORIZED,
+                "authentication_error",
+                "Virtual Key expired",
+                anthropic,
+            )))
+        }
         Ok(Some(a)) if !a.revoked && !a.user_disabled => Ok(a),
         Ok(_) => Err(Box::new(formatted_error(
             StatusCode::UNAUTHORIZED,
@@ -490,12 +500,25 @@ impl Ctx {
         };
         crate::metrics::record(&self.auth.user_name, &entry);
         let db = self.st.db.clone();
+        let alerts_st = self.st.clone();
+        let alerts_auth = self.auth;
         let reservation = self.reservation;
         let fut = async move {
-            if let Err(e) = db::insert_entry(&db, &entry).await {
-                tracing::error!(error = %e, "ledger write failed");
-            }
+            let guard = alerts_st.budget_check.lock().await;
+            let written = db::insert_entry(&db, &entry).await;
             drop(reservation);
+            drop(guard);
+            match written {
+                Err(e) => tracing::error!(error = %e, "ledger write failed"),
+                Ok(_) => {
+                    if let Err(e) =
+                        crate::alerts::check_budgets(&alerts_st, &alerts_auth, entry.ts_ms / 1000)
+                            .await
+                    {
+                        tracing::warn!(error=%e,"budget alert check failed");
+                    }
+                }
+            }
         };
         self.st.spawn_tracked(fut);
     }
@@ -654,24 +677,7 @@ pub async fn handle(
     };
 
     let mut reservation = None;
-    if !simple && let Some(budget) = auth.budget_micros {
-        let spent = match db::spend_since(
-            &st.db,
-            auth.user_id,
-            db::budget_period_start(auth.budget_monthly),
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "budget check failed");
-                return error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "api_error",
-                    "internal error",
-                );
-            }
-        };
+    if !simple {
         let mut worst = 0;
         for c in &candidates {
             let pricing_model = if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex {
@@ -716,13 +722,21 @@ pub async fn handle(
                 reserve_output,
             ));
         }
-        match st.reserve(auth.user_id, budget, spent, worst) {
-            Some(r) => reservation = Some(r),
-            None => {
+        match crate::budgets::reserve(&st, &auth, worst, ts_ms / 1000).await {
+            Ok(Some(r)) => reservation = Some(r),
+            Ok(None) => {
                 return error(
                     StatusCode::PAYMENT_REQUIRED,
                     "budget_exceeded",
-                    "the budget for this user does not cover this request",
+                    "a Virtual Key, User or Team budget does not cover this request",
+                );
+            }
+            Err(e) => {
+                tracing::error!(error=%e,"budget check failed");
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "api_error",
+                    "internal error",
                 );
             }
         }

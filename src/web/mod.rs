@@ -37,6 +37,14 @@ macro_rules! tryr {
         }
     };
 }
+macro_rules! tryform {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return form_error(e),
+        }
+    };
+}
 
 mod models_dev;
 mod oauth;
@@ -613,6 +621,39 @@ fn render<T: Template>(t: T) -> Response {
     }
 }
 
+fn period_field(value: Option<&str>, monthly: bool) -> anyhow::Result<String> {
+    let value = value
+        .filter(|v| !v.is_empty())
+        .unwrap_or(if monthly { "monthly" } else { "none" });
+    crate::budgets::Period::parse(value)?;
+    Ok(value.to_owned())
+}
+fn parse_expiry(value: &str) -> anyhow::Result<Option<i64>> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    let date = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .map_err(|_| anyhow::anyhow!("Enter the expiry date and time in UTC."))?;
+    Ok(Some(date.and_utc().timestamp()))
+}
+async fn set_budget(
+    st: &AppState,
+    table: &str,
+    id: i64,
+    budget: Option<i64>,
+    period: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(&format!(
+        "UPDATE {table} SET budget_micros=?, budget_period=? WHERE id=?"
+    ))
+    .bind(budget)
+    .bind(period)
+    .bind(id)
+    .execute(&st.db)
+    .await?;
+    Ok(())
+}
 /// A Budget in USD: blank for no Budget, else 0 or more.
 fn opt_budget(s: &str) -> Result<Option<i64>, Response> {
     match opt_usd(s)? {
@@ -1030,6 +1071,10 @@ async fn users(
 ) -> Response {
     let users = tryr!(db::users_page(&st.db, &q.page, q.team).await);
     let mut page = UsersPage::build(Base::new(&st), &users.items);
+    for user in &mut page.users {
+        user.budget_view =
+            tryr!(views::BudgetView::load(&st, crate::budgets::Subject::User(user.id)).await);
+    }
     page.team_choices = tryr!(db::small_choices(&st.db, "teams").await);
     page.pager = Pager::keyset(&uri.to_string(), &q.page, &users);
     render(page)
@@ -1045,12 +1090,17 @@ struct UserForm {
     #[serde(default)]
     budget_usd: String,
     monthly: Option<String>,
+    budget_period: Option<String>,
     disabled: Option<String>,
     #[serde(flatten)]
     limits: LimitsForm,
 }
 
 async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserForm>) -> Response {
+    let period = tryform!(period_field(
+        f.budget_period.as_deref(),
+        f.monthly.is_some()
+    ));
     let name = f.name.trim();
     if name.is_empty() {
         return bad("A User needs a name.");
@@ -1075,14 +1125,19 @@ async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserFor
         Ok(id) => id,
         Err(r) => return r,
     };
-    if let Err(e) =
-        db::create_user_with_limits(&st.db, name, team, budget, f.monthly.is_some(), limits).await
-    {
-        if is_unique_violation(&e) {
-            return bad(format!("A User named {name} already exists."));
-        }
-        return internal(e);
-    }
+    let id =
+        match db::create_user_with_limits(&st.db, name, team, budget, period == "monthly", limits)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                if is_unique_violation(&e) {
+                    return bad(format!("A User named {name} already exists."));
+                }
+                return internal(e);
+            }
+        };
+    tryr!(set_budget(&st, "users", id, budget, &period).await);
     saved("/admin/users", &format!("User {name} added."))
 }
 
@@ -1093,6 +1148,10 @@ async fn update_user(
     Form(f): Form<UserForm>,
 ) -> Response {
     let simple = st.settings().mode == "simple";
+    let period = tryform!(period_field(
+        f.budget_period.as_deref(),
+        f.monthly.is_some()
+    ));
     // Simple Mode hides Budgets and Rate Limits; keep the stored values.
     let money = if simple {
         None
@@ -1146,10 +1205,11 @@ async fn update_user(
     if let Some((budget, limits)) = money {
         tryr!(
             sqlx::query(
-                "UPDATE users SET budget_micros=?, budget_monthly=?, rpm_limit=?, tpm_limit=? WHERE id=?"
+                "UPDATE users SET budget_micros=?, budget_monthly=?, budget_period=?, rpm_limit=?, tpm_limit=? WHERE id=?"
             )
             .bind(budget)
-            .bind(f.monthly.is_some())
+            .bind(period=="monthly")
+            .bind(&period)
             .bind(limits.rpm)
             .bind(limits.tpm)
             .bind(id)
@@ -1176,6 +1236,10 @@ async fn teams(
 ) -> Response {
     let teams = tryr!(db::teams_page(&st.db, &q).await);
     let mut page = TeamsPage::build(Base::new(&st), &teams.items, &st.catalog());
+    for team in &mut page.teams {
+        team.budget_view =
+            tryr!(views::BudgetView::load(&st, crate::budgets::Subject::Team(team.id)).await);
+    }
     page.pager = Pager::keyset(&uri.to_string(), &q, &teams);
     render(page)
 }
@@ -1184,18 +1248,32 @@ async fn teams(
 struct NameForm {
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    budget_usd: String,
+    budget_period: Option<String>,
 }
 
 async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameForm>) -> Response {
+    let period = tryform!(period_field(f.budget_period.as_deref(), false));
+    let budget = match opt_budget(&f.budget_usd) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let name = f.name.trim();
     if name.is_empty() {
         return bad("A Team needs a name.");
     }
-    if let Err(e) = db::create_team(&st.db, name).await {
-        if is_unique_violation(&e) {
-            return bad(format!("A Team named {name} already exists."));
+    let id = match db::create_team(&st.db, name).await {
+        Ok(id) => id,
+        Err(e) => {
+            if is_unique_violation(&e) {
+                return bad(format!("A Team named {name} already exists."));
+            }
+            return internal(e);
         }
-        return internal(e);
+    };
+    if st.settings().mode != "simple" {
+        tryr!(set_budget(&st, "teams", id, budget, &period).await);
     }
     saved("/admin/teams", &format!("Team {name} added."))
 }
@@ -1206,6 +1284,11 @@ async fn rename_team(
     Path(id): Path<i64>,
     Form(f): Form<NameForm>,
 ) -> Response {
+    let period = tryform!(period_field(f.budget_period.as_deref(), false));
+    let budget = match opt_budget(&f.budget_usd) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let name = f.name.trim();
     if name.is_empty() {
         return bad("A Team needs a name.");
@@ -1223,6 +1306,9 @@ async fn rename_team(
         return internal(e);
     }
     // Overrides show the Team name from the catalog.
+    if st.settings().mode != "simple" {
+        tryr!(set_budget(&st, "teams", id, budget, &period).await);
+    }
     tryr!(st.reload_catalog().await);
     saved(
         &format!("/admin/teams#t{id}"),
@@ -1307,6 +1393,21 @@ async fn keys_page(st: &AppState, new_key: Option<String>, q: ListQ, uri: &str) 
         },
     );
     page.pager = pager;
+    for key in page.keys.iter_mut().chain(page.revoked.iter_mut()) {
+        key.budget_view =
+            tryr!(views::BudgetView::load(st, crate::budgets::Subject::Key(key.id)).await);
+        let expires: Option<i64> = tryr!(
+            sqlx::query_scalar("SELECT expires_at FROM virtual_keys WHERE id=?")
+                .bind(key.id)
+                .fetch_one(&st.db)
+                .await
+        );
+        key.expired = expires.is_some_and(|t| t <= db::now_s());
+        key.expires = expires
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|t| t.format("%Y-%m-%dT%H:%M").to_string())
+            .unwrap_or_default();
+    }
     page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
     page.revoked_pager = revoked_pager;
     page.pager.label = "Active key pages".into();
@@ -1383,6 +1484,25 @@ async fn create_key(
         return r;
     }
     let fields: std::collections::HashMap<_, _> = pairs.into_iter().collect();
+    let period = tryform!(period_field(
+        fields.get("budget_period").map(String::as_str),
+        false
+    ));
+    let budget = match opt_budget(
+        fields
+            .get("budget_usd")
+            .map(String::as_str)
+            .unwrap_or_default(),
+    ) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let expires = tryform!(parse_expiry(
+        fields
+            .get("expires_at")
+            .map(String::as_str)
+            .unwrap_or_default()
+    ));
     let user_id = match chosen_id(
         &st,
         "users",
@@ -1425,6 +1545,16 @@ async fn create_key(
     let (id, key) =
         tryr!(db::create_key_with_limits(&st.db, f.user_id, f.label.trim(), allowed, limits).await);
     tryr!(db::update_key_providers(&st.db, id, &access).await);
+    tryr!(
+        sqlx::query("UPDATE virtual_keys SET expires_at=? WHERE id=?")
+            .bind(expires)
+            .bind(id)
+            .execute(&st.db)
+            .await
+    );
+    if st.settings().mode != "simple" {
+        tryr!(set_budget(&st, "virtual_keys", id, budget, &period).await);
+    }
     keys_page(&st, Some(key), ListQ::default(), "/admin/keys").await
 }
 
@@ -1465,6 +1595,12 @@ async fn update_key(
         rpm_limit: field("rpm_limit"),
         tpm_limit: field("tpm_limit"),
     };
+    let expires = tryform!(parse_expiry(&field("expires_at")));
+    let period = tryform!(period_field(Some(&field("budget_period")), false));
+    let budget = match opt_budget(&field("budget_usd")) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     // Simple Mode hides Rate Limits; keep the stored values.
     if st.settings().mode != "simple" {
         let limits = match limits.parse() {
@@ -1472,7 +1608,15 @@ async fn update_key(
             Err(r) => return r,
         };
         tryr!(db::update_key_limits(&st.db, id, limits).await);
+        tryr!(set_budget(&st, "virtual_keys", id, budget, &period).await);
     }
+    tryr!(
+        sqlx::query("UPDATE virtual_keys SET expires_at=? WHERE id=?")
+            .bind(expires)
+            .bind(id)
+            .execute(&st.db)
+            .await
+    );
     tryr!(db::update_key_providers(&st.db, id, &access).await);
     saved(&format!("/admin/keys#k{id}"), "Virtual Key saved.")
 }

@@ -61,17 +61,19 @@ impl Provider {
 /// A Budget reservation. It is released when dropped.
 pub struct Reservation {
     st: AppState,
-    user_id: i64,
+    subjects: Vec<(crate::budgets::Subject, i64)>,
     amount: i64,
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
         let mut r = self.st.reservations.lock().expect("reservations");
-        if let Some(v) = r.get_mut(&self.user_id) {
-            *v -= self.amount;
-            if *v <= 0 {
-                r.remove(&self.user_id);
+        for subject in &self.subjects {
+            if let Some(v) = r.get_mut(subject) {
+                *v -= self.amount;
+                if *v <= 0 {
+                    r.remove(subject);
+                }
             }
         }
     }
@@ -88,12 +90,14 @@ pub struct Inner {
     pub secret_key: crate::settings::SecretKey,
     pub oauth: crate::oauth::OAuthManager,
     pub settings_write: tokio::sync::Mutex<()>,
+    /// Serialize spend reads with Ledger commits and Reservation release.
+    pub(crate) budget_check: tokio::sync::Mutex<()>,
     router_table: RwLock<Arc<RouterTable>>,
     pub(crate) circuits: Mutex<HashMap<(String, String), crate::routing::Circuit>>,
     pub(crate) route_next: Mutex<HashMap<String, usize>>,
     pub(crate) affinity: Mutex<crate::affinity::AffinityTable>,
     pub metrics: Option<PrometheusHandle>,
-    reservations: Mutex<HashMap<i64, i64>>,
+    reservations: Mutex<HashMap<(crate::budgets::Subject, i64), i64>>,
     catalog: RwLock<Arc<Catalog>>,
     /// The model picker sources. Register more with `model_sources.register`.
     pub model_sources: crate::model_search::Registry,
@@ -141,6 +145,7 @@ impl AppState {
             secret_key,
             oauth,
             settings_write: tokio::sync::Mutex::new(()),
+            budget_check: tokio::sync::Mutex::new(()),
             router_table: RwLock::new(Arc::new(router_table)),
             circuits: Mutex::new(HashMap::new()),
             route_next: Mutex::new(HashMap::new()),
@@ -217,14 +222,15 @@ impl AppState {
         amount: i64,
     ) -> Option<Reservation> {
         let mut r = self.reservations.lock().expect("reservations");
-        let open = r.get(&user_id).copied().unwrap_or(0);
+        let subject = (crate::budgets::Subject::User(user_id), 0);
+        let open = r.get(&subject).copied().unwrap_or(0);
         if spent >= budget || spent + open + amount > budget {
             return None;
         }
-        *r.entry(user_id).or_insert(0) += amount;
+        *r.entry(subject).or_insert(0) += amount;
         Some(Reservation {
             st: self.clone(),
-            user_id,
+            subjects: vec![subject],
             amount,
         })
     }
@@ -233,9 +239,39 @@ impl AppState {
         self.reservations
             .lock()
             .expect("reservations")
-            .get(&user_id)
-            .copied()
-            .unwrap_or(0)
+            .iter()
+            .filter(|((s, _), _)| *s == crate::budgets::Subject::User(user_id))
+            .map(|(_, amount)| amount)
+            .sum()
+    }
+
+    pub fn reserve_budgets(
+        &self,
+        budgets: &[crate::budgets::Budget],
+        amount: i64,
+    ) -> Option<Reservation> {
+        let mut r = self.reservations.lock().expect("reservations");
+        let amount = amount.max(0);
+        for b in budgets {
+            let open = r.get(&(b.subject, b.start)).copied().unwrap_or(0);
+            if let Some(limit) = b.limit
+                && (b.spent >= limit || b.spent.saturating_add(open).saturating_add(amount) > limit)
+            {
+                return None;
+            }
+        }
+        let subjects = budgets
+            .iter()
+            .map(|b| (b.subject, b.start))
+            .collect::<Vec<_>>();
+        for subject in &subjects {
+            *r.entry(*subject).or_default() += amount;
+        }
+        Some(Reservation {
+            st: self.clone(),
+            subjects,
+            amount,
+        })
     }
 
     /// Spawn a background write. `flush` waits for all of them.

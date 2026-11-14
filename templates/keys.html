@@ -38,7 +38,9 @@
       <legend>Provider Access</legend>
       {% call controls::provider_access(provider_choices, "", "key-access-help") %}
     </fieldset>
+    <label>Expires at (UTC) <input type="datetime-local" name="expires_at"></label>
     {% if !base.simple %}
+    {% let budget = crate::web::views::BudgetView::default() %}{% include "budget_fields.html" %}
     <fieldset aria-describedby="key-limits-help">
       <legend>Rate Limits</legend>
       <div class="row">
@@ -62,11 +64,11 @@
   <tbody>
   {% for k in keys %}
   <tr id="k{{ k.id }}">
-    <th scope="row"><code>{{ k.prefix }}…</code>{% if !k.label.is_empty() %}<span class="sub">{{ k.label }}</span>{% endif %}</th>
+    <th scope="row"><code>{{ k.prefix }}…</code>{% if !k.label.is_empty() %}<span class="sub">{{ k.label }}</span>{% endif %}{% if !k.expires.is_empty() %}<span class="sub">Expires {{ k.expires }} UTC</span>{% endif %}{% if k.expired %}<span class="tag bad">expired</span>{% endif %}</th>
     <td data-label="User"><span class="trunc" title="{{ k.user }}">{{ k.user }}</span></td>
     <td data-label="Models">{{ k.models }}</td>
     <td data-label="Provider Access">{{ k.access }}</td>
-    {% if !base.simple %}<td data-label="Rate Limits">{{ k.limits }}</td>{% endif %}
+    {% if !base.simple %}<td data-label="Rate Limits">{{ k.limits }}<p>{{ k.budget_view.summary }} spent this period / budget ({{ k.budget_view.period }}). Resets at {{ k.budget_view.resets }}</p></td>{% endif %}
     <td data-label="Created (UTC)"><time datetime="{{ k.created.iso }}">{{ k.created.short }}</time></td>
     <td data-label="Last used (UTC)">{% if k.last_used.iso.is_empty() %}{{ k.last_used.short }}{% else %}<time datetime="{{ k.last_used.iso }}">{{ k.last_used.short }}</time>{% endif %}</td>
     <td><div class="actions">
@@ -81,7 +83,9 @@
           <legend>Provider Access for {{ k.prefix }}…</legend>
           {% call controls::provider_access(provider_choices, k.provider_names.as_str(), "") %}
         </fieldset>
+        <label>Expires at (UTC) <input type="datetime-local" name="expires_at" value="{{ k.expires }}"></label>
         {% if !base.simple %}
+        {% let budget = k.budget_view %}{% include "budget_fields.html" %}
         <fieldset>
           <legend>Rate Limits for {{ k.prefix }}…</legend>
           <div class="row">

@@ -334,6 +334,12 @@ pub async fn refresh(st: &crate::state::AppState) -> Result<()> {
             Fetch::Data(bytes, etag) => import(&st.db, &bytes, etag.as_deref()).await?,
         }
         st.reload_catalog().await?;
+        let alerts_st = st.clone();
+        st.spawn_tracked(async move {
+            if let Err(e) = crate::alerts::models_dev(&alerts_st).await {
+                tracing::warn!(error=%e,"price alert check failed");
+            }
+        });
         Ok(())
     }
     .await;

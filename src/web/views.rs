@@ -675,20 +675,45 @@ impl OverviewPage {
 
 // ------------------------------------------------------------------- users
 
+#[derive(Default)]
+pub struct BudgetView {
+    pub amount: String,
+    pub period: String,
+    pub summary: String,
+    pub resets: String,
+}
+impl BudgetView {
+    pub async fn load(
+        st: &crate::state::AppState,
+        subject: crate::budgets::Subject,
+    ) -> anyhow::Result<Self> {
+        let b = crate::budgets::current(&st.db, subject, crate::db::now_s()).await?;
+        Ok(Self {
+            amount: b.limit.map(crate::pricing::fmt_rate).unwrap_or_default(),
+            period: b.period,
+            summary: format!(
+                "{} / {}",
+                money(b.spent),
+                b.limit.map(money).unwrap_or_else(|| "No Budget".into())
+            ),
+            resets: b
+                .end
+                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+                .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                .unwrap_or_else(|| "Never (lifetime)".into()),
+        })
+    }
+}
+
 pub struct UserView {
+    pub budget_view: BudgetView,
     pub team_name: String,
     pub id: i64,
     pub name: String,
     pub team: String,
     /// The Budget for the form, for example "12.5".
     pub budget: String,
-    /// The Budget for display, for example "$12.50" or "None".
-    pub budget_text: String,
-    pub monthly: bool,
     pub disabled: bool,
-    pub spend: Money,
-    /// The Budget period of the spend: "this month" or "all time".
-    pub period: &'static str,
     pub used: String,
     pub over: bool,
     pub keys: i64,
@@ -711,6 +736,7 @@ impl UsersPage {
         let users = users
             .iter()
             .map(|u| UserView {
+                budget_view: Default::default(),
                 team_name: u.team.clone().unwrap_or_default(),
                 id: u.id,
                 name: u.name.clone(),
@@ -719,15 +745,7 @@ impl UsersPage {
                     .budget_micros
                     .map(crate::pricing::fmt_rate)
                     .unwrap_or_default(),
-                budget_text: u.budget_micros.map(money).unwrap_or_else(|| "None".into()),
-                monthly: u.budget_monthly,
                 disabled: u.disabled,
-                spend: Money::total(u.period_spend),
-                period: if u.budget_monthly {
-                    "this month"
-                } else {
-                    "all time"
-                },
                 used: match u.budget_micros {
                     Some(b) if b > 0 => format!("{:.1}%", u.period_spend as f64 * 100.0 / b as f64),
                     _ => "-".into(),
@@ -757,6 +775,7 @@ impl UsersPage {
 }
 
 pub struct TeamView {
+    pub budget_view: BudgetView,
     pub id: i64,
     pub name: String,
     pub user_count: i64,
@@ -779,6 +798,7 @@ impl TeamsPage {
             teams: teams
                 .iter()
                 .map(|t| TeamView {
+                    budget_view: Default::default(),
                     id: t.id,
                     name: t.name.clone(),
                     user_count: t.users,
@@ -796,6 +816,9 @@ impl TeamsPage {
 // -------------------------------------------------------------------- keys
 
 pub struct KeyView {
+    pub budget_view: BudgetView,
+    pub expires: String,
+    pub expired: bool,
     pub provider_names: String,
     pub id: i64,
     pub user: String,
@@ -849,6 +872,9 @@ impl KeysPage {
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
             let view = KeyView {
+                budget_view: Default::default(),
+                expires: String::new(),
+                expired: false,
                 provider_names: selected.join(", "),
                 id: k.id,
                 user: k.user.clone(),

@@ -27,11 +27,61 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/settings", get(settings_page).post(save_settings))
         .route("/admin/settings/password", post(change_password))
         .route("/admin/settings/mode", post(save_mode))
+        .route("/admin/settings/alerts", post(save_alert))
+        .route("/admin/settings/alerts/{id}/test", post(test_alert))
+        .route("/admin/settings/alerts/{id}/delete", post(delete_alert))
+}
+
+#[derive(Deserialize)]
+struct AlertForm {
+    id: Option<i64>,
+    #[serde(default)]
+    url: String,
+    format: String,
+    enabled: Option<String>,
+    thresholds: Option<String>,
+}
+async fn save_alert(_: Admin, State(st): State<AppState>, Form(f): Form<AlertForm>) -> Response {
+    let _guard = st.settings_write.lock().await;
+    if let Some(value) = &f.thresholds
+        && let Err(e) = crate::alerts::parse_thresholds(value)
+    {
+        return form_error(e);
+    }
+    if let Err(e) = crate::alerts::save(&st, f.id, &f.url, &f.format, f.enabled.is_some()).await {
+        return form_error(e);
+    }
+    if let Some(value) = f.thresholds {
+        tryr!(store::put(&st.db, "alert_thresholds", &value).await);
+    }
+    saved("/admin/settings#alerts", "Alert settings saved.")
+}
+async fn test_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
+    crate::alerts::emit_to(
+        &st,
+        crate::alerts::Event::new("test", "operator", "Tokomotive test alert"),
+        Some(id),
+    );
+    saved(
+        "/admin/settings#alerts",
+        "Test alert queued. Reload to see the delivery status.",
+    )
+}
+async fn delete_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Response {
+    tryr!(
+        sqlx::query("DELETE FROM alert_webhooks WHERE id=?")
+            .bind(id)
+            .execute(&st.db)
+            .await
+    );
+    saved("/admin/settings#alerts", "Webhook deleted.")
 }
 
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    webhooks: Vec<crate::alerts::Webhook>,
+    alert_thresholds: String,
     models_dev_url: String,
     models_dev_enabled: bool,
     models_dev_error: String,
@@ -44,6 +94,8 @@ struct SettingsPage {
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
     render(SettingsPage {
+        webhooks: tryr!(crate::alerts::list(&st.db).await),
+        alert_thresholds: tryr!(crate::alerts::thresholds(&st.db).await),
         models_dev_url: tryr!(store::value(&st.db, "models_dev_url").await).unwrap_or_default(),
         models_dev_enabled: tryr!(store::value(&st.db, "models_dev_enabled").await).as_deref()
             != Some("false"),

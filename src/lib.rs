@@ -1,6 +1,8 @@
 //! LLM router and proxy with optional per-model Cost, Price and Profit accounting per User.
 
 mod affinity;
+pub mod alerts;
+pub mod budgets;
 pub mod catalog;
 pub mod config;
 pub mod db;
