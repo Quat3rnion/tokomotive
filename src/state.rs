@@ -90,6 +90,8 @@ pub struct Inner {
     pub metrics: Option<PrometheusHandle>,
     reservations: Mutex<HashMap<i64, i64>>,
     catalog: RwLock<Arc<Catalog>>,
+    /// The model picker sources. Register more with `model_sources.register`.
+    pub model_sources: crate::model_search::Registry,
     pending: AtomicUsize,
     idle: Notify,
 }
@@ -139,6 +141,7 @@ impl AppState {
             metrics,
             reservations: Mutex::new(HashMap::new()),
             catalog: RwLock::new(Arc::new(catalog)),
+            model_sources: crate::model_search::Registry::with_builtin(),
             pending: AtomicUsize::new(0),
             idle: Notify::new(),
         })))

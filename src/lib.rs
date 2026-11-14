@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod config;
 pub mod db;
 pub mod metrics;
+pub mod model_search;
 pub mod oauth;
 pub mod pagination;
 pub mod presets;
