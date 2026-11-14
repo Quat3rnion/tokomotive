@@ -641,7 +641,7 @@ async fn claude_exchange_encrypts_tokens_and_refresh_is_single_flight() {
         }
     }))).await.unwrap()
     });
-    let dir = tempfile::tempdir_in("/arboretum").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let db = db::connect(&format!("sqlite://{}/db", dir.path().display()))
         .await
         .unwrap();

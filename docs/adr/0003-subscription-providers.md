@@ -4,7 +4,7 @@ Status: accepted by the owner on 2026-11-13.
 
 The owner wants ChatGPT token sharing, an optional Codex login for plan usage,
 and Claude Pro/Max OAuth. All three are always available. No feature flag is
-required. The implementation ports the flows from homelab-harness.
+required. The implementation ports the flows from an earlier private project of the owner.
 
 ChatGPT token sharing uses `auth.openai.com`, the scope
 `chatgpt.tokens.use.direct`, and the resource `https://api.openai.com/v1`.
