@@ -810,7 +810,24 @@ pub async fn handle(
         .find(|c| !provider_allowed(&auth, &c.provider))
         .map(|c| c.provider.name.clone());
     candidates.retain(|c| provider_allowed(&auth, &c.provider));
-    let session = st.session_order(
+    let quota_schedule = match crate::quota::Schedule::load(&st.db).await {
+        Ok(schedule) => schedule,
+        Err(e) => {
+            tracing::error!(error=%e,"account scheduling lookup failed");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+                "account scheduling unavailable",
+            );
+        }
+    };
+    quota_schedule.order_deployments(
+        &table,
+        &mut candidates,
+        chrono::Utc::now().timestamp(),
+        settings.router.quota_exhausted_percent,
+    );
+    let mut session = st.session_order(
         &table,
         requested_model.as_deref(),
         auth.user_id,
@@ -935,6 +952,8 @@ pub async fn handle(
     let mut direction = None;
     let mut upstream_endpoint = endpoint;
     let mut previous_route = None;
+    let mut skipped_accounts = false;
+    let mut retry_at: Option<i64> = None;
     'deployments: for candidate in &candidates {
         if ctx.attempts as usize >= table.settings.max_attempts {
             break;
@@ -1109,11 +1128,29 @@ pub async fn handle(
         {
             path = "/v1/messages?beta=true".into();
         }
-        let order: Vec<Option<usize>> = match provider.key_order() {
-            o if o.is_empty() => vec![None],
-            o => o.into_iter().map(Some).collect(),
-        };
+        let mut order = quota_schedule.key_order(provider, chrono::Utc::now().timestamp());
+        if let Some(session) = &session {
+            session.order_keys(provider, &mut order);
+        }
         for idx in order {
+            if let Some(skip) = quota_schedule.skip(
+                provider,
+                idx,
+                chrono::Utc::now().timestamp(),
+                st.settings().router.quota_exhausted_percent,
+                table.settings.cooldown_secs,
+            ) {
+                metrics::counter!("tokomotive_account_skips_total", "reason" => skip.reason)
+                    .increment(1);
+                skipped_accounts = true;
+                if let Some(session) = &mut session {
+                    session.unavailable(provider, idx);
+                }
+                if let Some(t) = skip.until {
+                    retry_at = Some(retry_at.map_or(t, |old| old.min(t)));
+                }
+                continue;
+            }
             if ctx.attempts as usize >= table.settings.max_attempts {
                 break 'deployments;
             }
@@ -1133,7 +1170,10 @@ pub async fn handle(
             let flow = crate::oauth::Flow::from_auth(provider.auth);
             let oauth_token = if let Some(flow) = flow {
                 match st.oauth.token(&provider.name, flow, None).await {
-                    Ok(token) => Some(token),
+                    Ok(token) => {
+                        crate::quota::emit_health_events(&st).await;
+                        Some(token)
+                    }
                     Err(_) => {
                         permit.record(false);
                         upstream = None;
@@ -1192,7 +1232,7 @@ pub async fn handle(
                 }
             };
             let mut result = send(req).send().await;
-            crate::quota::observe(&st.db, provider, idx, &result).await;
+            crate::quota::observe(&st, provider, idx, &result).await;
             if let Some(flow) = flow
                 && result
                     .as_ref()
@@ -1201,6 +1241,7 @@ pub async fn handle(
             {
                 match st.oauth.token(&provider.name, flow, Some(key)).await {
                     Ok(token) => {
+                        crate::quota::emit_health_events(&st).await;
                         ctx.attempts += 1;
                         metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
                         let Ok(base) = st
@@ -1238,7 +1279,7 @@ pub async fn handle(
                             break;
                         };
                         result = send(req).send().await;
-                        crate::quota::observe(&st.db, provider, idx, &result).await;
+                        crate::quota::observe(&st, provider, idx, &result).await;
                         if result
                             .as_ref()
                             .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
@@ -1254,15 +1295,26 @@ pub async fn handle(
             }
             match result {
                 Ok(r) => {
-                    let healthy = !retryable(r.status())
-                        && !(flow.is_some() && r.status() == StatusCode::UNAUTHORIZED);
-                    permit.record(healthy);
+                    let credentials_invalid =
+                        matches!(r.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+                    let rate_limited = r.status() == StatusCode::TOO_MANY_REQUESTS;
+                    let known_reset = rate_limited
+                        && crate::quota::retry_at(r.headers(), chrono::Utc::now().timestamp())
+                            .is_some();
+                    let healthy = !retryable(r.status()) && !credentials_invalid;
+                    permit.record(healthy || credentials_invalid || known_reset);
+                    if (credentials_invalid || rate_limited)
+                        && let Some(session) = &mut session
+                    {
+                        session.unavailable(provider, idx);
+                    }
                     upstream = Some(r);
                     if healthy {
                         if upstream.as_ref().is_some_and(|r| r.status().is_success())
                             && let Some(session) = &session
                         {
-                            ctx.session_affinity = Some(st.pin_session(&table, session, candidate));
+                            ctx.session_affinity =
+                                Some(st.pin_session(&table, session, candidate, idx));
                         }
                         break 'deployments;
                     }
@@ -1279,6 +1331,23 @@ pub async fn handle(
         previous_route = Some(candidate.route.clone());
     }
     let Some(upstream) = upstream else {
+        if ctx.attempts == 0 && skipped_accounts {
+            ctx.finish(Outcome::failed(429));
+            let body = if endpoint == Endpoint::Messages {
+                json!({"type":"error","error":{"type":"rate_limit_error","message":"All accounts are skipped"}})
+            } else {
+                json!({"error":{"type":"rate_limit_error","message":"All accounts are skipped"}})
+            };
+            let seconds = retry_at
+                .map(|t| t.saturating_sub(chrono::Utc::now().timestamp()).max(1))
+                .unwrap_or(table.settings.cooldown_secs.max(1) as i64);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, seconds.to_string())],
+                axum::Json(body),
+            )
+                .into_response();
+        }
         if ctx.attempts == 0
             && let Some(e) = translation_error
         {

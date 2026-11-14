@@ -855,7 +855,19 @@ impl OAuthManager {
         let token = c.access_token.clone();
         s.last_error = None;
         self.save(name, flow, &s).await?;
+        self.recover_health(name, flow).await?;
         Ok(token)
+    }
+    // A separate Codex usage login must not re-enable ChatGPT inference.
+    async fn recover_health(&self, name: &str, flow: Flow) -> Result<()> {
+        let auth: Option<String> = sqlx::query_scalar("SELECT auth FROM providers WHERE name=?")
+            .bind(name)
+            .fetch_optional(&self.db)
+            .await?;
+        if auth.as_deref() == Some(flow.as_str()) {
+            crate::quota::recover_credentials(&self.db, name, "signin").await?;
+        }
+        Ok(())
     }
     pub async fn reject(&self, name: &str, flow: Flow, token: &str) -> Result<()> {
         let _guard = self.flight(name, flow).await;
@@ -1109,6 +1121,7 @@ impl OAuthManager {
         });
         self.save(name, flow, &s).await?;
         self.usage_cache.lock().await.remove(name);
+        self.recover_health(name, flow).await?;
         Ok(())
     }
     async fn derive_inference(

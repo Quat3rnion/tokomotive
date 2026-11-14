@@ -93,6 +93,7 @@ async fn service_account(
     {
         return form_error("Check the service-account JSON key and its Google Cloud permissions.");
     }
+    crate::quota::emit_health_events(&st).await;
     saved(
         "/admin/providers",
         "Service-account key saved and connected.",
@@ -185,10 +186,9 @@ async fn begin_device(st: AppState, name: String, flow: Flow, path: &'static str
             st.spawn_tracked(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if !matches!(
-                        state.oauth.poll_device(&provider, flow, &attempt).await,
-                        Ok(true)
-                    ) {
+                    let polled = state.oauth.poll_device(&provider, flow, &attempt).await;
+                    crate::quota::emit_health_events(&state).await;
+                    if !matches!(polled, Ok(true)) {
                         break;
                     }
                 }
@@ -227,6 +227,7 @@ async fn device_progress(
 ) -> Response {
     match st.oauth.device_status(&name, flow, &attempt).await {
         Ok(device) if device.state == "connected" => {
+            crate::quota::emit_health_events(&st).await;
             saved("/admin/providers", &format!("Provider {name} connected."))
         }
         Ok(device) => render(DevicePage {
@@ -273,6 +274,7 @@ async fn exchange(st: AppState, name: String, flow: Flow, callback: String) -> R
     };
     match st.oauth.finish(&name, flow, &callback).await {
         Ok(()) => {
+            crate::quota::emit_health_events(&st).await;
             if flow == Flow::OpenRouter {
                 tryr!(st.reload_settings().await);
             }

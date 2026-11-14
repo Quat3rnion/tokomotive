@@ -66,7 +66,7 @@
   <details open><summary>Subscription quota and account health</summary>
     {% if let Some(s) = p.status %}{% if !s.connected %}<p><span class="tag warn">Disabled</span> - No active subscription sign-in. Saved observations below do not show current access.</p>{% endif %}{% endif %}
     {% let quota = p.quota %}{% include "quota.html" %}
-    <p class="hint">At most 50 observed accounts. Quota data does not change routing.</p>
+    <p class="hint">At most 50 observed accounts. Exhausted accounts and invalid credentials are skipped.</p>
   </details>
 
   <form method="post" action="/admin/providers/{{ p.name }}" class="stack" aria-label="Edit Provider {{ p.name }}">
@@ -111,10 +111,11 @@
   <p class="hint">This creates a normal Provider Key. Cost follows the Rate Card.</p>
   {% endif %}
   <h3>Provider Keys</h3>
+  <form method="post" action="/admin/providers/{{ p.name }}/key-strategy" class="row"><div class="field"><label for="p-{{ p.name }}-key-strategy">Key Pool strategy</label><select id="p-{{ p.name }}-key-strategy" name="strategy"><option value="round_robin"{% if p.key_strategy == "round_robin" %} selected{% endif %}>Round robin</option><option value="quota"{% if p.key_strategy == "quota" %} selected{% endif %}>Quota</option></select><p class="hint">Quota uses the most remaining quota first. Unknown quota ranks at 50% remaining.</p></div><button>Save strategy</button><div class="form-error" role="alert" tabindex="-1"></div></form>
   {% if p.keys.is_empty() %}
   <p><span class="tag warn">No Provider Key. Requests to this Provider fail.</span></p>
   {% else %}
-  <p class="muted">{% if p.keys.len() == 1 %}1 Provider Key.{% else %}{{ p.keys.len() }} Provider Keys.{% endif %} The Proxy uses them in turn. Saved keys show only their last 4 characters.</p>
+   <p class="muted">{% if p.keys.len() == 1 %}1 Provider Key.{% else %}{{ p.keys.len() }} Provider Keys.{% endif %} The Proxy uses the Key Pool strategy. Saved keys show only their last 4 characters.</p>
   <ul class="key-list">
     {% for key in p.keys %}
     <li>

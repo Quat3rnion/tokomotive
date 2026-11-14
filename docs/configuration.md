@@ -352,7 +352,15 @@ A seed file fills the Key Pool in this order:
 2. The keys in `api_keys`, encrypted.
 3. The variables in `api_keys_env`, as references.
 
-For each request, the Proxy starts at the next key in turn. After a 429, a 5xx or
+By default, the Proxy starts at the next key in turn. Set
+`key_strategy = "quota"` on a Provider, or select **Quota** in its Key Pool
+settings, to use the most remaining quota first. The account's lowest remaining
+ratio across its current windows applies. Equal ratios use the earliest reset,
+then the saved key order. Unknown quota ranks at 50% remaining. The default
+is `key_strategy = "round_robin"`. Subscription sign-ins use separate Providers
+and a Route with `strategy = "quota"`.
+
+After a 401, a 403, a 429, a 5xx or
 a connection error, it tries the next key. This happens before the Proxy sends
 any data to the client. When the last key also fails, the Proxy returns that
 result. The Ledger Entry records the number of the key and the number of
@@ -651,7 +659,7 @@ create, edit or delete a Route. The page has one section for each Route.
 | Field        | Meaning                                                                                              |
 | ------------ | ---------------------------------------------------------------------------------------------------- |
 | Name         | The model name that clients send. Use letters, digits, dot, underscore or hyphen. The name must be unique. |
-| Strategy     | `priority`, `round_robin` or `weighted`. See below.                                                  |
+| Strategy     | `priority`, `round_robin`, `weighted` or `quota`. See below.                                                  |
 | Deployments  | Rows that you add and remove. Each row has a Provider (select), an upstream Model and a weight. The weight is a positive integer. Only the `weighted` strategy uses it. |
 | Fallbacks    | A comma list of Route names or catalog Model names.                                                  |
 
@@ -662,6 +670,7 @@ The strategies:
 | `priority`    | The order of the rows.                                                                            |
 | `round_robin` | The order of the rows, but the first choice moves one row for each request.                       |
 | `weighted`    | One Deployment is the first choice, selected at random by weight. The others follow in descending weight order. |
+| `quota`       | Most remaining quota first, using each Deployment's best available account. Equal ratios use the earliest reset, then row order. Unknown quota ranks at 50% remaining. |
 
 Rules for Fallbacks:
 
@@ -687,15 +696,26 @@ The optional file uses `[[routes]]` with `name`, `strategy`, `deployments` and
 | `failure_threshold` | `3`     | Positive number of failures in a row before a Circuit Breaker opens.                     |
 | `cooldown_secs`     | `30`    | Seconds that an open Circuit Breaker waits before it allows one probe request. 0 or more. |
 | `max_attempts`      | `8`     | Positive limit on upstream attempts for one request. Each Provider Key try counts.       |
+| `quota_exhausted_percent` | `98` | Skip accounts at this used percentage until reset. A finite number from 0 to 100. Applies to all strategies. |
 
 The Proxy keeps one Circuit Breaker for each pair of Provider and upstream model.
-A connection error, a 429, a 5xx or a subscription credential failure counts as
+A connection error, a 429 without a known reset, a 5xx or a failed token request counts as
 a failure. Any other response resets
 the count. When the count reaches `failure_threshold`, the Circuit Breaker opens.
 After `cooldown_secs`, one probe request tests the Deployment. A good result
 closes the Circuit Breaker. A failed probe opens it again. If every candidate is
 open, the Proxy tries them anyway. The Proxy keeps this state in memory, so it
 resets at a restart.
+
+An account with a known rate-limit reset is skipped until that reset, not the
+fixed cooldown. An exhausted window without a reset uses `cooldown_secs` from
+the last quota observation. Invalid credentials (401/403) disable the account until
+a successful token refresh, a new sign-in, a key change, or **Re-enable now**.
+The health state and quota observations persist across restarts. If all
+accounts are skipped, both API formats return 429 with `Retry-After` set to
+the earliest reset in seconds. With no known reset, it uses the cooldown.
+See [account health](usage.md#subscription-quota-and-account-health) for the
+Operator controls, session behavior, webhook events and skip metrics.
 
 All Provider, Route and router changes apply without a restart. The TOML loader
 and the dashboard share the same validation.

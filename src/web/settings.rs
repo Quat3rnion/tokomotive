@@ -14,6 +14,11 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/providers/{name}", post(update_provider))
         .route("/admin/providers/{name}/delete", post(delete_provider))
         .route("/admin/providers/{name}/keys", post(add_key))
+        .route("/admin/providers/{name}/key-strategy", post(key_strategy))
+        .route(
+            "/admin/providers/{name}/accounts/{account}/reenable",
+            post(reenable_account),
+        )
         .route(
             "/admin/providers/{name}/keys/{index}/delete",
             post(delete_key),
@@ -114,6 +119,7 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct ServerForm {
+    quota_exhausted_percent: Option<String>,
     default_markup_percent: Option<String>,
     upstream_timeout_secs: String,
     reserve_output_tokens: Option<String>,
@@ -173,6 +179,11 @@ impl ServerForm {
             .max_attempts
             .parse()
             .context("Enter the maximum attempts as a whole number, 1 or more.")?;
+        if let Some(value) = &self.quota_exhausted_percent {
+            cfg.router.quota_exhausted_percent = value
+                .parse()
+                .context("Enter a quota threshold from 0 to 100 percent.")?;
+        }
         if let Some(value) = &self.session_affinity_ttl_secs {
             cfg.router.session_affinity_ttl_secs = value
                 .parse()
@@ -314,6 +325,7 @@ impl RoutesPage {
     }
 }
 struct RouteView {
+    skips: Vec<String>,
     session_affinity: bool,
     active_sessions: usize,
     deployment_pager: Pager,
@@ -357,6 +369,10 @@ async fn routes(
     let records = tryr!(records);
     let mut routes = Vec::new();
     let active_sessions = st.active_sessions();
+    let table = st.router_table();
+    let schedule = tryr!(crate::quota::Schedule::load(&st.db).await);
+    let settings = st.settings();
+    let now = chrono::Utc::now().timestamp();
     for (index, r) in records.into_iter().enumerate() {
         let deployment_q = if query
             .deployments_route
@@ -402,6 +418,54 @@ async fn routes(
                 .collect::<Result<Vec<_>, _>>()
         );
         routes.push(RouteView {
+            skips: deployments
+                .iter()
+                .flat_map(|d| {
+                    let mut messages = Vec::new();
+                    if let Some(p) = table.providers.iter().find(|p| p.name == d.provider) {
+                    let indices: Vec<_> = if p.keys.is_empty() { vec![None] } else { (0..p.keys.len()).map(Some).collect() };
+                    for i in indices {
+                            if let Some(skip) = schedule.skip(
+                                p,
+                                i,
+                                now,
+                                settings.router.quota_exhausted_percent,
+                                settings.router.cooldown_secs,
+                            ) {
+                                let reason = if let Some(t) = skip.until {
+                                    format!(
+                                        "Skipped until {} (rate limited)",
+                                        super::views::stamp_opt(t)
+                                            .map(|s| s.text)
+                                            .unwrap_or_else(|| t.to_string())
+                                    )
+                                } else {
+                                    "Disabled: credentials invalid".into()
+                                };
+                                messages.push(format!(
+                                    "{}/{} - {}: {reason}",
+                                    d.provider,
+                                    d.model,
+                                    crate::quota::account_id(p, i)
+                                ));
+                            }
+                        }
+                        let candidate = crate::routing::Candidate {
+                            provider: p.clone(),
+                            model: Some(d.model.clone()),
+                            route: r.name.clone(),
+                            rewrite: true,
+                        };
+                        if !st.deployment_available(&candidate, &table.settings) {
+                            messages.push(format!(
+                                "{}/{} - Circuit-breaker cooldown (transient failure or rate limit without reset)",
+                                d.provider, d.model
+                            ));
+                        }
+                    }
+                    messages
+                })
+                .collect(),
             session_affinity: r.session_affinity,
             active_sessions: active_sessions.get(&r.name).copied().unwrap_or(0),
             deployment_pager,
@@ -693,6 +757,7 @@ struct AddedSignin {
     panel: String,
 }
 struct ProviderView {
+    key_strategy: String,
     quota: Vec<super::quota::AccountView>,
     /// Just added: the card shows the next steps and takes focus.
     added: bool,
@@ -977,7 +1042,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -1082,6 +1147,7 @@ async fn providers(
             vec![]
         };
         providers.push(ProviderView {
+            key_strategy: row.get("key_strategy"),
             quota: tryr!(super::quota::views(&st, Some(&name), 50).await),
             added: false,
             added_message: String::new(),
@@ -1355,6 +1421,7 @@ async fn save_provider(
     }
     cfg.providers.push(ProviderCfg {
         name: f.name.clone(),
+        key_strategy: crate::config::KeyStrategy::default(),
         kind: f.kind,
         auth: f.auth,
         base_url: f.base_url.clone(),
@@ -1476,6 +1543,17 @@ async fn save_provider(
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
     if !added {
+        if !f.api_key.trim().is_empty() {
+            tryr!(recover_key(&st, &f.name, f.api_key.trim()).await);
+        }
+        if f.kind == ProviderKind::Bedrock
+            && (!f.aws_access_key.is_empty()
+                || !f.aws_secret_key.is_empty()
+                || !f.aws_session_token.is_empty())
+        {
+            tryr!(crate::quota::recover_credentials(&st.db, &f.name, "default").await);
+            crate::quota::emit_health_events(&st).await;
+        }
         return saved("/admin/providers", &format!("Provider {} saved.", f.name));
     }
     drop(_oauth_guard);
@@ -1637,23 +1715,99 @@ async fn change_keys(
         }
         keys.remove(i);
     }
+    let recovery = add
+        .as_ref()
+        .map(|key| {
+            if let Some(env) = key.strip_prefix("env:") {
+                Ok(env_value(env))
+            } else {
+                st.secret_key.decrypt(key).map(Some)
+            }
+        })
+        .transpose();
+    let recovery = tryr!(recovery).flatten();
     if let Some(key) = add {
         keys.push(key);
     }
     tryr!(
         sqlx::query("UPDATE providers SET keys_json=? WHERE name=?")
             .bind(tryr!(serde_json::to_string(&keys)))
-            .bind(name)
+            .bind(&name)
             .execute(&st.db)
             .await
     );
     tryr!(st.reload_settings().await);
+    if let Some(key) = recovery {
+        tryr!(recover_key(&st, &name, &key).await);
+    }
     let message = if remove.is_some() {
         "Provider Key removed."
     } else {
         "Provider Key added."
     };
     saved("/admin/providers", message)
+}
+
+async fn recover_key(st: &AppState, name: &str, key: &str) -> anyhow::Result<()> {
+    let plain = key
+        .strip_prefix("env:")
+        .map_or_else(|| Some(key.to_owned()), env_value);
+    if let Some(plain) = plain {
+        crate::quota::recover_credentials(&st.db, name, &crate::quota::key_id(&plain)).await?;
+    }
+    crate::quota::emit_health_events(st).await;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct KeyStrategyForm {
+    strategy: crate::config::KeyStrategy,
+}
+async fn key_strategy(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(f): Form<KeyStrategyForm>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let strategy = tryr!(serde_json::to_value(f.strategy));
+    tryr!(
+        sqlx::query("UPDATE providers SET key_strategy=? WHERE name=?")
+            .bind(strategy.as_str())
+            .bind(name)
+            .execute(&st.db)
+            .await
+    );
+    tryr!(st.reload_settings().await);
+    saved("/admin/providers", "Key Pool strategy saved.")
+}
+async fn reenable_account(
+    _: Admin,
+    State(st): State<AppState>,
+    Path((name, account)): Path<(String, String)>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let exists: bool = tryr!(
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM provider_health WHERE provider=? AND account=?)"
+        )
+        .bind(&name)
+        .bind(&account)
+        .fetch_one(&st.db)
+        .await
+    );
+    if !exists {
+        return form_error("Account not found. Reload the page.");
+    }
+    tryr!(crate::quota::reenable(&st, &name, &account).await);
+    st.circuits
+        .lock()
+        .expect("circuits")
+        .retain(|(provider, _), _| provider != &name);
+    saved(
+        "/admin/providers",
+        "Account re-enabled. The next request tests access.",
+    )
 }
 
 async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {

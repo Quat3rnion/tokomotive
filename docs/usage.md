@@ -335,7 +335,7 @@ usage.
 Use Session affinity when a Route has several inference instances of the same
 model. Add each instance as a separate Provider and Deployment. On **Routes**,
 set **Session affinity** to **On**. It is off by default. A Route with only one
-Deployment ignores it. The setting keeps conversation turns on the instance
+Deployment with no Key Pool ignores it. The setting keeps conversation turns on the account
 that can reuse the prompt in its KV cache. It does not enable or control that
 cache on the upstream server.
 
@@ -367,9 +367,10 @@ initial prompt under one User can share a pin. Send `x-session-id` to separate
 them. Raw keys and prompt prefixes are not stored in the affinity table,
 Ledger or metrics.
 
-For a new session, weighted rendezvous hashing orders the compatible
+For a new session with the Quota strategy, remaining quota orders the compatible
+Deployments. Other strategies use weighted rendezvous hashing to order the compatible
 Deployments that Provider Access permits. Deployment identity is the Provider
-name plus the upstream model name. Weights apply even if the Route strategy
+name plus the upstream model name. A pin also records the account. Weights apply even if the Route strategy
 is Priority or Round robin. A live pin keeps its Deployment when weights
 change. For sessions without a pin, adding a Deployment moves only the
 sessions that it wins. Removing a Deployment moves only its sessions.
@@ -378,15 +379,19 @@ If the pinned Deployment's circuit is open, the Proxy tries the next
 Deployment in rendezvous order. It also retries connection errors, HTTP 429
 and 5xx before it sends a response to the client. Fallbacks, Provider Key
 pools, the attempt limit and half-open probes work as before. The existing
-all-circuits-open recovery rule still applies. A successful response sets the
-pin to the Deployment that answered, including a Fallback.
+all-circuits-open recovery rule still applies. A transient failure does not
+replace a live account pin. After the circuit recovers, the session returns to
+that account. An account at the quota exhaustion threshold (default 98% used),
+an active rate limit, or invalid credentials permits failover and a new pin.
+Removed Deployments and revoked Provider Access also permit a new pin.
+For a new session, a successful response creates the pin, including a Fallback.
 
 In **Settings > Router**, set the session affinity lifetime in seconds
 (`session_affinity_ttl_secs`, default 1800) and capacity
 (`session_affinity_capacity`, default 100000). Both must be positive. The
 lifetime runs from the last use. When the table is full, a new pin removes
 the least recently used pin. The Routes page shows active pins per Route.
-Disabling affinity, removing the Route, or reducing it to one Deployment
+Disabling affinity, removing the Route, or reducing it to one Deployment with no Key Pool
 clears its pins on settings reload.
 
 The metric `llm_session_affinity_total{route,result}` counts successful
@@ -1322,17 +1327,48 @@ upstream did not report it. A reset time in the past does not refresh the data.
 The Proxy reads OpenAI `x-ratelimit-*`, Anthropic `anthropic-ratelimit-*`, Claude
 unified subscription headers, and Codex `x-codex-*` response headers. The
 **Providers** page also reads Codex plan usage and Copilot `quota_snapshots`
-with existing sign-ins. Plan requests use a 60-second cache. They are optional
-and do not affect inference. Claude has no separate plan reader here. Its
+with existing sign-ins. Plan requests use a 60-second cache. They are optional.
+Saved plan snapshots affect quota scheduling. Claude has no separate plan reader here. Its
 windows need response headers. The Proxy does not scrape account pages or
 request new scopes. Private usage endpoints can change or be unavailable.
 
 An upstream 401 or 403 sets `credentials_invalid`. A 429 sets `rate_limited`.
 Its end time comes from `retry-after` or a reported reset header. If neither
-is available, the end time is unknown. A successful response sets `ok`.
+is available, the end time is unknown. A successful inference clears a rate
+limit, but does not clear invalid credentials.
 The last failure reason and time remain visible after success. Reasons are
-fixed text, not upstream response bodies. These states record observations
-only. They do not change routing, retries, or the Circuit Breaker.
+fixed text, not upstream response bodies.
+
+Select **Quota** on a Route or in a Provider's **Key Pool strategy** to prefer
+the account with the most remaining quota. For each account, the lowest
+remaining ratio across its current windows is used. Equal ratios use the
+earliest reset, then the saved order. Unknown quota ranks at 50% remaining.
+Expired windows no longer rank or block an account. A Route ranks each
+Deployment by its best available account; its Key Pool strategy selects the
+key within that Provider. Subscription accounts use separate Providers and
+Deployments. Priority, Round robin and Weighted keep their selection rules.
+
+All strategies skip accounts at the exhaustion threshold. Set
+`quota_exhausted_percent` in **Settings > Router** (default 98). The Proxy skips
+a rate-limited account until its known reset. If several windows block it,
+the latest blocking reset applies. Without a reset, the Circuit Breaker
+cooldown applies. When every account is skipped, OpenAI and Anthropic clients
+receive HTTP 429 with `Retry-After` in seconds to the earliest account reset.
+If no reset is known, the configured cooldown is used.
+
+Invalid credentials disable that account until a successful token refresh,
+a new sign-in, a key change, or **Re-enable now**. A separate usage sign-in
+does not re-enable inference. **Re-enable now** clears the account's quota
+snapshot and the Provider's transient circuit cooldowns. The next request
+tests access; it can disable the account again. This action requires an
+Operator login and a same-origin form submission. Provider cards and Routes
+show the skip reason and reset time. Transient 5xx and connection failures
+still use the Circuit Breaker.
+
+Health transitions emit `provider.rate_limited`,
+`provider.credentials_invalid`, and `provider.recovered` webhook events.
+Each account and target state can emit at most once per 10 minutes, including
+repeated transitions during that time.
 The card shows **Disabled** when the subscription sign-in is disconnected.
 This is the current sign-in status, not a new upstream observation.
 
@@ -1353,7 +1389,10 @@ The `/metrics` endpoint exports these persisted gauges:
   state and 0 for the other states. An unobserved account has no gauge.
 
 The `key` label is an opaque Key ID or a sign-in slot, never the credential.
-The metrics survive a Proxy restart. Protect this endpoint with the metrics
+These gauges survive a Proxy restart. The counter
+`tokomotive_account_skips_total{reason}` counts skipped account candidates by
+`rate_limited` or `credentials_invalid`. It resets at a Proxy restart.
+Protect this endpoint with the metrics
 token when it is accessible outside a trusted network.
 
 ## Subscription Providers

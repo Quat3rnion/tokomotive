@@ -213,6 +213,7 @@ keys=["sk-test"]
         }
     }
     for (model, status) in [("denied", 403), ("unauthorized", 401)] {
+        crate::quota::reenable(&st, "aws", "default").await.unwrap();
         let before = count.load(std::sync::atomic::Ordering::SeqCst);
         let r=http.post(format!("{proxy}/v1/chat/completions")).bearer_auth("sk-test").json(&json!({"model":format!("aws/{model}"),"messages":[{"role":"user","content":"Hi"}]})).send().await.unwrap();
         assert_eq!(r.status(), status);

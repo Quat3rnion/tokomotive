@@ -19,6 +19,7 @@ pub(crate) struct SessionKey {
 type DeploymentId = (String, String);
 struct Pin {
     deployment: DeploymentId,
+    account: String,
     used: Instant,
 }
 #[derive(Default)]
@@ -31,7 +32,16 @@ impl AffinityTable {
         let enabled: HashSet<_> = table
             .routes
             .iter()
-            .filter(|r| r.session_affinity && r.deployments.len() > 1)
+            .filter(|r| {
+                r.session_affinity
+                    && (r.deployments.len() > 1
+                        || r.deployments.iter().any(|d| {
+                            table
+                                .providers
+                                .iter()
+                                .any(|p| p.name == d.provider && p.keys.len() > 1)
+                        }))
+            })
             .map(|r| r.name.as_str())
             .collect();
         self.pins
@@ -52,17 +62,18 @@ impl AffinityTable {
             self.pins.remove(&key);
         }
     }
-    fn get(&mut self, key: &SessionKey, now: Instant) -> Option<DeploymentId> {
+    fn get(&mut self, key: &SessionKey, now: Instant) -> Option<(DeploymentId, String)> {
         let pin = self.pins.get_mut(key)?;
         self.lru.remove(&(pin.used, key.clone()));
         pin.used = now;
         self.lru.insert((now, key.clone()));
-        Some(pin.deployment.clone())
+        Some((pin.deployment.clone(), pin.account.clone()))
     }
     fn insert(
         &mut self,
         key: SessionKey,
         deployment: DeploymentId,
+        account: String,
         now: Instant,
         ttl: Duration,
         capacity: usize,
@@ -71,6 +82,7 @@ impl AffinityTable {
             key.clone(),
             Pin {
                 deployment,
+                account,
                 used: now,
             },
         ) {
@@ -193,6 +205,31 @@ pub(crate) struct Session {
     key: SessionKey,
     pinned: Option<DeploymentId>,
     first: DeploymentId,
+    account: Option<String>,
+    can_repin: bool,
+}
+
+impl Session {
+    pub(crate) fn order_keys(
+        &self,
+        provider: &crate::state::Provider,
+        order: &mut [Option<usize>],
+    ) {
+        if self.pinned.as_ref().is_some_and(|p| p.0 == provider.name)
+            && let Some(position) = order.iter().position(|i| {
+                self.account.as_ref() == Some(&crate::quota::account_id(provider, *i))
+            })
+        {
+            order[..=position].rotate_right(1);
+        }
+    }
+    pub(crate) fn unavailable(&mut self, provider: &crate::state::Provider, index: Option<usize>) {
+        if self.pinned.as_ref().is_some_and(|p| p.0 == provider.name)
+            && self.account.as_ref() == Some(&crate::quota::account_id(provider, index))
+        {
+            self.can_repin = true;
+        }
+    }
 }
 
 impl AppState {
@@ -210,7 +247,9 @@ impl AppState {
             .routes
             .iter()
             .find(|r| Some(r.name.as_str()) == model)?;
-        if !route.session_affinity || route.deployments.len() < 2 {
+        if !route.session_affinity
+            || (route.deployments.len() < 2 && candidates.iter().all(|c| c.provider.keys.len() < 2))
+        {
             return None;
         }
         let key = session_key(&route.name, user, headers, body)?;
@@ -228,11 +267,13 @@ impl AppState {
                 })
                 .map_or(1, |d| d.weight)
         };
-        candidates[..primary].sort_by(|a, b| {
-            score(&key, &id(a), weight(a))
-                .total_cmp(&score(&key, &id(b), weight(b)))
-                .then_with(|| id(a).cmp(&id(b)))
-        });
+        if !matches!(route.strategy, crate::config::Strategy::Quota) {
+            candidates[..primary].sort_by(|a, b| {
+                score(&key, &id(a), weight(a))
+                    .total_cmp(&score(&key, &id(b), weight(b)))
+                    .then_with(|| id(a).cmp(&id(b)))
+            });
+        }
         let now = Instant::now();
         let mut pins = self.affinity.lock().expect("session affinity");
         pins.prune(
@@ -240,7 +281,11 @@ impl AppState {
             Duration::from_secs(table.settings.session_affinity_ttl_secs),
             table.settings.session_affinity_capacity,
         );
-        let pinned = pins.get(&key, now);
+        let (pinned, account) = pins
+            .get(&key, now)
+            .map_or((None, None), |(d, a)| (Some(d), Some(a)));
+        // Removed Deployments and revoked Provider Access cannot retain a pin.
+        let can_repin = pinned.is_some() && !candidates.iter().any(|c| Some(id(c)) == pinned);
         if let Some(position) = candidates.iter().position(|c| Some(id(c)) == pinned) {
             candidates[..=position].rotate_right(1);
         }
@@ -248,6 +293,8 @@ impl AppState {
             key,
             pinned,
             first: id(candidates.first()?),
+            account,
+            can_repin,
         })
     }
 
@@ -256,10 +303,19 @@ impl AppState {
         table: &RouterTable,
         session: &Session,
         candidate: &Candidate,
+        index: Option<usize>,
     ) -> &'static str {
         let deployment = id(candidate);
+        let account = crate::quota::account_id(&candidate.provider, index);
+        if session.pinned.is_some()
+            && !session.can_repin
+            && (session.pinned.as_ref() != Some(&deployment)
+                || session.account.as_ref() != Some(&account))
+        {
+            return "pinned";
+        }
         let result = match &session.pinned {
-            Some(old) if old == &deployment => "hit",
+            Some(old) if old == &deployment && session.account.as_ref() == Some(&account) => "hit",
             Some(_) => "repinned",
             None if session.first == deployment => "new",
             None => "repinned",
@@ -267,6 +323,7 @@ impl AppState {
         self.affinity.lock().expect("session affinity").insert(
             session.key.clone(),
             deployment,
+            account,
             Instant::now(),
             Duration::from_secs(table.settings.session_affinity_ttl_secs),
             table.settings.session_affinity_capacity,
@@ -464,16 +521,24 @@ mod tests {
         let b = key(json!({"user":"b"}));
         let c = key(json!({"user":"c"}));
         let deployment = ("p".into(), "m".into());
-        table.insert(a.clone(), deployment.clone(), now, ttl, 2);
+        table.insert(a.clone(), deployment.clone(), String::new(), now, ttl, 2);
         table.insert(
             b.clone(),
             deployment.clone(),
+            String::new(),
             now + Duration::from_secs(1),
             ttl,
             2,
         );
         assert!(table.get(&a, now + Duration::from_secs(2)).is_some());
-        table.insert(c.clone(), deployment, now + Duration::from_secs(3), ttl, 2);
+        table.insert(
+            c.clone(),
+            deployment,
+            String::new(),
+            now + Duration::from_secs(3),
+            ttl,
+            2,
+        );
         assert!(!table.pins.contains_key(&b));
         table.prune(now + Duration::from_secs(11), ttl, 2);
         assert_eq!(table.pins.len(), 2);

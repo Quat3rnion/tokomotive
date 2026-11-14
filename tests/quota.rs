@@ -42,6 +42,14 @@ async fn account_health_keeps_safe_last_failure_and_upserts_windows() {
         .await
         .unwrap();
     let accounts = quota::accounts(&db, Some("test"), 50).await.unwrap();
+    assert_eq!(
+        accounts[0].state, "credentials_invalid",
+        "late inference success cannot replace credential recovery"
+    );
+    quota::recover_credentials(&db, "test", &account)
+        .await
+        .unwrap();
+    let accounts = quota::accounts(&db, Some("test"), 50).await.unwrap();
     assert_eq!(accounts[0].state, "ok");
     assert_eq!(
         accounts[0].last_failure.as_deref(),
@@ -404,6 +412,15 @@ keys=["private-virtual-key"]
         (429, "rate_limited"),
         (200, "ok"),
     ] {
+        // Each status is a separate observation, not a request to a disabled
+        // account. Explicitly recover before testing the next upstream status.
+        tokomotive::quota::reenable(
+            &st,
+            "quota-test",
+            &tokomotive::quota::key_id("private-upstream-key"),
+        )
+        .await
+        .unwrap();
         code.store(status, Ordering::SeqCst);
         let response = http
             .post(format!("{base}/v1/chat/completions"))

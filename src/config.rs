@@ -35,6 +35,7 @@ pub struct RouterCfg {
     pub max_attempts: usize,
     pub session_affinity_ttl_secs: u64,
     pub session_affinity_capacity: usize,
+    pub quota_exhausted_percent: f64,
 }
 
 impl Default for RouterCfg {
@@ -45,6 +46,7 @@ impl Default for RouterCfg {
             max_attempts: 8,
             session_affinity_ttl_secs: 1800,
             session_affinity_capacity: 100_000,
+            quota_exhausted_percent: 98.0,
         }
     }
 }
@@ -56,6 +58,15 @@ pub enum Strategy {
     Priority,
     RoundRobin,
     Weighted,
+    Quota,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyStrategy {
+    #[default]
+    RoundRobin,
+    Quota,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -128,6 +139,8 @@ impl Default for Server {
 #[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
     pub name: String,
+    #[serde(default)]
+    pub key_strategy: KeyStrategy,
     pub kind: ProviderKind,
     #[serde(default)]
     pub auth: crate::provider::ProviderAuth,
@@ -468,6 +481,11 @@ impl Config {
         }
         if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
             bail!("The failure threshold and the maximum attempts must be positive.");
+        }
+        if !self.router.quota_exhausted_percent.is_finite()
+            || !(0.0..=100.0).contains(&self.router.quota_exhausted_percent)
+        {
+            bail!("The quota exhaustion threshold must be from 0 to 100 percent.");
         }
         if self.router.session_affinity_ttl_secs == 0 || self.router.session_affinity_capacity == 0
         {

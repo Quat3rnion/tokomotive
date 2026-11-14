@@ -18,6 +18,7 @@ use crate::routing::RouterTable;
 #[derive(Debug, Clone)]
 pub struct Provider {
     pub name: String,
+    pub key_strategy: crate::config::KeyStrategy,
     pub kind: ProviderKind,
     pub auth: crate::provider::ProviderAuth,
     pub include_usage: bool,
@@ -34,6 +35,7 @@ impl Provider {
     pub fn new(name: &str, kind: ProviderKind, base_url: &str, keys: Vec<String>) -> Provider {
         Provider {
             name: name.into(),
+            key_strategy: crate::config::KeyStrategy::default(),
             kind,
             auth: crate::provider::ProviderAuth::ApiKey,
             include_usage: true,

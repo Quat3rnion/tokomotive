@@ -50,7 +50,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   ChatGPT token sharing, Claude OAuth and optional Codex plan usage, with
   explicit access for each Virtual Key.
 - Shows account health and subscription quota windows on Providers and Overview,
-  with reset times and Prometheus metrics. Quota data does not change routing.
+  with reset times and Prometheus metrics. Quota scheduling prefers accounts
+  with more capacity, preserves session pins, and skips exhausted or invalid accounts.
 
 ### Accounting
 

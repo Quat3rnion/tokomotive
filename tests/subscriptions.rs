@@ -673,6 +673,16 @@ async fn claude_exchange_encrypts_tokens_and_refresh_is_single_flight() {
         ))
     );
     let mut tasks = tokio::task::JoinSet::new();
+    tokomotive::quota::record(
+        &db,
+        "claude",
+        "signin",
+        401,
+        &axum::http::HeaderMap::new(),
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .unwrap();
     for _ in 0..16 {
         let auth = auth.clone();
         tasks.spawn(async move { auth.token("claude", Flow::Claude, None).await.unwrap() });
@@ -680,6 +690,14 @@ async fn claude_exchange_encrypts_tokens_and_refresh_is_single_flight() {
     while let Some(token) = tasks.join_next().await {
         assert_eq!(token.unwrap(), "secret-access-2");
     }
+    assert_eq!(
+        tokomotive::quota::accounts(&db, Some("claude"), 1)
+            .await
+            .unwrap()[0]
+            .state,
+        "ok",
+        "a successful refresh re-enables inference"
+    );
     assert_eq!(requests.lock().unwrap().len(), 2);
     assert_eq!(
         requests.lock().unwrap()[1]["refresh_token"],

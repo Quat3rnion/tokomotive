@@ -179,20 +179,41 @@ async fn last_session(e: &Env) -> Option<String> {
 }
 
 #[tokio::test]
-async fn retryable_failure_repins_then_skips_the_open_circuit() {
+async fn transient_failure_preserves_pin_while_skipping_the_open_circuit() {
     let e = env(true, "openai", "").await;
     let first = e.send(false, "Failover", 0, None, "alice").await;
     assert_eq!(last_session(&e).await.as_deref(), Some("new"));
     e.instances[first].fail.store(true, Ordering::Relaxed);
     let second = e.send(false, "Failover", 1, None, "alice").await;
     assert_ne!(first, second);
-    assert_eq!(last_session(&e).await.as_deref(), Some("re-pinned"));
+    assert_eq!(last_session(&e).await.as_deref(), Some("pinned"));
     let failed_attempts = e.instances[first].seen.lock().unwrap().len();
     assert_eq!(e.send(false, "Failover", 2, None, "alice").await, second);
     assert_eq!(last_session(&e).await.as_deref(), Some("pinned"));
     assert_eq!(
         e.instances[first].seen.lock().unwrap().len(),
         failed_attempts
+    );
+    e.instances[first].fail.store(false, Ordering::Relaxed);
+    let table = e.st.router_table();
+    let candidate =
+        e.st.candidates(
+            &table,
+            &e.st.catalog(),
+            Some("halogen"),
+            tokomotive::provider::Endpoint::ChatCompletions,
+            false,
+        )
+        .into_iter()
+        .find(|c| c.provider.name == format!("p{first}"))
+        .unwrap();
+    e.st.acquire_deployment(&candidate, &table.settings, true)
+        .unwrap()
+        .record(true);
+    assert_eq!(
+        e.send(false, "Failover", 3, None, "alice").await,
+        first,
+        "transient fallback does not replace the original account pin"
     );
 }
 
@@ -351,7 +372,7 @@ async fn identical_automatic_prefixes_do_not_share_a_pin_between_users() {
 }
 
 #[tokio::test]
-async fn already_open_pinned_circuit_is_not_attempted_and_is_repinned() {
+async fn already_open_pinned_circuit_is_not_attempted_and_pin_is_preserved() {
     let e = env(true, "openai", "").await;
     let first = e.send(false, "Open circuit", 0, None, "alice").await;
     let table = e.st.router_table();
@@ -373,7 +394,7 @@ async fn already_open_pinned_circuit_is_not_attempted_and_is_repinned() {
     let second = e.send(false, "Open circuit", 1, None, "alice").await;
     assert_ne!(first, second);
     assert_eq!(e.instances[first].seen.lock().unwrap().len(), attempts);
-    assert_eq!(last_session(&e).await.as_deref(), Some("re-pinned"));
+    assert_eq!(last_session(&e).await.as_deref(), Some("pinned"));
     assert_eq!(
         e.send(false, "Open circuit", 2, None, "alice").await,
         second
@@ -567,7 +588,16 @@ async fn metrics_show_hit_new_and_repinned_without_session_keys() {
         "alice",
     )
     .await;
-    e.instances[first].fail.store(true, Ordering::Relaxed);
+    tokomotive::quota::record(
+        &e.st.db,
+        &format!("p{first}"),
+        &tokomotive::quota::key_id("key"),
+        401,
+        &axum::http::HeaderMap::new(),
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .unwrap();
     e.send(
         false,
         "Metric prompt",

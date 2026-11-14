@@ -1,4 +1,4 @@
-//! Last observed account quotas. This module does not participate in routing.
+//! Persisted account quotas, health, and quota-aware scheduling.
 use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -32,6 +32,209 @@ pub struct Account {
     pub last_failure: Option<String>,
     pub failure_at: Option<i64>,
     pub windows: Vec<Snapshot>,
+}
+
+pub fn account_id(provider: &crate::state::Provider, index: Option<usize>) -> String {
+    if crate::oauth::Flow::from_auth(provider.auth).is_some() {
+        "signin".into()
+    } else {
+        index
+            .map(|i| key_id(&provider.keys[i]))
+            .unwrap_or_else(|| "default".into())
+    }
+}
+
+#[derive(Default)]
+pub struct Schedule {
+    accounts: std::collections::HashMap<(String, String), Account>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Skip {
+    pub reason: &'static str,
+    pub until: Option<i64>,
+}
+impl Account {
+    pub fn skip(&self, now: i64, threshold: f64, cooldown: u64) -> Option<Skip> {
+        if self.state == "credentials_invalid" {
+            return Some(Skip {
+                reason: "credentials_invalid",
+                until: None,
+            });
+        }
+        let mut until = if self.state == "rate_limited" {
+            self.until.filter(|t| *t > now)
+        } else {
+            None
+        };
+        for w in &self.windows {
+            let exhausted = w.quota.used_percent.is_some_and(|p| p >= threshold)
+                || w.quota.remaining == Some(0.0);
+            if exhausted {
+                let reset = w.quota.reset_at.unwrap_or_else(|| {
+                    w.observed_at
+                        .saturating_add(cooldown.min(i64::MAX as u64) as i64)
+                });
+                if reset > now {
+                    until = Some(until.map_or(reset, |t| t.max(reset)));
+                }
+            }
+        }
+        until.map(|t| Skip {
+            reason: "rate_limited",
+            until: Some(t),
+        })
+    }
+}
+impl Schedule {
+    pub fn order_deployments(
+        &self,
+        table: &crate::routing::RouterTable,
+        candidates: &mut [crate::routing::Candidate],
+        now: i64,
+        threshold: f64,
+    ) {
+        let mut start = 0;
+        while start < candidates.len() {
+            let route = candidates[start].route.clone();
+            let end = start
+                + candidates[start..]
+                    .iter()
+                    .take_while(|c| c.route == route)
+                    .count();
+            if table
+                .routes
+                .iter()
+                .any(|r| r.name == route && matches!(r.strategy, crate::config::Strategy::Quota))
+            {
+                let rank = |p: &crate::state::Provider| {
+                    let order: Vec<_> = if p.keys.is_empty() {
+                        vec![None]
+                    } else {
+                        (0..p.keys.len()).map(Some).collect()
+                    };
+                    order
+                        .into_iter()
+                        .filter(|i| {
+                            self.skip(p, *i, now, threshold, table.settings.cooldown_secs)
+                                .is_none()
+                        })
+                        .map(|i| self.rank(p, i, now))
+                        .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)))
+                        .unwrap_or((-1.0, i64::MAX))
+                };
+                candidates[start..end].sort_by(|a, b| {
+                    let a = rank(&a.provider);
+                    let b = rank(&b.provider);
+                    b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))
+                });
+            }
+            start = end;
+        }
+    }
+    pub async fn load(db: &SqlitePool) -> anyhow::Result<Self> {
+        let rows = sqlx::query("SELECT h.*,q.window,q.used_percent,q.remaining,q.quota_limit,q.reset_at,q.observed_at AS quota_observed_at FROM provider_health h LEFT JOIN provider_quota q ON q.provider=h.provider AND q.account=h.account").fetch_all(db).await?;
+        let mut out = Self::default();
+        for r in rows {
+            let provider: String = r.get("provider");
+            let key: String = r.get("account");
+            let account = out
+                .accounts
+                .entry((provider.clone(), key.clone()))
+                .or_insert_with(|| Account {
+                    provider,
+                    key,
+                    state: r.get("state"),
+                    until: r.get("until_at"),
+                    observed_at: r.get("observed_at"),
+                    last_failure: r.get("last_failure"),
+                    failure_at: r.get("failure_at"),
+                    windows: vec![],
+                });
+            if let Some(window) = r.get::<Option<String>, _>("window") {
+                account.windows.push(Snapshot {
+                    quota: Window {
+                        window,
+                        used_percent: r.get("used_percent"),
+                        remaining: r.get("remaining"),
+                        limit: r.get("quota_limit"),
+                        reset_at: r.get("reset_at"),
+                    },
+                    observed_at: r.get("quota_observed_at"),
+                });
+            }
+        }
+        Ok(out)
+    }
+    pub fn rank(
+        &self,
+        provider: &crate::state::Provider,
+        index: Option<usize>,
+        now: i64,
+    ) -> (f64, i64) {
+        let Some(a) = self
+            .accounts
+            .get(&(provider.name.clone(), account_id(provider, index)))
+        else {
+            return (0.5, i64::MAX);
+        };
+        let windows: Vec<_> = a
+            .windows
+            .iter()
+            .filter(|w| w.quota.reset_at.is_none_or(|t| t > now))
+            .collect();
+        let remaining = windows
+            .iter()
+            .filter_map(|w| {
+                w.quota.used_percent.map(|p| 1.0 - p / 100.0).or_else(|| {
+                    w.quota
+                        .remaining
+                        .zip(w.quota.limit)
+                        .filter(|(_, l)| *l > 0.0)
+                        .map(|(r, l)| (r / l).clamp(0.0, 1.0))
+                })
+            })
+            .reduce(f64::min)
+            .unwrap_or(0.5);
+        (
+            remaining,
+            windows
+                .iter()
+                .filter_map(|w| w.quota.reset_at)
+                .min()
+                .unwrap_or(i64::MAX),
+        )
+    }
+    pub fn skip(
+        &self,
+        provider: &crate::state::Provider,
+        index: Option<usize>,
+        now: i64,
+        threshold: f64,
+        cooldown: u64,
+    ) -> Option<Skip> {
+        let a = self
+            .accounts
+            .get(&(provider.name.clone(), account_id(provider, index)))?;
+        a.skip(now, threshold, cooldown)
+    }
+    pub fn key_order(&self, provider: &crate::state::Provider, now: i64) -> Vec<Option<usize>> {
+        let mut order = if provider.key_strategy == crate::config::KeyStrategy::Quota {
+            (0..provider.keys.len()).collect()
+        } else {
+            provider.key_order()
+        };
+        if order.is_empty() {
+            return vec![None];
+        }
+        if provider.key_strategy == crate::config::KeyStrategy::Quota {
+            order.sort_by(|a, b| {
+                let a = self.rank(provider, Some(*a), now);
+                let b = self.rank(provider, Some(*b), now);
+                b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))
+            });
+        }
+        order.into_iter().map(Some).collect()
+    }
 }
 
 pub fn retry_at(headers: &HeaderMap, now: i64) -> Option<i64> {
@@ -76,6 +279,24 @@ pub async fn record(
     headers: &HeaderMap,
     now: i64,
 ) -> anyhow::Result<()> {
+    record_health(db, provider, account, status, headers, now, Recovery::None).await
+}
+
+#[derive(Clone, Copy)]
+enum Recovery {
+    None,
+    Credentials,
+    All,
+}
+async fn record_health(
+    db: &SqlitePool,
+    provider: &str,
+    account: &str,
+    status: u16,
+    headers: &HeaderMap,
+    now: i64,
+    recovery: Recovery,
+) -> anyhow::Result<()> {
     let (state, reason, until) = match status {
         401 => (
             "credentials_invalid",
@@ -97,13 +318,110 @@ pub async fn record(
         _ => ("ok", Some("Upstream request failed"), None),
     };
     let mut tx = db.begin().await?;
+    // Take the SQLite writer lock before reading the previous state.
+    sqlx::query("UPDATE provider_health SET state=state WHERE provider=? AND account=?")
+        .bind(provider)
+        .bind(account)
+        .execute(&mut *tx)
+        .await?;
+    let previous: Option<String> =
+        sqlx::query_scalar("SELECT state FROM provider_health WHERE provider=? AND account=?")
+            .bind(provider)
+            .bind(account)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let preserve = match recovery {
+        Recovery::None => {
+            previous.as_deref() == Some("credentials_invalid")
+                || !matches!(status, 200..=299 | 401 | 403 | 429)
+        }
+        Recovery::Credentials => previous.as_deref() != Some("credentials_invalid"),
+        Recovery::All => false,
+    };
     sqlx::query("INSERT INTO provider_health(provider,account,state,until_at,observed_at,last_failure,failure_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider,account) DO UPDATE SET state=CASE WHEN ? THEN provider_health.state ELSE excluded.state END,until_at=CASE WHEN ? THEN provider_health.until_at ELSE excluded.until_at END,observed_at=excluded.observed_at,last_failure=COALESCE(excluded.last_failure,provider_health.last_failure),failure_at=COALESCE(excluded.failure_at,provider_health.failure_at)")
         .bind(provider).bind(account).bind(state).bind(until).bind(now).bind(reason).bind(reason.map(|_|now))
-        .bind(!matches!(status,200..=299|401|403|429)).bind(!matches!(status,200..=299|401|403|429)).execute(&mut *tx).await?;
+        .bind(preserve).bind(preserve).execute(&mut *tx).await?;
     for window in parse_headers(headers, now) {
         save_window(&mut tx, provider, account, &window, now).await?;
     }
+    if !preserve && previous.as_deref().unwrap_or("ok") != state {
+        sqlx::query("INSERT INTO provider_health_alerts(provider,account,state,emitted_at,pending) VALUES(?,?,?,?,1) ON CONFLICT(provider,account,state) DO UPDATE SET emitted_at=excluded.emitted_at,pending=1 WHERE excluded.emitted_at>=provider_health_alerts.emitted_at+600")
+            .bind(provider).bind(account).bind(state).bind(now).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
+    Ok(())
+}
+
+/// Atomically claim pending, deduplicated state changes for webhook delivery.
+pub async fn take_health_events(db: &SqlitePool) -> anyhow::Result<Vec<crate::alerts::Event>> {
+    let rows=sqlx::query("UPDATE provider_health_alerts SET pending=0 WHERE pending=1 RETURNING provider,account,state").fetch_all(db).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let provider: String = r.get("provider");
+            let account: String = r.get("account");
+            let state: String = r.get("state");
+            let kind = if state == "ok" { "recovered" } else { &state };
+            let mut event = crate::alerts::Event::new(
+                &format!("provider.{kind}"),
+                &format!("{provider}/{account}"),
+                &format!("Provider {provider}, account {account}: {kind}"),
+            );
+            event.details =
+                serde_json::json!({"provider":provider,"account":account,"state":state});
+            event
+        })
+        .collect())
+}
+pub async fn emit_health_events(st: &crate::state::AppState) {
+    match take_health_events(&st.db).await {
+        Ok(events) => {
+            for event in events {
+                crate::alerts::emit(st, event);
+            }
+        }
+        Err(_) => tracing::warn!("Could not read account health alerts"),
+    }
+}
+/// Explicit credential recovery does not clear a rate limit or quota snapshot.
+pub async fn recover_credentials(
+    db: &SqlitePool,
+    provider: &str,
+    account: &str,
+) -> anyhow::Result<()> {
+    record_health(
+        db,
+        provider,
+        account,
+        200,
+        &HeaderMap::new(),
+        chrono::Utc::now().timestamp(),
+        Recovery::Credentials,
+    )
+    .await?;
+    Ok(())
+}
+pub async fn reenable(
+    st: &crate::state::AppState,
+    provider: &str,
+    account: &str,
+) -> anyhow::Result<()> {
+    record_health(
+        &st.db,
+        provider,
+        account,
+        200,
+        &HeaderMap::new(),
+        chrono::Utc::now().timestamp(),
+        Recovery::All,
+    )
+    .await?;
+    sqlx::query("DELETE FROM provider_quota WHERE provider=? AND account=?")
+        .bind(provider)
+        .bind(account)
+        .execute(&st.db)
+        .await?;
+    emit_health_events(st).await;
     Ok(())
 }
 async fn save_window(
@@ -195,21 +513,15 @@ pub async fn accounts(
 
 /// Inference must not fail when observability storage is unavailable.
 pub async fn observe(
-    db: &SqlitePool,
+    st: &crate::state::AppState,
     provider: &crate::state::Provider,
     index: Option<usize>,
     result: &Result<reqwest::Response, reqwest::Error>,
 ) {
     if let Ok(response) = result {
-        let account = if crate::oauth::Flow::from_auth(provider.auth).is_some() {
-            "signin".into()
-        } else {
-            index
-                .map(|i| key_id(&provider.keys[i]))
-                .unwrap_or_else(|| "default".into())
-        };
+        let account = account_id(provider, index);
         if record(
-            db,
+            &st.db,
             &provider.name,
             &account,
             response.status().as_u16(),
@@ -221,6 +533,7 @@ pub async fn observe(
         {
             tracing::warn!("Could not store upstream quota snapshot");
         }
+        emit_health_events(st).await;
     }
 }
 

@@ -119,6 +119,7 @@ impl OAuthManager {
             inference_base: None,
         });
         self.save(name, Flow::GoogleVertex, saved).await?;
+        self.recover_health(name, Flow::GoogleVertex).await?;
         Ok(token)
     }
 }

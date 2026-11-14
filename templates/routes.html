@@ -27,7 +27,7 @@
 </fieldset>
 {% endmacro %}
 {% macro strategy_select(pre, name, strategy) %}
-<div class="field"><label for="{{ pre }}{{ name }}-strategy">Strategy</label><select id="{{ pre }}{{ name }}-strategy" name="strategy" data-strategy aria-describedby="{{ pre }}{{ name }}-strategy-help"><option value="priority"{% if strategy == "priority" %} selected{% endif %}>Priority</option><option value="round_robin"{% if strategy == "round_robin" %} selected{% endif %}>Round robin</option><option value="weighted"{% if strategy == "weighted" %} selected{% endif %}>Weighted</option></select><p class="hint" id="{{ pre }}{{ name }}-strategy-help">Priority uses the first healthy Deployment. Round robin takes turns. Weighted shares by weight.</p></div>
+<div class="field"><label for="{{ pre }}{{ name }}-strategy">Strategy</label><select id="{{ pre }}{{ name }}-strategy" name="strategy" data-strategy aria-describedby="{{ pre }}{{ name }}-strategy-help"><option value="priority"{% if strategy == "priority" %} selected{% endif %}>Priority</option><option value="round_robin"{% if strategy == "round_robin" %} selected{% endif %}>Round robin</option><option value="weighted"{% if strategy == "weighted" %} selected{% endif %}>Weighted</option><option value="quota"{% if strategy == "quota" %} selected{% endif %}>Quota</option></select><p class="hint" id="{{ pre }}{{ name }}-strategy-help">Priority uses the first healthy Deployment. Round robin takes turns. Weighted shares by weight. Quota uses the most remaining quota first.</p></div>
 {% endmacro %}
 {% macro affinity_select(pre, name, enabled) %}
 <div class="field"><label for="{{ pre }}{{ name }}-affinity">Session affinity</label><select id="{{ pre }}{{ name }}-affinity" name="session_affinity" data-affinity aria-describedby="{{ pre }}{{ name }}-affinity-help"><option value="off"{% if !enabled %} selected{% endif %}>Off</option><option value="on"{% if enabled %} selected{% endif %}>On</option></select><p class="hint" id="{{ pre }}{{ name }}-affinity-help">Keep a conversation on one Deployment to reuse its KV cache. Uses weights instead of the strategy. One Deployment ignores this setting.</p></div>
@@ -48,6 +48,7 @@
   <div class="end"><form class="inline" method="post" action="/admin/routes/{{ r.name }}/delete" data-confirm="Delete Route {{ r.name }}? Clients that send this model name get an error."><button class="danger" aria-label="Delete Route {{ r.name }}">Delete route</button></form></div>
 </div>
 <p class="muted">Active pinned sessions: {{ r.active_sessions }}</p>
+{% for reason in r.skips %}<p class="hint">{{ reason }}</p>{% endfor %}
 <form method="post" action="/admin/routes/{{ r.name }}" class="route-form" aria-label="Edit Route {{ r.name }}">
   <input type="hidden" name="deployment_offset" value="{{ r.deployment_offset }}">
   <input type="hidden" name="deployment_count" value="{{ r.deployment_count }}">

@@ -100,6 +100,7 @@ impl RouterTable {
                     }
                     let mut provider = Provider::new(&p.name, p.kind, &p.base_url, keys);
                     provider.auth = p.auth;
+                    provider.key_strategy = p.key_strategy;
                     provider.project_id = p.project_id.clone();
                     provider.region = p.region.clone();
                     provider.include_usage = p.include_usage;
@@ -270,7 +271,7 @@ impl AppState {
         let mut order: Vec<_> = route.deployments.iter().collect();
         if !order.is_empty() {
             match route.strategy {
-                Strategy::Priority => {}
+                Strategy::Priority | Strategy::Quota => {}
                 Strategy::RoundRobin => {
                     let mut next = self.route_next.lock().expect("route rotation");
                     let n = next.entry(route.name.clone()).or_default();
