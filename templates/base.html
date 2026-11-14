@@ -49,9 +49,23 @@ SHARED DASHBOARD MECHANISMS. Page templates use these; do not add new ones.
    aria-controls) shows or hides the element ID; `data-collapse` hides an
    element when the page loads (without JS it stays open). See the edit rows
    in keys.html: one summary row, one edit row with one form and one Save.
-9. CSS: spacing scale --sp-1..6 (4, 8, 12, 16, 24, 32 px). Classes: panel,
-   row, stack, muted, hint, tag (good, warn, bad, info), button.ghost,
-   button.danger, label.check, fieldset.choices + label.choice, code.url,
+9. CSS (Halogen style). Tokens are in the first rules of the stylesheet:
+   colours only there (tests/ux_global.rs fails on a hex colour elsewhere).
+   - Colours: --bg, --surface (cards), --raised (fields, chips), --line,
+     --line-soft (card and row lines), --line-input (3:1 field border),
+     --text, --muted, --faint (captions, table headers), --accent,
+     --accent-hover, --accent-ink (text on accent), --accent-soft (current
+     nav item, hover), --focus, --s1..--s5 (chart series), --up, --degraded,
+     --down (states) with --up-bg, --warn-bg/--warn-line, --crit-bg/
+     --crit-line, --grid, --shadow. Both themes set each colour.
+   - Type: --font (IBM Plex Sans Variable, /admin/assets/*.woff2), --mono
+     (keys, code), --fs-xs 12, --fs-sm 13 (tables), --fs-base 14, --fs-md 15
+     (card titles), --fs-lg 26 (tile values). Numbers are tabular.
+   - Radii: --r-card 10, --r-tile 8, --r-ctl 6, --r-pill.
+   Spacing scale --sp-1..6 (4, 8, 12, 16, 24, 32 px). Classes: panel (+
+   panel-head with a right-aligned .cap), tile (Overview KPI; warn, crit),
+   row, stack, muted, hint, tag (good, warn, bad, info), seg-opts (item
+   14), button (primary), button.ghost (secondary), button.danger, label.check, fieldset.choices + label.choice, code.url,
    pre.code, copy-row, vh (visually hidden), empty (empty-state line),
    field (label + control + hint; add `grow` to widen), checks (inline
    checkboxes), trunc (ellipsis with the full text in `title`), sub (second
@@ -121,6 +135,16 @@ COPY SHEET (GLOSSARY.md)
       with `data-scope-value` fills an empty scope field (models.dev). An option with `data-label` shows that
       label in the input. Each choice sends a bubbling `toko-pick` event with
       `detail.value` and `detail.label` (see providers.html).
+14. Theme: System (default), Dark or Light, stored in localStorage
+    "toko-theme". The script at the top of <head> sets `data-theme` (dark or
+    light) and `data-theme-pref` on <html> before the first paint; keep it
+    before the stylesheet. The switch in the header is a `.seg-opts` group
+    of three buttons with `data-theme-set` and aria-pressed; the JS below
+    keeps it in sync and follows prefers-color-scheme for System. Without
+    JS the page is dark and the switch is hidden.
+    `.seg-opts` is the shared segmented control: buttons with aria-pressed,
+    or `label.seg-opt` around a radio (Guardrails Kind). `.tabs` looks the
+    same for links.
 #}<!doctype html>
 <html lang="en">
 <head>
@@ -182,8 +206,7 @@ COPY SHEET (GLOSSARY.md)
   --up-bg:rgba(12,113,73,.09); --warn-bg:rgba(181,115,10,.08); --warn-line:rgba(163,95,0,.55); --crit-bg:rgba(194,40,59,.07); --crit-line:rgba(194,40,59,.55);
   --grid:rgba(91,80,112,.12); --header-bg:rgba(246,244,251,.9); --shadow:0 8px 24px rgba(27,20,48,.14); --scroll-shade:rgba(91,43,181,.16);
 }
-/* Old names, kept for CSS that is not migrated yet. Use the names above. */
-:root { --panel:var(--surface); --field:var(--raised); --hover:var(--accent-soft); --link:var(--accent); --bad:var(--down); --bad-bg:var(--crit-bg); --good:var(--up); --good-bg:var(--up-bg); --warn:var(--degraded); --info-bg:var(--accent-soft); }
+/* End of the colour tokens. */
 
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
@@ -212,13 +235,13 @@ header nav a[aria-current=page], header nav a.on { color:var(--accent); backgrou
 .bar-end { display:flex; align-items:center; gap:var(--sp-3); margin-left:auto; }
 header form { margin:0; }
 header .mode { text-decoration:none; }
-/* 14. Segmented controls: theme switch and tabs. */
-.seg { display:inline-flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--surface); }
-.seg button { display:inline-grid; place-items:center; min-height:28px; min-width:30px; padding:0 7px; border:0; border-radius:4px; background:transparent; color:var(--muted); }
-.seg button:hover { color:var(--text); background:var(--accent-soft); }
-.seg button[aria-pressed=true] { background:var(--accent); color:var(--accent-ink); }
-.seg button:focus-visible { outline-offset:1px; }
-.seg svg { display:block; }
+/* 14. Segmented control (`.seg-opts`): theme switch, Guardrails Kind. The
+   current option is accent with accent-ink, as Halogen's range control. */
+.seg-opts { display:inline-flex; max-width:100%; gap:2px; padding:2px; border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--surface); }
+.seg-opts button { display:inline-grid; place-items:center; min-height:28px; min-width:30px; padding:0 7px; border:0; border-radius:4px; background:transparent; color:var(--muted); }
+.seg-opts button:hover { color:var(--text); background:var(--accent-soft); }
+.seg-opts button[aria-pressed=true] { background:var(--accent); color:var(--accent-ink); }
+.seg-opts svg { display:block; }
 /* Without JS the switch cannot work: the page stays dark. */
 html:not([data-theme]) .theme-switch { display:none; }
 
@@ -348,7 +371,7 @@ pre.code { margin:0 0 var(--sp-3); padding:var(--sp-3); background:var(--raised)
 .tabs a[aria-current=page], .tabs a.on { color:var(--accent-ink); background:var(--accent); font-weight:600; }
 
 /* Overview tiles (Halogen Tile): label, 26 px value, unit, sparkline, warn and crit states. */
-.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-3); }
+.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-3); }
 .tile { display:flex; flex-direction:column; gap:2px; min-width:0; padding:10px var(--sp-3) var(--sp-2); background:var(--surface); border:1px solid var(--line-soft); border-radius:var(--r-tile); }
 .tile.warn { background:linear-gradient(var(--warn-bg), var(--warn-bg)), var(--surface); border-color:var(--warn-line); }
 .tile.crit { background:linear-gradient(var(--crit-bg), var(--crit-bg)), var(--surface); border-color:var(--crit-line); }
@@ -358,7 +381,7 @@ pre.code { margin:0 0 var(--sp-3); padding:var(--sp-3); background:var(--raised)
 .tile.crit .tile-tone { color:var(--down); }
 .tile-value { margin:0; font-size:var(--fs-lg); font-weight:500; line-height:1.15; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tile-unit { margin-left:4px; font-size:var(--fs-xs); font-weight:400; letter-spacing:0; color:var(--muted); }
-.tile-note { margin:0; font-size:var(--fs-xs); color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tile-note { margin:0; font-size:var(--fs-xs); color:var(--muted); overflow-wrap:anywhere; }
 svg.spark { display:block; width:100%; height:26px; margin:2px 0; overflow:visible; }
 .spark .line { fill:none; stroke:var(--s1); stroke-width:1.5; stroke-linejoin:round; }
 .spark .area { fill:var(--s1); fill-opacity:.16; stroke:none; }
@@ -636,25 +659,26 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
 .notice.np-next .test-form { margin-top:var(--sp-3); }
 /* 1. A field error shown after its field, in a grid of fields. */
 .fields > .form-error { grid-column:1 / -1; margin-top:0; }
-textarea[aria-invalid=true] { border-color:var(--bad); }
+textarea[aria-invalid=true] { border-color:var(--down); }
 /* A disclosure for advanced or rarely used fields in a form. */
 details.adv { align-self:stretch; }
-details.adv[open] { padding:var(--sp-3); border:1px solid var(--line); border-radius:8px; }
+details.adv[open] { padding:var(--sp-3); border:1px solid var(--line-soft); border-radius:var(--r-tile); }
 details.adv[open] > summary { margin-bottom:var(--sp-3); }
 details.adv pre.code { max-height:20em; overflow:auto; }
-input.mono { font-family:ui-monospace, monospace; font-size:13px; }
+input.mono { font-family:var(--mono); font-size:var(--fs-sm); }
 button.icon { display:inline-grid; place-items:center; min-width:32px; padding:0; }
 button[aria-disabled=true] { opacity:.45; cursor:default; }
-button.ghost[aria-disabled=true]:hover { background:transparent; color:var(--muted); }
+button.ghost[aria-disabled=true]:hover { background:transparent; border-color:var(--line-input); }
 /* Guardrails rule editor (guardrails.html): one fieldset per rule. */
 .guard-set > form.guard-form, #guard-test > form { align-self:stretch; }
 .guard-form > h3 { margin:var(--sp-2) 0 0; }
 .guard-form > .rules-hint { margin:0; }
 .quick { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
-.quick > .muted { font-size:13px; }
+.quick > .muted { font-size:var(--fs-sm); }
 ol.rule-list { list-style:none; margin:0; padding:0; display:grid; gap:var(--sp-3); align-self:stretch; }
-fieldset.rule { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:var(--sp-3); align-items:start; padding:var(--sp-3) var(--sp-4) var(--sp-4); border-color:var(--line-input); border-radius:8px; }
-fieldset.rule > legend { float:left; grid-column:1; margin:0; padding:0; font-size:14px; font-weight:600; line-height:32px; color:var(--text); overflow-wrap:anywhere; min-width:0; }
+/* Rule cards: a soft card on the panel, the number and name as the title row. */
+fieldset.rule { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:var(--sp-3); align-items:start; padding:var(--sp-3) var(--sp-4) var(--sp-4); background:var(--bg); border-color:var(--line); border-radius:var(--r-tile); }
+fieldset.rule > legend { float:left; grid-column:1; margin:0; padding:0; font-size:var(--fs-base); font-weight:600; line-height:32px; color:var(--text); overflow-wrap:anywhere; min-width:0; }
 fieldset.rule > legend .rule-name { font-weight:400; color:var(--muted); }
 fieldset.rule > .rule-tools { grid-column:2; display:flex; gap:var(--sp-1); }
 fieldset.rule > :not(legend):not(.rule-tools) { grid-column:1 / -1; }
@@ -663,17 +687,14 @@ fieldset.rule > label.check { justify-self:start; }
 .kind-panel { display:flex; flex-direction:column; gap:var(--sp-2); }
 .kind-panel > .field.wide input, .kind-panel > .field.wide textarea { width:100%; max-width:48em; }
 .kind-panel > .field select { width:20em; max-width:100%; }
+/* Kind: radio buttons in the shared segmented control (.seg-opts, item 14). */
 fieldset.seg { border:0; padding:0; margin:0; min-width:0; }
-fieldset.seg > legend { padding:0; margin-bottom:var(--sp-1); font-size:12px; color:var(--muted); }
-.seg-opts { display:inline-flex; max-width:100%; border:1px solid var(--line-input); border-radius:6px; background:var(--field); }
-label.seg-opt { position:relative; display:inline-flex; flex-direction:row; align-items:center; min-height:30px; padding:0 var(--sp-3); color:var(--muted); font-size:14px; cursor:pointer; }
-label.seg-opt + label.seg-opt { border-left:1px solid var(--line-input); }
-label.seg-opt:first-child { border-radius:5px 0 0 5px; }
-label.seg-opt:last-child { border-radius:0 5px 5px 0; }
+fieldset.seg > legend { padding:0; margin-bottom:var(--sp-1); font-size:var(--fs-xs); color:var(--muted); }
+label.seg-opt { position:relative; display:inline-flex; flex-direction:row; align-items:center; min-height:28px; padding:0 var(--sp-3); border-radius:4px; color:var(--muted); font-size:var(--fs-sm); cursor:pointer; }
 label.seg-opt input { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer; }
-label.seg-opt:hover { color:var(--text); background:var(--hover); }
-label.seg-opt:has(input:checked) { color:var(--text); background:var(--info-bg); box-shadow:inset 0 -2px 0 var(--link); }
-label.seg-opt:has(input:focus-visible) { outline:2px solid var(--focus); outline-offset:1px; z-index:1; }
+label.seg-opt:hover { color:var(--text); background:var(--accent-soft); }
+label.seg-opt:has(input:checked) { color:var(--accent-ink); background:var(--accent); font-weight:600; }
+label.seg-opt:has(input:focus-visible) { outline:2px solid var(--focus); outline-offset:2px; z-index:1; }
 .guard-set > form.subform { margin-top:0; }
 .guard-set > h3 { margin-bottom:0; }
 .test-out .hits { margin:0; padding-left:var(--sp-5); }
@@ -707,7 +728,7 @@ pre.code.wrap { white-space:pre-wrap; overflow-wrap:anywhere; align-self:stretch
   </nav>
   {% endif %}
   <div class="bar-end">
-    <div class="seg theme-switch" role="group" aria-label="Theme">
+    <div class="seg-opts theme-switch" role="group" aria-label="Theme">
       <button type="button" data-theme-set="system" aria-pressed="false" aria-label="System theme" title="System theme"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="2" y="3" width="12" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 13.5h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
       <button type="button" data-theme-set="dark" aria-pressed="false" aria-label="Dark theme" title="Dark theme"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M13 9.6A5.5 5.5 0 0 1 6.4 3a5.5 5.5 0 1 0 6.6 6.6Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
       <button type="button" data-theme-set="light" aria-pressed="false" aria-label="Light theme" title="Light theme"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="2.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>

@@ -672,9 +672,11 @@ fn templates_use_colour_tokens_only() {
         let mut text = std::fs::read_to_string(&path).unwrap();
         if path.ends_with("base.html") {
             // The token block: from the first :root rule to the end of the
-            // light theme (the "Old names" comment follows it).
+            // light theme.
             let start = text.find(":root {").expect("token block");
-            let end = text.find("/* Old names").expect("end of token block");
+            let end = text
+                .find("/* End of the colour tokens. */")
+                .expect("end of token block");
             text.replace_range(start..end, "");
         }
         for (i, part) in text.split('#').enumerate().skip(1) {

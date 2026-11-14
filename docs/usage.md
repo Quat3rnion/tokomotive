@@ -946,6 +946,14 @@ of at least 8 characters. Then log in. See "Dashboard password" in
 A login stays valid for `server.session_days` days (default 7) and survives a
 restart. Select **Log out** to end the session. All dashboard times are UTC.
 
+### Theme
+
+The dashboard has a dark theme and a light theme. Use the three buttons at the
+right of the header: **System theme**, **Dark theme** or **Light theme**.
+System uses the setting of your operating system and changes when that setting
+changes. The browser keeps your choice for the next visit. Without JavaScript,
+the dashboard uses the dark theme.
+
 ### Pages and name search
 
 List pages show 50 rows by default. The Ledger shows 100. Use **Next** and
@@ -1270,9 +1278,12 @@ The page shows the totals for a time range.
 - A notice shows the number of Unpriced Entries and Estimated Entries. This
   number counts all entries, not only the entries in the range. Each count is a
   link to the Ledger with the matching filter.
-- The cards show Requests (with errors and requests each hour), Tokens, Price
-  (what Users owe), Cost (what you owe), Profit (with the margin) and Latency
-  (with time to first token and output tokens each second).
+- The tiles show Requests (with errors), Error rate, Tokens, Price (what
+  Users owe, with Cost, Profit and the margin) and Latency (with time to first
+  token and output tokens each second). Each tile has a small chart of the
+  range. The Error rate tile shows **High** at 5% or more and **Critical** at
+  20% or more. The Price tile shows **Loss** when the Cost is more than the
+  Price.
 - The charts show Money (Cost, Price and Profit) and Traffic (requests and
   tokens).
 - The tables **By model**, **By provider**, **By user** and **By team** show requests, errors,
