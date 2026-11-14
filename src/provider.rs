@@ -39,6 +39,57 @@ pub enum ProviderKind {
     Anthropic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyHeader {
+    Bearer,
+    XApiKey,
+    ApiKey,
+}
+
+impl KeyHeader {
+    pub fn for_kind(kind: ProviderKind) -> Self {
+        match kind {
+            ProviderKind::Openai => Self::Bearer,
+            ProviderKind::Anthropic => Self::XApiKey,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::XApiKey => "x-api-key",
+            Self::ApiKey => "api-key",
+        }
+    }
+
+    pub fn apply(self, request: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
+        match self {
+            Self::Bearer => request.bearer_auth(key),
+            Self::XApiKey => request.header("x-api-key", key),
+            Self::ApiKey => request.header("api-key", key),
+        }
+    }
+}
+
+pub fn default_include_usage() -> bool {
+    true
+}
+
+/// Accept origin bases, versioned API bases and full Messages endpoints.
+/// Keep the client query string and custom proxy prefixes unchanged.
+pub fn upstream_url(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let base = base.strip_suffix("/messages").unwrap_or(base);
+    let versioned = base.ends_with("/v1") || base.ends_with("/v4") || base.ends_with("/v1/openai");
+    let suffix = if versioned {
+        path.strip_prefix("/v1/").map(|p| format!("/{p}"))
+    } else {
+        None
+    };
+    format!("{base}{}", suffix.as_deref().unwrap_or(path))
+}
+
 /// The kind of endpoint a request goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
@@ -103,8 +154,9 @@ impl ProviderKind {
     /// For streamed Chat Completions, ask the Provider to report usage.
     /// Returns true when the Proxy turned on `include_usage` itself; the
     /// usage-only chunk must then be removed from the client stream.
-    pub fn prepare_body(&self, endpoint: Endpoint, body: &mut Value) -> bool {
-        if *self == ProviderKind::Openai
+    pub fn prepare_body(&self, endpoint: Endpoint, body: &mut Value, include_usage: bool) -> bool {
+        if include_usage
+            && *self == ProviderKind::Openai
             && endpoint == Endpoint::ChatCompletions
             && is_stream(body)
             && let Some(obj) = body.as_object_mut()
@@ -125,7 +177,7 @@ impl ProviderKind {
     pub fn usage_from_json(&self, endpoint: Endpoint, v: &Value) -> Option<Usage> {
         match (self, endpoint) {
             (ProviderKind::Openai, Endpoint::Images) => image_usage(v.get("usage")?),
-            (ProviderKind::Openai, _) => openai_usage(v.get("usage")?),
+            (ProviderKind::Openai, _) => openai_usage(usage_object(v)?),
             (ProviderKind::Anthropic, _) => anthropic_usage(v.get("usage")?, None),
         }
     }
@@ -154,6 +206,28 @@ fn int(v: &Value, k: &str) -> i64 {
     v.get(k).and_then(Value::as_i64).unwrap_or(0)
 }
 
+/// Prefer the request-level report over a compatibility report in a choice.
+/// Reports are cumulative snapshots, not deltas to add together.
+fn usage_object(v: &Value) -> Option<&Value> {
+    v.get("usage").filter(|u| u.is_object()).or_else(|| {
+        v.get("choices")?
+            .as_array()?
+            .iter()
+            .find_map(|c| c.get("usage").filter(|u| u.is_object()))
+    })
+}
+
+/// Provider-reported cost for comparison only, in integer micro-dollars.
+/// OpenRouter reports USD; xAI defines 10^10 ticks as one USD.
+pub fn reported_cost_micros(v: &Value) -> Option<i64> {
+    let u = usage_object(v)?;
+    if let Some(ticks) = u.get("cost_in_usd_ticks").and_then(Value::as_u64) {
+        return i64::try_from((u128::from(ticks) + 5_000) / 10_000).ok();
+    }
+    let micros = u.get("cost")?.as_f64()? * 1_000_000.0;
+    (micros.is_finite() && micros >= 0.0 && micros < i64::MAX as f64).then(|| micros.round() as i64)
+}
+
 /// OpenAI Chat Completions or Responses usage. Cached tokens are a subset of
 /// prompt/input tokens, so they are subtracted from input.
 fn openai_usage(u: &Value) -> Option<Usage> {
@@ -174,9 +248,11 @@ fn openai_usage(u: &Value) -> Option<Usage> {
         )
     };
     let cached = details
-        .map(|d| int(d, "cached_tokens"))
+        .and_then(|d| d.get("cached_tokens").and_then(Value::as_i64))
+        .or_else(|| u.get("cached_tokens").and_then(Value::as_i64))
+        .or_else(|| u.get("prompt_cache_hit_tokens").and_then(Value::as_i64))
         .unwrap_or(0)
-        .min(prompt);
+        .clamp(0, prompt.max(0));
     Some(Usage {
         input: prompt - cached,
         output,
@@ -250,6 +326,7 @@ pub struct StreamTracker {
     strip_usage_chunk: bool,
     buf: Vec<u8>,
     pub usage: Option<Usage>,
+    pub reported_cost_micros: Option<i64>,
     pub model: Option<String>,
     /// True when the Provider sent its final usage report.
     pub usage_final: bool,
@@ -308,6 +385,12 @@ impl StreamTracker {
         let Ok(v) = serde_json::from_str::<Value>(&data) else {
             return true;
         };
+        if let Some(cost) = reported_cost_micros(&v)
+            .or_else(|| v.get("response").and_then(reported_cost_micros))
+            .or_else(|| v.get("message").and_then(reported_cost_micros))
+        {
+            self.reported_cost_micros = Some(cost);
+        }
         match self.kind {
             ProviderKind::Openai => self.handle_openai(&v),
             ProviderKind::Anthropic => {
@@ -345,7 +428,7 @@ impl StreamTracker {
                 if matches!(
                     t,
                     "response.completed" | "response.incomplete" | "response.failed"
-                ) && let Some(u) = resp.get("usage").and_then(openai_usage)
+                ) && let Some(u) = usage_object(resp).and_then(openai_usage)
                 {
                     self.usage = Some(u);
                     self.usage_final = true;
@@ -367,7 +450,7 @@ impl StreamTracker {
         if has_choices {
             self.saw_content = true;
         }
-        if let Some(u) = v.get("usage").and_then(openai_usage) {
+        if let Some(u) = usage_object(v).and_then(openai_usage) {
             self.usage = Some(u);
             self.usage_final = true;
             if self.strip_usage_chunk && !has_choices {
@@ -493,10 +576,10 @@ mod tests {
     #[test]
     fn chat_stream_injects_include_usage() {
         let mut b = json!({"model": "gpt-4o", "stream": true});
-        ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut b);
+        ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut b, true);
         assert_eq!(b["stream_options"]["include_usage"], json!(true));
         let mut nb = json!({"model": "gpt-4o"});
-        ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut nb);
+        ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut nb, true);
         assert!(nb.get("stream_options").is_none());
     }
 
@@ -589,9 +672,9 @@ mod tests {
     #[test]
     fn prepare_body_reports_whether_it_injected() {
         let mut a = json!({"stream": true});
-        assert!(ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut a));
+        assert!(ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut a, true));
         let mut b = json!({"stream": true, "stream_options": {"include_usage": true}});
-        assert!(!ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut b));
+        assert!(!ProviderKind::Openai.prepare_body(Endpoint::ChatCompletions, &mut b, true));
     }
 
     #[test]

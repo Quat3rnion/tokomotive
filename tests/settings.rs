@@ -35,6 +35,192 @@ fn client() -> reqwest::Client {
         .unwrap()
 }
 
+#[tokio::test]
+async fn preset_fills_editable_provider_fields_without_javascript() {
+    let (_dir, st, url, task) = app().await;
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    let page = c
+        .get(format!("{url}/admin/providers?preset=zai-coding"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("name=\"preset\""));
+    assert!(page.contains("value=\"zai-coding\" required"));
+    assert!(page.contains("value=\"https://api.z.ai/api/coding/paas/v4\""));
+    assert!(page.contains("https://docs.z.ai/devpack/quick-start"));
+    assert!(page.contains("name=\"include_usage\""));
+    assert!(page.contains("name=\"key_header\""));
+    assert_eq!(
+        c.post(format!("{url}/admin/providers"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "custom"),
+                ("kind", "anthropic"),
+                ("base_url", "https://custom.example/anthropic"),
+                ("key_header", "bearer"),
+                ("include_usage", "false")
+            ])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    st.reload_settings().await.unwrap();
+    let cfg = tokomotive::settings::load(&st.db, &st.secret_key)
+        .await
+        .unwrap()
+        .0;
+    let serialized = serde_json::to_value(&cfg.providers[0]).unwrap();
+    assert_eq!(serialized["key_header"], "bearer");
+    assert_eq!(serialized["include_usage"], false);
+    task.abort();
+}
+
+#[tokio::test]
+async fn provider_key_headers_replace_all_client_credentials() {
+    use std::sync::{Arc, Mutex};
+    let (_dir, st, url, task) = app().await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let capture = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let upstream =
+        axum::Router::new().fallback(move |uri: axum::http::Uri, mut h: axum::http::HeaderMap| {
+            h.insert("x-seen-path", uri.path().parse().unwrap());
+            capture.lock().unwrap().push(h);
+            async { axum::Json(serde_json::json!({"usage":{"input_tokens":2,"output_tokens":1}})) }
+        });
+    let upstream_task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    let user = tokomotive::db::create_user(&st.db, "header-user", None, None, false)
+        .await
+        .unwrap();
+    let (_, key) = tokomotive::db::create_key(&st.db, user, "headers", None)
+        .await
+        .unwrap();
+    for (name, kind, header, path, prefix, expected) in [
+        (
+            "kimi",
+            "anthropic",
+            "bearer",
+            "messages",
+            "/anthropic",
+            "/anthropic/v1/messages",
+        ),
+        (
+            "azure",
+            "openai",
+            "api-key",
+            "chat/completions",
+            "/openai/v1",
+            "/openai/v1/chat/completions",
+        ),
+        (
+            "anthropic",
+            "anthropic",
+            "x-api-key",
+            "messages",
+            "",
+            "/v1/messages",
+        ),
+        (
+            "router",
+            "anthropic",
+            "bearer",
+            "messages",
+            "/api/v1/messages",
+            "/api/v1/messages",
+        ),
+        (
+            "zai",
+            "openai",
+            "bearer",
+            "chat/completions",
+            "/api/paas/v4",
+            "/api/paas/v4/chat/completions",
+        ),
+        (
+            "deepinfra",
+            "openai",
+            "bearer",
+            "chat/completions",
+            "/v1/openai",
+            "/v1/openai/chat/completions",
+        ),
+    ] {
+        let provider_base = format!("{base}{prefix}");
+        assert_eq!(
+            c.post(format!("{url}/admin/providers"))
+                .header("cookie", &cookie)
+                .form(&[
+                    ("name", name),
+                    ("kind", kind),
+                    ("key_header", header),
+                    ("base_url", &provider_base),
+                    ("api_key", "upstream-secret")
+                ])
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            303
+        );
+        let response = c
+            .post(format!("{url}/v1/{path}"))
+            .bearer_auth(&key)
+            .header("x-api-key", "client-x-key")
+            .header("api-key", "client-azure-key")
+            .json(&serde_json::json!({"model":format!("{name}/demo"),"messages":[]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let _ = response.bytes().await.unwrap();
+        let h = seen.lock().unwrap().last().unwrap().clone();
+        assert_eq!(h["x-seen-path"], expected);
+        let selected = if header == "bearer" {
+            "authorization"
+        } else {
+            header
+        };
+        assert_eq!(
+            h.get(selected).unwrap().to_str().unwrap(),
+            if header == "bearer" {
+                "Bearer upstream-secret"
+            } else {
+                "upstream-secret"
+            }
+        );
+        for other in ["authorization", "x-api-key", "api-key"] {
+            if other != selected {
+                assert!(!h.contains_key(other), "forwarded {other}");
+            }
+        }
+        if kind == "anthropic" {
+            assert_eq!(h["anthropic-version"], "2023-06-01");
+        }
+        // Test connection must use the same key-header policy.
+        c.post(format!("{url}/admin/providers/{name}/test"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            seen.lock().unwrap().last().unwrap().get(selected),
+            h.get(selected)
+        );
+    }
+    task.abort();
+    upstream_task.abort();
+}
+
 async fn authenticate(c: &reqwest::Client, url: &str) -> String {
     c.post(format!("{url}/setup"))
         .form(&[("password", "long-password")])
@@ -887,6 +1073,8 @@ kind = "openai"
 base_url = "https://first.example"
 api_key = "seed-secret"
 api_keys_env = ["TOKOMOTIVE_SETTINGS_MISSING_TEST_KEY"]
+key_header = "api-key"
+include_usage = false
 [[routes]]
 name = "r"
 deployments = [{provider="seeded",model="first",weight=1}]
@@ -896,6 +1084,11 @@ deployments = [{provider="seeded",model="first",weight=1}]
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
     let first = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(first.router_table().providers[0].keys[0], "seed-secret");
+    assert_eq!(
+        first.router_table().providers[0].key_header,
+        tokomotive::provider::KeyHeader::ApiKey
+    );
+    assert!(!first.router_table().providers[0].include_usage);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

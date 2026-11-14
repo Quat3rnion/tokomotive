@@ -124,6 +124,10 @@ pub struct ProviderCfg {
     #[serde(default)]
     pub auth: crate::provider::ProviderAuth,
     pub base_url: String,
+    #[serde(default)]
+    pub key_header: Option<crate::provider::KeyHeader>,
+    #[serde(default = "crate::provider::default_include_usage")]
+    pub include_usage: bool,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     /// A Provider Key pool. Keys are used in turn.

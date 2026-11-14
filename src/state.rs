@@ -20,6 +20,8 @@ pub struct Provider {
     pub name: String,
     pub kind: ProviderKind,
     pub auth: crate::provider::ProviderAuth,
+    pub include_usage: bool,
+    pub key_header: crate::provider::KeyHeader,
     pub base_url: String,
     /// The Provider Key pool. Empty when no key is configured.
     pub keys: Arc<Vec<String>>,
@@ -32,6 +34,8 @@ impl Provider {
             name: name.into(),
             kind,
             auth: crate::provider::ProviderAuth::ApiKey,
+            include_usage: true,
+            key_header: crate::provider::KeyHeader::for_kind(kind),
             base_url: base_url.into(),
             keys: Arc::new(keys),
             next: Arc::new(AtomicUsize::new(0)),

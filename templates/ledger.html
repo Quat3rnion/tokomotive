@@ -59,6 +59,10 @@
       <dl class="kv">
         <div><dt>Entry</dt><dd>#{{ r.id }}</dd></div>
         <div><dt>Endpoint</dt><dd>{{ r.endpoint }}</dd></div>
+        {% if !base.simple %}
+        <div><dt>Cost</dt><dd><span title="{{ r.cost.exact }}">{{ r.cost }}</span></dd></div>
+        <div><dt>Provider-reported cost</dt><dd>{% if let Some(cost) = r.reported_cost %}<span title="{{ cost.exact }}">{{ cost }}</span>{% else %}Not reported{% endif %}</dd></div>
+        {% endif %}
         <div><dt>Input</dt><dd>{{ r.input }}</dd></div>
         <div><dt>Output</dt><dd>{{ r.output }}</dd></div>
         <div><dt>Cache read</dt><dd>{{ r.cache_read }}</dd></div>
@@ -70,6 +74,7 @@
         <div><dt>Provider Key</dt><dd>{{ r.key }}</dd></div>
         <div><dt>Attempts</dt><dd>{{ r.attempts }}</dd></div>
       </dl>
+      {% if !base.simple %}<p class="hint">For comparison only. Provider-reported cost does not change pricing. Pricing uses the Cost Card.</p>{% endif %}
     </div></td>
   </tr>
   {% else %}

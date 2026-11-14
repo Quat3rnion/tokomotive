@@ -580,6 +580,7 @@ pub struct NewEntry {
     pub status: u16,
     pub streamed: bool,
     pub usage: Usage,
+    pub reported_cost_micros: Option<i64>,
     pub quote: Quote,
     pub estimated: bool,
     pub latency_ms: i64,
@@ -607,8 +608,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let id = sqlx::query(
         "INSERT INTO ledger(ts_ms, user_id, key_id, team_id, provider, endpoint, requested_model, model, model_id, status, streamed,
             input, output, cache_read, cache_write_5m, cache_write_1h, cost_micros, price_micros, cost_card_id, price_card_id,
-            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription, reported_cost_micros)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(e.ts_ms)
     .bind(e.user_id)
@@ -640,6 +641,7 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(e.provider_key)
     .bind(e.attempts)
     .bind(e.subscription)
+    .bind(e.reported_cost_micros)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -1053,6 +1055,7 @@ pub struct LedgerRow {
     pub cache_write_5m: i64,
     pub cache_write_1h: i64,
     pub cost_micros: i64,
+    pub reported_cost_micros: Option<i64>,
     pub price_micros: i64,
     pub unpriced: bool,
     pub estimated: bool,
@@ -1132,7 +1135,7 @@ pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<Ledger
         "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
-            l.image_input, l.image_output, l.provider_key, l.attempts
+            l.image_input, l.image_output, l.provider_key, l.attempts, l.reported_cost_micros
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
     );
     b.push(match q.filter {

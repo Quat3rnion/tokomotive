@@ -1259,6 +1259,7 @@ pub struct LedgerView {
     pub attempts: i64,
     pub key: String,
     pub cost: Money,
+    pub reported_cost: Option<Money>,
     pub price: Money,
     pub unpriced: bool,
     pub estimated: bool,
@@ -1362,6 +1363,10 @@ impl LedgerView {
                 text: money_row(r.cost_micros),
                 exact: money_exact(r.cost_micros),
             },
+            reported_cost: r.reported_cost_micros.map(|value| Money {
+                text: money_row(value),
+                exact: money_exact(value),
+            }),
             price: Money {
                 text: money_row(r.price_micros),
                 exact: money_exact(r.price_micros),

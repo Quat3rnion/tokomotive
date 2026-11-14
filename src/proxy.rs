@@ -98,6 +98,14 @@ fn prepare_body(
         )?),
         None => body.cloned(),
     };
+    // Messages has no stream_options. These options were added by Translation,
+    // not by the client, so the Provider's switch must also control them.
+    if dir == Some(Direction::MessagesToChat)
+        && !candidate.provider.include_usage
+        && let Some(obj) = prepared.as_mut().and_then(Value::as_object_mut)
+    {
+        obj.remove("stream_options");
+    }
     if candidate.provider.auth == crate::provider::ProviderAuth::Claude
         && target == Endpoint::Messages
         && prepared.as_ref().is_none_or(|body| !body.is_object())
@@ -120,9 +128,12 @@ fn prepare_body(
         prepared = Some(value);
         target = Endpoint::Responses;
     }
-    let strip = prepared
-        .as_mut()
-        .is_some_and(|v| candidate.provider.kind.prepare_body(target, v));
+    let strip = prepared.as_mut().is_some_and(|v| {
+        candidate
+            .provider
+            .kind
+            .prepare_body(target, v, candidate.provider.include_usage)
+    });
     if candidate.provider.auth == crate::provider::ProviderAuth::Claude
         && let Some(body) = prepared.as_mut()
     {
@@ -307,6 +318,7 @@ fn skip_header(name: &HeaderName) -> bool {
         "host"
             | "authorization"
             | "x-api-key"
+            | "api-key"
             | "content-length"
             | "connection"
             | "keep-alive"
@@ -343,6 +355,7 @@ struct Outcome {
     status: u16,
     model: Option<String>,
     usage: Usage,
+    reported_cost_micros: Option<i64>,
     estimated: bool,
     ttft_ms: Option<i64>,
     client_aborted: bool,
@@ -354,6 +367,7 @@ impl Outcome {
             status,
             model: None,
             usage: Usage::default(),
+            reported_cost_micros: None,
             estimated: false,
             ttft_ms: None,
             client_aborted: false,
@@ -388,6 +402,7 @@ impl Ctx {
             status: o.status,
             streamed: self.streamed,
             usage: o.usage,
+            reported_cost_micros: o.reported_cost_micros,
             quote,
             estimated: o.estimated,
             latency_ms: self.started.elapsed().as_millis() as i64,
@@ -681,7 +696,11 @@ pub async fn handle(
         } else {
             st.oauth.resource(provider.auth)
         };
-        let url = format!("{}{}", base.trim_end_matches('/'), path);
+        let url = if provider.auth == crate::provider::ProviderAuth::ApiKey {
+            crate::provider::upstream_url(base, &path)
+        } else {
+            format!("{}{}", base.trim_end_matches('/'), path)
+        };
         let order: Vec<Option<usize>> = match provider.key_order() {
             o if o.is_empty() => vec![None],
             o => o.into_iter().map(Some).collect(),
@@ -889,6 +908,9 @@ pub async fn handle(
         status: status.as_u16(),
         model,
         usage: usage.unwrap_or_default(),
+        reported_cost_micros: parsed
+            .as_ref()
+            .and_then(crate::provider::reported_cost_micros),
         estimated,
         ttft_ms: None,
         client_aborted: false,
@@ -990,17 +1012,18 @@ async fn build_request(
                 .header("accept", "text/event-stream"),
         );
     }
-    Some(match provider.kind {
-        ProviderKind::Openai => req.bearer_auth(key),
-        ProviderKind::Anthropic => {
-            let r = req.header("x-api-key", key);
-            if anthropic_hint {
-                r
-            } else {
-                r.header("anthropic-version", "2023-06-01")
-            }
-        }
-    })
+    let req = if provider.auth == crate::provider::ProviderAuth::ApiKey {
+        provider.key_header.apply(req, key)
+    } else {
+        req.bearer_auth(key)
+    };
+    Some(
+        if provider.kind == ProviderKind::Anthropic && !anthropic_hint {
+            req.header("anthropic-version", "2023-06-01")
+        } else {
+            req
+        },
+    )
 }
 
 /// The Codex backend only streams. Collect the final Response for JSON clients
@@ -1064,6 +1087,7 @@ async fn collect_codex(ctx: Ctx, upstream: reqwest::Response, mut headers: Heade
             status: status.as_u16(),
             model: tracker.model.take(),
             usage: tracker.usage.unwrap_or_default(),
+            reported_cost_micros: tracker.reported_cost_micros,
             estimated: !tracker.usage_final,
             ttft_ms: None,
             client_aborted,
@@ -1156,6 +1180,7 @@ fn stream_response(
             status: code,
             model: tracker.model.take(),
             usage: tracker.usage.unwrap_or_default(),
+            reported_cost_micros: tracker.reported_cost_micros,
             estimated,
             ttft_ms: ttft,
             client_aborted: client_gone,

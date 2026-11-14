@@ -165,7 +165,7 @@ Use **Providers** to add, edit or delete Providers and to add or remove keys.
 Names use letters, digits, dot, underscore or hyphen. Base URLs must use HTTP or
 HTTPS and must not contain credentials, a query or a fragment. You cannot delete
 a Provider used by a Route or Model. Update those references first. **Test**
-calls `GET {base_url}/v1/models` with the first key and reports its HTTP status.
+calls the API's `/models` endpoint with the first key and reports its HTTP status.
 It has a time limit of 15 seconds.
 
 Saved keys show only their last 4 characters. A value `env:NAME` stores a
@@ -175,14 +175,18 @@ service environment. A dashboard edit cannot change the environment of the
 running process.
 
 The table below lists the keys of the seed file. The dashboard has the fields
-`name`, `kind`, `auth`, `base_url` and the keys.
+`name`, `kind`, `auth`, `base_url`, `key_header`, `include_usage` and the keys.
+The Add Provider form also has a preset selector. Presets fill editable fields;
+they are not a seed-file key. See [Provider presets](usage.md#provider-presets).
 
 | Key            | Type             | Default | Meaning                                                                                                          |
 | -------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | string           | none    | Required. The name that `models.provider` uses.                                                                  |
 | `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the wire format and usage parser. |
 | `auth`         | string           | `"api_key"` | `"api_key"`, `"chatgpt"`, `"codex"` or `"claude"`. Subscription auth needs sign-in on Providers. |
-| `base_url`     | string           | none    | Required. The URL of the Provider API, without a path such as `/v1`. The Proxy adds the path and query of the client request. |
+| `base_url`     | string           | none    | Required. The API origin or versioned base URL. The Proxy does not repeat `/v1`, Z.ai `/v4`, or the version in DeepInfra `/v1/openai`. A full Messages endpoint is also accepted. Custom prefixes and client query parameters stay. |
+| `key_header`   | string           | by kind | `"bearer"`, `"x-api-key"` or `"api-key"`. Applies to API keys only. If omitted, OpenAI uses Bearer and Anthropic uses `x-api-key`. |
+| `include_usage` | boolean         | `true`  | Send `stream_options.include_usage` for streamed Chat Completions. Off does not change options from a native client request. The Proxy still reads final usage. Presets can select a different default. |
 | `api_key`      | string           | none    | One Provider Key, in the file. The Proxy encrypts it when it seeds. Do not use it in a repository that you commit. |
 | `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. A non-empty variable takes precedence over `api_key`.         |
 | `api_keys`     | array of strings | `[]`    | More Provider Keys, in the file. The Proxy encrypts them when it seeds.                                          |
@@ -217,10 +221,31 @@ sends requests to the Provider with an empty key.
 
 ### Authentication headers
 
-| Kind        | Header that the Proxy sends to the Provider                                                              |
-| ----------- | -------------------------------------------------------------------------------------------------------- |
-| `openai`    | `Authorization: Bearer <Provider Key>`                                                                   |
-| `anthropic` | `x-api-key: <Provider Key>`. The Proxy adds `anthropic-version: 2023-06-01` if the client sent no such header. |
+| `key_header` | Header that the Proxy sends to the Provider |
+| --- | --- |
+| `bearer` | `Authorization: Bearer <Provider Key>` |
+| `x-api-key` | `x-api-key: <Provider Key>` |
+| `api-key` | `api-key: <Provider Key>` (Azure) |
+
+For Anthropic format, the Proxy also adds `anthropic-version: 2023-06-01`
+if the client sent no such header. The connection test uses the same key header.
+
+Seed-file example for Azure v1:
+
+```toml
+[[providers]]
+name = "azure"
+kind = "openai"
+base_url = "https://your-resource.openai.azure.com/openai/v1"
+key_header = "api-key"
+include_usage = true
+api_key_env = "AZURE_OPENAI_API_KEY"
+```
+
+For DeepSeek or OpenRouter, use `key_header = "bearer"` and
+`include_usage = false`. Their streams send final usage without that option.
+The seed file is read only for an empty database. Change existing Providers
+in the dashboard.
 
 This table applies to `auth = "api_key"`. ChatGPT token sharing uses a bearer
 token with the normal public OpenAI API. Claude OAuth uses a bearer token, the
@@ -273,7 +298,7 @@ credential. A failed or uncertain refresh needs sign-in again. Refresh errors
 do not expose token response bodies. Run one process for each database.
 
 The Proxy does not copy these client headers to the Provider: `Authorization`,
-`x-api-key`, `Host`, `Content-Length`, `Accept-Encoding` and the hop-by-hop
+`x-api-key`, `api-key`, `Host`, `Content-Length`, `Accept-Encoding` and the hop-by-hop
 headers. It copies all other headers.
 Codex requests also replace client identity, account, session, version and
 user-agent headers and do not forward cookies or OpenAI organization/project

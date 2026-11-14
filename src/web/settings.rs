@@ -536,12 +536,16 @@ struct ProvidersPage {
     pager: Pager,
     base: Base,
     providers: Vec<ProviderView>,
+    presets: &'static [crate::presets::Preset],
+    preset: &'static crate::presets::Preset,
 }
 struct ProviderView {
     key_pager: Pager,
     name: String,
     kind: String,
     base_url: String,
+    include_usage: bool,
+    key_header: &'static str,
     keys: Vec<KeyView>,
     auth: String,
     /// "API key", "ChatGPT subscription" or "Claude Pro/Max".
@@ -690,6 +694,7 @@ struct ProvidersQ {
     page: PageQuery,
     pool_page: Option<i64>,
     pool_provider: Option<String>,
+    preset: Option<String>,
 }
 
 async fn providers(
@@ -706,7 +711,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -805,6 +810,16 @@ async fn providers(
             }
             .into(),
             base_url: row.get("base_url"),
+            include_usage: row.get("include_usage"),
+            key_header: tryr!(
+                row.get::<Option<String>, _>("key_header")
+                    .map(|h| serde_json::from_value::<crate::provider::KeyHeader>(
+                        serde_json::json!(h)
+                    ))
+                    .transpose()
+            )
+            .unwrap_or_else(|| crate::provider::KeyHeader::for_kind(kind))
+            .as_str(),
             keys,
         });
     }
@@ -812,6 +827,12 @@ async fn providers(
         pager,
         base: Base::new(&st),
         providers,
+        presets: crate::presets::PRESETS,
+        preset: query
+            .preset
+            .as_deref()
+            .and_then(crate::presets::find)
+            .unwrap_or(&crate::presets::PRESETS[0]),
     })
 }
 
@@ -826,6 +847,10 @@ struct ProviderForm {
     base_url: String,
     #[serde(default)]
     api_key: String,
+    #[serde(default = "crate::provider::default_include_usage")]
+    include_usage: bool,
+    #[serde(default)]
+    key_header: Option<crate::provider::KeyHeader>,
 }
 
 async fn runtime(st: &AppState) -> anyhow::Result<Config> {
@@ -888,6 +913,8 @@ async fn save_provider(
         kind: f.kind,
         auth: f.auth,
         base_url: f.base_url.clone(),
+        include_usage: f.include_usage,
+        key_header: f.key_header,
         api_key: None,
         api_key_env: None,
         api_keys: vec![],
@@ -946,22 +973,26 @@ async fn save_provider(
     }
     let mut tx = tryr!(st.db.begin().await);
     let result = if let Some(name) = old {
-        sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=? WHERE name=?")
+        sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=?,include_usage=?,key_header=? WHERE name=?")
             .bind(&f.name)
             .bind(tryr!(serde_json::to_string(&f.kind)))
             .bind(f.base_url.trim_end_matches('/'))
             .bind(tryr!(serde_json::to_string(&keys)))
             .bind(f.auth.as_str())
+            .bind(f.include_usage)
+            .bind(f.key_header.map(|h| h.as_str()))
             .bind(name)
             .execute(&mut *tx)
             .await
     } else {
-        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json,auth) VALUES(?,?,?,?,?)")
+        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json,auth,include_usage,key_header) VALUES(?,?,?,?,?,?,?)")
             .bind(&f.name)
             .bind(tryr!(serde_json::to_string(&f.kind)))
             .bind(f.base_url.trim_end_matches('/'))
             .bind(tryr!(serde_json::to_string(&keys)))
             .bind(f.auth.as_str())
+            .bind(f.include_usage)
+            .bind(f.key_header.map(|h| h.as_str()))
             .execute(&mut *tx)
             .await
     };
@@ -1086,10 +1117,7 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
     let Some(p) = table.providers.iter().find(|p| p.name == name) else {
         return form_error("Provider not found.");
     };
-    let url = format!(
-        "{}/v1/models",
-        p.base_url.trim_end_matches('/').trim_end_matches("/v1")
-    );
+    let url = crate::provider::upstream_url(&p.base_url, "/v1/models");
     if p.auth != crate::provider::ProviderAuth::ApiKey {
         return form_error(
             "Use Sign in for this Subscription Provider. API-key tests do not apply.",
@@ -1104,11 +1132,11 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
         .http()
         .get(url)
         .timeout(std::time::Duration::from_secs(15));
-    let req = match p.kind {
-        ProviderKind::Openai => req.bearer_auth(key),
-        ProviderKind::Anthropic => req
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01"),
+    let req = p.key_header.apply(req, key);
+    let req = if p.kind == ProviderKind::Anthropic {
+        req.header("anthropic-version", "2023-06-01")
+    } else {
+        req
     };
     let (class, text) = match req.send().await {
         Err(_) => (
@@ -1142,7 +1170,7 @@ fn test_message(code: u16) -> (&'static str, String) {
         ),
         404 => (
             "bad",
-            "The Provider answered 404. Check the base URL; use the address without /v1.".into(),
+            "The Provider answered 404. Check the API base URL in the Provider documentation.".into(),
         ),
         429 => (
             "warn",

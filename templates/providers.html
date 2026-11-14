@@ -36,6 +36,12 @@
       <div class="field grow"><label for="p-{{ p.name }}-url">Base URL</label><input id="p-{{ p.name }}-url" name="base_url" value="{{ p.base_url }}" required{% if p.auth != "api_key" %} readonly aria-describedby="p-{{ p.name }}-fixed"{% endif %} autocomplete="off" spellcheck="false"></div>
     </div>
     {% if p.auth != "api_key" %}<p class="hint" id="p-{{ p.name }}-fixed">A {{ p.auth_label }} Provider has a fixed API format and base URL.</p>{% endif %}
+    {% if p.auth == "api_key" %}
+    <div class="row">
+      <div class="field"><label for="p-{{ p.name }}-header">Key header</label><select id="p-{{ p.name }}-header" name="key_header"><option value="bearer"{% if p.key_header == "bearer" %} selected{% endif %}>Authorization: Bearer</option><option value="x-api-key"{% if p.key_header == "x-api-key" %} selected{% endif %}>x-api-key</option><option value="api-key"{% if p.key_header == "api-key" %} selected{% endif %}>api-key (Azure)</option></select></div>
+      <div class="field"><label for="p-{{ p.name }}-usage">Send stream_options.include_usage</label><select id="p-{{ p.name }}-usage" name="include_usage"><option value="true"{% if p.include_usage %} selected{% endif %}>On</option><option value="false"{% if !p.include_usage %} selected{% endif %}>Off</option></select></div>
+    </div>
+    {% endif %}
     <div class="form-error" role="alert" tabindex="-1"></div>
     <div><button aria-label="Save Provider {{ p.name }}">Save</button></div>
   </form>
@@ -108,16 +114,28 @@
 
 <section class="panel" aria-labelledby="add-provider-h">
   <h2 id="add-provider-h">Add a Provider</h2>
+  <form method="get" action="/admin/providers#add-provider-h" class="row">
+    <div class="field grow"><label for="np-preset">Preset</label><select id="np-preset" name="preset">
+      {% for item in presets %}<option value="{{ item.name }}"{% if item.name == preset.name %} selected{% endif %} data-name="{{ item.name }}" data-kind="{{ item.kind_name() }}" data-url="{{ item.base_url }}" data-header="{{ item.key_header.as_str() }}" data-usage="{{ item.include_usage }}" data-docs="{{ item.docs }}" data-help="{{ item.key_help }}">{{ item.label }}</option>{% endfor %}
+    </select></div>
+    <button type="submit" class="ghost">Apply preset</button>
+  </form>
+  <p class="hint">A preset fills the API-key fields. You can change every field before you save.</p>
+  <p class="hint"><a id="np-docs" href="{{ preset.docs }}"{% if preset.docs.is_empty() %} hidden{% endif %}>Provider documentation</a></p>
   <datalist id="provider-urls"><option value="https://api.openai.com"><option value="https://api.anthropic.com"></datalist>
   <form method="post" action="/admin/providers" class="stack" id="add-provider">
     <div class="row">
-      <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" required autocomplete="off" spellcheck="false" placeholder="openai" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Letters, digits, dot, underscore or hyphen.</p></div>
+      <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" value="{{ preset.name }}" required autocomplete="off" spellcheck="false" placeholder="openai" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Letters, digits, dot, underscore or hyphen.</p></div>
       <div class="field"><label for="np-auth">Authentication</label><select id="np-auth" name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT subscription (recommended)</option><option value="codex">ChatGPT via Codex (legacy)</option><option value="claude">Claude Pro/Max</option></select></div>
-      <div class="field"><label for="np-kind">API format</label><select id="np-kind" name="kind"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></div>
+      <div class="field"><label for="np-kind">API format</label><select id="np-kind" name="kind"><option value="openai"{% if preset.kind_name() == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if preset.kind_name() == "anthropic" %} selected{% endif %}>Anthropic</option></select></div>
     </div>
     <div class="row">
-      <div class="field grow"><label for="np-url">Base URL</label><input id="np-url" name="base_url" required list="provider-urls" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com" aria-describedby="np-url-help"><p class="hint" id="np-url-help">The address without /v1. A subscription uses a fixed address.</p></div>
-      <div class="field grow" data-key-field><label for="np-key">Provider Key or env:NAME (optional)</label><input id="np-key" type="password" name="api_key" autocomplete="off" spellcheck="false" aria-describedby="np-key-help"><p class="hint" id="np-key-help">You can add more keys later. A subscription uses Sign in instead.</p></div>
+      <div class="field grow"><label for="np-url">Base URL</label><input id="np-url" name="base_url" value="{{ preset.base_url }}" required list="provider-urls" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com" aria-describedby="np-url-help"><p class="hint" id="np-url-help">Use the preset address, or enter your API base URL. Replace any resource placeholder.</p></div>
+      <div class="field grow" data-key-field><label for="np-key">Provider Key or env:NAME (optional)</label><input id="np-key" type="password" name="api_key" autocomplete="off" spellcheck="false" aria-describedby="np-key-help"><p class="hint" id="np-key-help">{{ preset.key_help }}</p><p class="hint">You can add more keys later. A subscription uses Sign in instead.</p></div>
+    </div>
+    <div class="row" id="np-api-settings">
+      <div class="field"><label for="np-header">Key header</label><select id="np-header" name="key_header"><option value="bearer"{% if preset.key_header.as_str() == "bearer" %} selected{% endif %}>Authorization: Bearer</option><option value="x-api-key"{% if preset.key_header.as_str() == "x-api-key" %} selected{% endif %}>x-api-key</option><option value="api-key"{% if preset.key_header.as_str() == "api-key" %} selected{% endif %}>api-key (Azure)</option></select></div>
+      <div class="field"><label for="np-usage">Send stream_options.include_usage</label><select id="np-usage" name="include_usage"><option value="true"{% if preset.include_usage %} selected{% endif %}>On</option><option value="false"{% if !preset.include_usage %} selected{% endif %}>Off</option></select><p class="hint">Off leaves client options unchanged. The Proxy still reads final usage.</p></div>
     </div>
     <div class="form-error" role="alert" tabindex="-1"></div>
     <div><button>Add provider</button></div>
@@ -127,6 +145,26 @@
 {% endblock %}
 {% block scripts %}
 <script>
+(() => {
+  const preset = document.getElementById('np-preset');
+  const auth = document.getElementById('np-auth');
+  const settings = document.getElementById('np-api-settings');
+  if (!preset || !auth || !settings) { return; }
+  auth.addEventListener('change', () => { settings.hidden = auth.value !== 'api_key'; });
+  preset.addEventListener('change', () => {
+    if (auth.value !== 'api_key') { return; }
+    const p = preset.selectedOptions[0].dataset;
+    document.getElementById('np-name').value = p.name;
+    document.getElementById('np-kind').value = p.kind;
+    document.getElementById('np-url').value = p.url;
+    document.getElementById('np-header').value = p.header;
+    document.getElementById('np-usage').value = p.usage;
+    document.getElementById('np-key-help').textContent = p.help;
+    const docs = document.getElementById('np-docs');
+    docs.href = p.docs;
+    docs.hidden = !p.docs;
+  });
+})();
 (() => {
   // Move focus to a new sign-in panel (once per page load).
   if (!window.tokoSignin) {

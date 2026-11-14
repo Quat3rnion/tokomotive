@@ -97,6 +97,10 @@ impl RouterTable {
                     }
                     let mut provider = Provider::new(&p.name, p.kind, &p.base_url, keys);
                     provider.auth = p.auth;
+                    provider.include_usage = p.include_usage;
+                    provider.key_header = p
+                        .key_header
+                        .unwrap_or_else(|| crate::provider::KeyHeader::for_kind(p.kind));
                     provider
                 })
                 .collect(),

@@ -971,6 +971,53 @@ normal Price Cards, Team overrides and Markup, even when the Operator pays
 for a subscription. Set rates if you want to charge Users. Simple Mode has
 no extra financial controls.
 
+## Provider presets
+
+Open **Providers** and select a **Preset** above **Add a Provider**. The preset
+fills the name, API format, base URL, key header and stream-usage setting.
+All fields stay editable. With JavaScript off, select **Apply preset** to fill
+the form on the server. The documentation link and key help show which key
+and endpoint to use. A preset does not add a Model or a Cost Card.
+
+Presets include OpenAI, Anthropic, DeepSeek, Moonshot Kimi, Z.ai, OpenRouter,
+xAI, Mistral, DeepInfra, Nebius, Cerebras, Alibaba DashScope, Azure v1 and the
+Hugging Face router. Coding Plan and verified China variants have separate
+presets. Messages presets also include MiniMax and Volcengine Ark. Addresses
+that are not verified in the [roster](provider-roster.md) are not presets.
+
+For **Local server**, enter the server URL. Leave the Provider Key empty if the
+server does not need one. Requests are Unpriced until you add a Model with a
+Cost Card. A preset does not verify live model or endpoint support.
+
+- **Key header** selects `Authorization: Bearer`, `x-api-key`, or Azure
+  `api-key`. The Proxy removes client authentication headers before it adds
+  the Provider Key. The default is Bearer for OpenAI and `x-api-key` for
+  Anthropic. Some Messages presets use Bearer instead.
+- **Send stream_options.include_usage** is on for generic OpenAI. DeepSeek
+  and OpenRouter presets turn it off because final chunks report usage
+  without it. Off does not remove an option that the client sends. The Proxy
+  reads final usage with either setting.
+- A base URL can include the API version, such as `/v1` or Z.ai `/v4`.
+  Messages presets can include the full `/messages` endpoint. Do not add an
+  extra version to a preset URL. For Azure, replace `<resource>` before you
+  save. Azure v1 needs no `api-version` parameter.
+
+The shared OpenAI reader accepts cached tokens in
+`prompt_tokens_details.cached_tokens`, `input_tokens_details.cached_tokens`,
+top-level `usage.cached_tokens` (Together), or `prompt_cache_hit_tokens`
+(DeepSeek), in that order for the applicable API format. It subtracts cached
+input once. Reasoning tokens in `completion_tokens_details.reasoning_tokens`
+or `output_tokens_details.reasoning_tokens` stay inside output, not in an
+extra Token Class. The reader also accepts a usage report inside a stream
+choice (Kimi). Reports are snapshots; the reader does not add repeated reports.
+
+Ledger **Details** shows **Cost** next to **Provider-reported cost** in Full
+Mode. The reported amount comes from OpenRouter `usage.cost` in USD or xAI
+`usage.cost_in_usd_ticks` (10,000,000,000 ticks per USD). The Proxy rounds it
+to integer micro-dollars and stores it separately. A missing amount shows
+**Not reported**. This amount is for comparison only. It never changes Cost
+Cards, Price, Profit, Budgets, Reservations or accounting metrics.
+
 ## Key Pools
 
 A Provider can have more than one Provider Key. The set of keys is the Key Pool.

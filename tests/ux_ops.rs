@@ -128,6 +128,7 @@ impl App {
         db::insert_entry(
             &self.st.db,
             &NewEntry {
+                reported_cost_micros: None,
                 ts_ms,
                 user_id: user,
                 key_id: key,

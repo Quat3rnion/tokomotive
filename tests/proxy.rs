@@ -52,7 +52,10 @@ async fn mock_openai(
     if headers["authorization"] == "Bearer fail-key" {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response();
     }
-    let usage = json!({"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 400}});
+    let mut usage = json!({"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 400}});
+    if b["metadata"]["reported_cost"] == true {
+        usage["cost"] = json!(0.009999);
+    }
     if b["metadata"]["omit_model"] == json!(true) {
         return Json(json!({"choices": [], "usage": usage})).into_response();
     }
@@ -64,7 +67,9 @@ async fn mock_openai(
             "data: {}\n\n",
             json!({"model": "gpt-4o-2024-08-06", "choices": [{"delta": {"content": "hi"}}]})
         )];
-        if b["stream_options"]["include_usage"] == json!(true) {
+        if b["stream_options"]["include_usage"] == json!(true)
+            || b["metadata"]["natural_usage"] == true
+        {
             ev.push(format!(
                 "data: {}\n\n",
                 json!({"model": "gpt-4o-2024-08-06", "choices": [], "usage": usage})
@@ -144,6 +149,106 @@ struct Env {
 
 async fn env() -> Env {
     env_with_routes("").await
+}
+
+#[tokio::test]
+async fn reported_cost_is_stored_and_shown_but_never_changes_pricing() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name="natural"
+kind="openai"
+base_url="http://$UPSTREAM"
+api_key="upstream-natural-key"
+include_usage=false
+"#,
+    )
+    .await;
+    for (provider, stream) in [("openai", false), ("openai", true), ("natural", true)] {
+        let response=e.http.post(format!("{}/v1/chat/completions",e.proxy)).bearer_auth("sk-alice")
+            .json(&json!({"model":format!("{provider}/gpt-4o"),"stream":stream,
+                "metadata":{"reported_cost":true,"natural_usage":true},"provider":{"order":["sample"]}}))
+            .send().await.unwrap();
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+        let row = last_entry(&e.st).await;
+        assert_eq!(
+            row.get::<Option<i64>, _>("reported_cost_micros"),
+            Some(9999)
+        );
+        assert_eq!(
+            (i(&row, "cost_micros"), i(&row, "price_micros")),
+            (3000, 4500)
+        );
+        assert_eq!(
+            (
+                i(&row, "input"),
+                i(&row, "cache_read"),
+                i(&row, "estimated")
+            ),
+            (600, 400, 0)
+        );
+        let seen = e.seen.0.lock().unwrap();
+        let body = &seen.last().unwrap().1;
+        assert_eq!(body["provider"], json!({"order":["sample"]}));
+        if provider == "natural" {
+            assert!(body.get("stream_options").is_none());
+        }
+    }
+    tokomotive::db::create_session(&e.st.db, "reported-test", 1)
+        .await
+        .unwrap();
+    let html = e
+        .http
+        .get(format!("{}/admin/ledger", e.proxy))
+        .header("cookie", "tokomotive_session=reported-test")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("Provider-reported cost"));
+    assert!(html.contains("$0.009999"));
+    assert!(html.contains("For comparison only"));
+}
+
+#[tokio::test]
+async fn usage_switch_also_applies_to_translated_stream_requests() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name="no-usage-option"
+kind="openai"
+base_url="http://$UPSTREAM"
+api_key="upstream-natural-key"
+include_usage=false
+"#,
+    )
+    .await;
+    let response = e
+        .http
+        .post(format!("{}/v1/messages", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(
+            &json!({"model":"no-usage-option/gpt-4o","stream":true,"messages":[],"max_tokens":10}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    response.bytes().await.unwrap();
+    assert!(
+        e.seen
+            .0
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .1
+            .get("stream_options")
+            .is_none()
+    );
 }
 
 async fn set_mode(e: &Env, mode: &str) {

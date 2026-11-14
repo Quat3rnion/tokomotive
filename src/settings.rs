@@ -87,13 +87,15 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
                 keys.push(format!("env:{env}"));
             }
             sqlx::query(
-                "INSERT INTO providers(name,kind,base_url,keys_json,auth) VALUES(?,?,?,?,?)",
+                "INSERT INTO providers(name,kind,base_url,keys_json,auth,include_usage,key_header) VALUES(?,?,?,?,?,?,?)",
             )
             .bind(&p.name)
             .bind(serde_json::to_string(&p.kind)?)
             .bind(&p.base_url)
             .bind(serde_json::to_string(&keys)?)
             .bind(p.auth.as_str())
+            .bind(p.include_usage)
+            .bind(p.key_header.map(|h| h.as_str()))
             .execute(&mut *tx)
             .await?;
         }
@@ -168,6 +170,11 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
                 kind: serde_json::from_str(row.get("kind"))?,
                 auth: serde_json::from_value(serde_json::json!(row.get::<String, _>("auth")))?,
                 base_url: row.get("base_url"),
+                include_usage: row.get("include_usage"),
+                key_header: row
+                    .get::<Option<String>, _>("key_header")
+                    .map(|h| serde_json::from_value(serde_json::json!(h)))
+                    .transpose()?,
                 api_key: None,
                 api_key_env: None,
                 api_keys: keys,

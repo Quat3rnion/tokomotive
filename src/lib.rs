@@ -6,6 +6,7 @@ pub mod db;
 pub mod metrics;
 pub mod oauth;
 pub mod pagination;
+pub mod presets;
 pub mod pricing;
 pub mod provider;
 pub mod proxy;
