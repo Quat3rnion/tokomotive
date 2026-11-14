@@ -1,6 +1,11 @@
-<div role="status" class="stack">
-{% if let Some(name) = verdict.blocked %}<p>Blocked by {{ name }}.</p>{% else %}<p>Not blocked.</p>{% endif %}
-<p>{{ verdict.matches.len() }} matches. Byte offsets refer to the pasted text.</p>
-<ul>{% for m in verdict.matches %}<li>{{ m.rule }}: {{ m.start }} to {{ m.end }}.</li>{% endfor %}</ul>
-<pre class="code">{{ verdict.text }}</pre>
+<div role="status" class="stack test-out">
+{% if let Some(name) = verdict.blocked %}<p><span class="tag bad">Blocked</span> by {{ name }}.</p>{% else %}<p><span class="tag good">Allowed</span> Not blocked.</p>{% endif %}
+{%- if hits.is_empty() %}
+<p class="empty">No rule matched.</p>
+{%- else %}
+<ul class="hits">{% for h in hits %}<li><strong>{{ h.rule }}</strong> <span class="tag{% if h.action == "block" %} bad{% else if h.action == "redact" %} warn{% endif %}">{{ h.action }}</span> {{ h.count }} {% if h.count == 1 %}match{% else %}matches{% endif %} at bytes {{ h.spans }}.</li>{% endfor %}</ul>
+<p class="hint">Byte offsets refer to the pasted text.</p>
+{%- endif %}
+<h3>Text after the rules</h3>
+<pre class="code wrap">{{ verdict.text }}</pre>
 </div>

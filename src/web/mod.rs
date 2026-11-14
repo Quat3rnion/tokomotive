@@ -195,6 +195,8 @@ struct UserError {
     heading: Option<String>,
     message: String,
     back: Option<(String, String)>,
+    /// The `name` of the form field that the message is about.
+    field: Option<String>,
 }
 
 fn user_error(status: StatusCode, message: impl Into<String>) -> Response {
@@ -203,6 +205,7 @@ fn user_error(status: StatusCode, message: impl Into<String>) -> Response {
         heading: None,
         message: message.into(),
         back: None,
+        field: None,
     });
     r
 }
@@ -211,6 +214,16 @@ fn user_error(status: StatusCode, message: impl Into<String>) -> Response {
 /// next to the submitted form. Write a full sentence that says what to do.
 pub(crate) fn form_error(e: impl std::fmt::Display) -> Response {
     user_error(StatusCode::BAD_REQUEST, e.to_string())
+}
+
+/// A [`form_error`] about one field: the dashboard JS marks the field
+/// with the `name` `field` and shows the message next to it.
+pub(crate) fn field_error(field: &str, e: impl std::fmt::Display) -> Response {
+    let mut r = form_error(e);
+    if let Some(err) = r.extensions_mut().get_mut::<UserError>() {
+        err.field = Some(field.into());
+    }
+    r
 }
 
 fn bad(msg: impl Into<String>) -> Response {
@@ -228,6 +241,7 @@ fn page_error_with(status: StatusCode, heading: &str, msg: &str, back: (&str, &s
         heading: Some(heading.into()),
         message: msg.into(),
         back: Some((back.0.into(), back.1.into())),
+        field: None,
     });
     r
 }
@@ -378,7 +392,10 @@ fn render_user_error(
                 ("hx-retarget", "find .form-error"),
                 ("hx-reswap", "innerHTML"),
             ],
-            Html(format!("<p>{}</p>", esc(&err.message))),
+            Html(match &err.field {
+                Some(f) => format!("<p data-field=\"{}\">{}</p>", esc(f), esc(&err.message)),
+                None => format!("<p>{}</p>", esc(&err.message)),
+            }),
         )
             .into_response();
     }

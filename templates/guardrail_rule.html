@@ -1,0 +1,52 @@
+{# One rule of the Guardrails rule editor (guardrails.html). The JS clones the
+   copy in <template id="guard-rule-tpl">: __F__ is the form key, __I__ the row
+   key and __N__ the rule number. #}
+{% macro rule(ed, r, n, detectors) %}
+{%- let p = "g{}-r{}"|format(ed.key, r.key) -%}
+{%- let f = "rule[{}]"|format(r.key) -%}
+{%- let err = "g{}-err"|format(ed.key) -%}
+<li{% if r.extra %} data-extra{% endif %}>
+<fieldset class="rule" data-rule="{{ r.key }}">
+<legend>Rule {{ n }}<span class="rule-name">{% if !r.name.is_empty() %}: {{ r.name }}{% endif %}</span></legend>
+<div class="rule-tools" data-js hidden>
+<button type="button" class="ghost icon" data-rule-act="up" aria-label="Move rule {{ n }} up"><svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+<button type="button" class="ghost icon" data-rule-act="down" aria-label="Move rule {{ n }} down"><svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+<button type="button" class="ghost danger" data-rule-act="remove" aria-label="Remove rule {{ n }}">Remove</button>
+</div>
+<div class="fields rule-grid">
+<div class="field"><label for="{{ p }}-name">Name</label><input id="{{ p }}-name" name="{{ f }}[name]" value="{{ r.name }}" maxlength="100" autocomplete="off" autocapitalize="off" spellcheck="false" data-rule-name aria-describedby="{{ p }}-name-hint{% if r.bad == "name" %} {{ err }}{% endif %}"{% if r.bad == "name" %} aria-invalid="true" autofocus{% endif %}><p class="hint" id="{{ p }}-name-hint">Shown as [REDACTED:name] and in the Ledger.</p><p class="hint bad" id="{{ p }}-dup" data-dup hidden>Another rule in this set has this name.</p></div>
+<fieldset class="seg"><legend>Kind</legend><div class="seg-opts">
+<label class="seg-opt"><input type="radio" name="{{ f }}[kind]" value="detector"{% if r.kind == "detector" %} checked{% endif %}{% if r.bad == "kind" %} autofocus{% endif %}><span>Detector</span></label>
+<label class="seg-opt"><input type="radio" name="{{ f }}[kind]" value="regex"{% if r.kind == "regex" %} checked{% endif %}><span>Regex</span></label>
+<label class="seg-opt"><input type="radio" name="{{ f }}[kind]" value="keywords"{% if r.kind == "keywords" %} checked{% endif %}><span>Keywords</span></label>
+</div></fieldset>
+<div class="field"><label for="{{ p }}-action">Action</label><select id="{{ p }}-action" name="{{ f }}[action]"{% if r.bad == "action" %} aria-invalid="true" autofocus aria-describedby="{{ err }}"{% endif %}>
+<option value="redact"{% if r.action == "redact" %} selected{% endif %}>Redact the match</option>
+<option value="block"{% if r.action == "block" %} selected{% endif %}>Block the message</option>
+<option value="log"{% if r.action == "log" %} selected{% endif %}>Log only</option>
+</select></div>
+<div class="field"><label for="{{ p }}-direction">Direction</label><select id="{{ p }}-direction" name="{{ f }}[direction]"{% if r.bad == "direction" %} aria-invalid="true" autofocus aria-describedby="{{ err }}"{% endif %}>
+<option value="both"{% if r.direction == "both" %} selected{% endif %}>Requests and responses</option>
+<option value="request"{% if r.direction == "request" %} selected{% endif %}>Requests only</option>
+<option value="response"{% if r.direction == "response" %} selected{% endif %}>Responses only</option>
+</select></div>
+</div>
+<div class="kind-panel" data-kind="detector">
+<div class="field"><label for="{{ p }}-detector">Detector</label><select id="{{ p }}-detector" name="{{ f }}[detector]" data-detector aria-describedby="{{ p }}-detector-hint{% if r.bad == "detector" %} {{ err }}{% endif %}"{% if r.bad == "detector" %} aria-invalid="true" autofocus{% endif %}>
+<option value="">Select a detector</option>
+{%- for d in detectors %}
+<option value="{{ d.value }}" data-about="{{ d.about }}"{% if r.detector == d.value %} selected{% endif %}>{{ d.label }}</option>
+{%- endfor %}
+</select><p class="hint" id="{{ p }}-detector-hint">{{ r.about() }}</p></div>
+</div>
+<div class="kind-panel" data-kind="regex">
+<div class="field wide"><label for="{{ p }}-pattern">Regex pattern</label><input id="{{ p }}-pattern" class="mono" name="{{ f }}[pattern]" value="{{ r.pattern }}" maxlength="8192" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="{{ p }}-pattern-hint{% if r.bad == "pattern" %} {{ err }}{% endif %}"{% if r.bad == "pattern" %} aria-invalid="true" autofocus{% endif %}><p class="hint" id="{{ p }}-pattern-hint">Rust regex syntax, at most 8192 bytes. Start with <code>(?i)</code> to ignore case. The pattern must not match empty text.</p></div>
+</div>
+<div class="kind-panel" data-kind="keywords">
+<div class="field wide"><label for="{{ p }}-words">Keywords, one per line</label><textarea id="{{ p }}-words" name="{{ f }}[words]" rows="3" spellcheck="false" aria-describedby="{{ p }}-words-hint{% if r.bad == "words" %} {{ err }}{% endif %}"{% if r.bad == "words" %} aria-invalid="true" autofocus{% endif %}>{{ r.words }}</textarea><p class="hint" id="{{ p }}-words-hint">1 to 256 keywords. Each keyword matches as typed, also with special characters.</p></div>
+<div class="checks"><label class="check"><input type="checkbox" name="{{ f }}[whole_word]"{% if r.whole_word %} checked{% endif %}>Whole word</label><label class="check"><input type="checkbox" name="{{ f }}[case_sensitive]"{% if r.case_sensitive %} checked{% endif %}>Case sensitive</label></div>
+</div>
+<label class="check nojs-only"><input type="checkbox" name="{{ f }}[remove]"{% if r.remove %} checked{% endif %}>Remove this rule when you save</label>
+</fieldset>
+</li>
+{%- endmacro %}

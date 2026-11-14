@@ -13,6 +13,10 @@ SHARED DASHBOARD MECHANISMS. Page templates use these; do not add new ones.
      the end of the form when the template has none) and moves focus to it.
      Put the slot in the template where the message must show. Never add a
      page-level `#errors` box for errors.
+   - About one field: `field_error("rule[3][pattern]", "...")` adds
+     `data-field` to the `<p>`. The JS moves the slot after that field (its
+     `.field` or fieldset), opens a closed `<details>` around it, and sets
+     aria-invalid and aria-describedby on it until the next request or input.
    - Plain POST forms become htmx forms here (hx-post = action, hx-target =
      body), so an error does not replace the page and the input stays. Add
      `data-plain` to a form to opt out (login, logout). Without JS, the server
@@ -525,6 +529,52 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
 .notice.np-next, .notice.np-done { max-width:60em; }
 .notice.np-next p:last-child, .notice.np-done p { margin-bottom:0; }
 .notice.np-next .test-form { margin-top:var(--sp-3); }
+/* 1. A field error shown after its field, in a grid of fields. */
+.fields > .form-error { grid-column:1 / -1; margin-top:0; }
+textarea[aria-invalid=true] { border-color:var(--bad); }
+/* A disclosure for advanced or rarely used fields in a form. */
+details.adv { align-self:stretch; }
+details.adv[open] { padding:var(--sp-3); border:1px solid var(--line); border-radius:8px; }
+details.adv[open] > summary { margin-bottom:var(--sp-3); }
+details.adv pre.code { max-height:20em; overflow:auto; }
+input.mono { font-family:ui-monospace, monospace; font-size:13px; }
+button.icon { display:inline-grid; place-items:center; min-width:32px; padding:0; }
+button[aria-disabled=true] { opacity:.45; cursor:default; }
+button.ghost[aria-disabled=true]:hover { background:transparent; color:var(--muted); }
+/* Guardrails rule editor (guardrails.html): one fieldset per rule. */
+.guard-set > form.guard-form, #guard-test > form { align-self:stretch; }
+.guard-form > h3 { margin:var(--sp-2) 0 0; }
+.guard-form > .rules-hint { margin:0; }
+.quick { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
+.quick > .muted { font-size:13px; }
+ol.rule-list { list-style:none; margin:0; padding:0; display:grid; gap:var(--sp-3); align-self:stretch; }
+fieldset.rule { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:var(--sp-3); align-items:start; padding:var(--sp-3) var(--sp-4) var(--sp-4); border-color:var(--line-input); border-radius:8px; }
+fieldset.rule > legend { float:left; grid-column:1; margin:0; padding:0; font-size:14px; font-weight:600; line-height:32px; color:var(--text); overflow-wrap:anywhere; min-width:0; }
+fieldset.rule > legend .rule-name { font-weight:400; color:var(--muted); }
+fieldset.rule > .rule-tools { grid-column:2; display:flex; gap:var(--sp-1); }
+fieldset.rule > :not(legend):not(.rule-tools) { grid-column:1 / -1; }
+fieldset.rule > label.check { justify-self:start; }
+.rule-grid { grid-template-columns:repeat(auto-fit, minmax(min(15em, 100%), 1fr)); }
+.kind-panel { display:flex; flex-direction:column; gap:var(--sp-2); }
+.kind-panel > .field.wide input, .kind-panel > .field.wide textarea { width:100%; max-width:48em; }
+.kind-panel > .field select { width:20em; max-width:100%; }
+fieldset.seg { border:0; padding:0; margin:0; min-width:0; }
+fieldset.seg > legend { padding:0; margin-bottom:var(--sp-1); font-size:12px; color:var(--muted); }
+.seg-opts { display:inline-flex; max-width:100%; border:1px solid var(--line-input); border-radius:6px; background:var(--field); }
+label.seg-opt { position:relative; display:inline-flex; flex-direction:row; align-items:center; min-height:30px; padding:0 var(--sp-3); color:var(--muted); font-size:14px; cursor:pointer; }
+label.seg-opt + label.seg-opt { border-left:1px solid var(--line-input); }
+label.seg-opt:first-child { border-radius:5px 0 0 5px; }
+label.seg-opt:last-child { border-radius:0 5px 5px 0; }
+label.seg-opt input { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer; }
+label.seg-opt:hover { color:var(--text); background:var(--hover); }
+label.seg-opt:has(input:checked) { color:var(--text); background:var(--info-bg); box-shadow:inset 0 -2px 0 var(--link); }
+label.seg-opt:has(input:focus-visible) { outline:2px solid var(--focus); outline-offset:1px; z-index:1; }
+.guard-set > form.subform { margin-top:0; }
+.guard-set > h3 { margin-bottom:0; }
+.test-out .hits { margin:0; padding-left:var(--sp-5); }
+.test-out .hits .tag { margin:0 var(--sp-1) 0 0; }
+.test-out h3 { margin:0; }
+pre.code.wrap { white-space:pre-wrap; overflow-wrap:anywhere; align-self:stretch; }
 </style>
 </head>
 <body>
@@ -618,9 +668,48 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
   htmx.onLoad(enhance);
 
   const hostOf = elt => elt.closest('form') || elt;
+  // 1. An error about one field: show it after that field.
+  const homes = new WeakMap();
+  let slots = 0;
+  const unmark = form => {
+    const s = slotFor(form);
+    form.querySelectorAll('[data-invalid]').forEach(f => {
+      f.removeAttribute('aria-invalid');
+      f.removeAttribute('data-invalid');
+      const ids = (f.getAttribute('aria-describedby') || '').split(' ').filter(x => x && x !== s.id);
+      if (ids.length) { f.setAttribute('aria-describedby', ids.join(' ')); } else { f.removeAttribute('aria-describedby'); }
+    });
+    const home = homes.get(s);
+    if (home && home.parent.isConnected) { home.parent.insertBefore(s, home.next && home.next.parentNode === home.parent ? home.next : null); }
+    homes.delete(s);
+  };
+  const markField = slot => {
+    const p = slot.querySelector('p[data-field]');
+    const form = slot.closest('form');
+    if (!p || !form) { return; }
+    const f = [...form.elements].find(x => x.name === p.dataset.field);
+    if (!f) { return; }
+    const d = f.closest('details');
+    if (d) { d.open = true; }
+    const near = f.closest('.field') || f.closest('fieldset') || f;
+    if (!homes.has(slot)) { homes.set(slot, { parent: slot.parentNode, next: slot.nextSibling }); }
+    near.after(slot);
+    if (!slot.id) { slot.id = `form-error-${++slots}`; }
+    f.setAttribute('aria-invalid', 'true');
+    f.setAttribute('data-invalid', '');
+    const ids = (f.getAttribute('aria-describedby') || '').split(' ').filter(Boolean);
+    if (!ids.includes(slot.id)) { f.setAttribute('aria-describedby', [...ids, slot.id].join(' ')); }
+  };
+  document.addEventListener('input', e => {
+    const f = e.target;
+    if (f.hasAttribute && f.hasAttribute('data-invalid')) {
+      f.removeAttribute('aria-invalid');
+      f.removeAttribute('data-invalid');
+    }
+  });
   document.addEventListener('htmx:beforeRequest', e => {
     const host = hostOf(e.detail.elt);
-    if (host.tagName === 'FORM') { slotFor(host).textContent = ''; }
+    if (host.tagName === 'FORM') { unmark(host); slotFor(host).textContent = ''; }
     host.querySelectorAll('button[data-busy]').forEach(b => {
       b.dataset.idle = b.textContent;
       b.textContent = b.dataset.busy;
@@ -666,6 +755,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       kept = null;
     }
     if (t && t.classList && t.classList.contains('form-error')) {
+      markField(t);
       t.focus();
     } else if (t === document.body) {
       const f = document.querySelector('.flash, [data-focus]') || document.getElementById('main');

@@ -117,70 +117,19 @@ impl Engine {
         let mut rules = vec![];
         for set in &sets {
             ensure!(
-                set.max_text_bytes > 0 && set.max_text_bytes <= 16 * DEFAULT_TEXT_LIMIT,
+                set.max_text_bytes > 0 && set.max_text_bytes <= MAX_TEXT_LIMIT,
                 "Text limit must be 1 to 16777216 bytes."
             );
             ensure!(
-                set.rules.len() <= 64 && rules.len() + set.rules.len() <= 256,
+                set.rules.len() <= MAX_RULES && rules.len() + set.rules.len() <= 256,
                 "Too many rules."
             );
-            if !set.hook_url.is_empty() {
-                let url = reqwest::Url::parse(&set.hook_url)?;
-                ensure!(
-                    matches!(url.scheme(), "http" | "https")
-                        && url.host_str().is_some()
-                        && url.username().is_empty()
-                        && url.password().is_none(),
-                    "Use an HTTP or HTTPS hook URL without credentials."
-                );
-            }
+            ensure!(
+                valid_hook_url(&set.hook_url),
+                "Use an HTTP or HTTPS hook URL without credentials."
+            );
             for rule in &set.rules {
-                ensure!(
-                    !rule.name.is_empty()
-                        && rule.name.len() <= 100
-                        && !rule.name.chars().any(char::is_control),
-                    "Rule names must contain 1 to 100 bytes, without control characters."
-                );
-                let (pattern, detector) = match &rule.kind {
-                    Kind::Regex { pattern } => (pattern.clone(), String::new()),
-                    Kind::Keywords {
-                        words,
-                        whole_word,
-                        case_sensitive,
-                    } => {
-                        ensure!(
-                            !words.is_empty()
-                                && words.len() <= 256
-                                && words.iter().all(|w| !w.is_empty()),
-                            "Add 1 to 256 non-empty keywords."
-                        );
-                        let p = words
-                            .iter()
-                            .map(|w| regex::escape(w))
-                            .collect::<Vec<_>>()
-                            .join("|");
-                        (
-                            format!(
-                                "{}{}(?:{}){}",
-                                if *case_sensitive { "" } else { "(?i)" },
-                                if *whole_word { r"\b" } else { "" },
-                                p,
-                                if *whole_word { r"\b" } else { "" }
-                            ),
-                            String::new(),
-                        )
-                    }
-                    Kind::Detector { detector } => (detector_pattern(detector)?, detector.clone()),
-                };
-                ensure!(
-                    pattern.len() <= PATTERN_LIMIT,
-                    "Pattern exceeds 8192 bytes."
-                );
-                let regex = RegexBuilder::new(&pattern)
-                    .size_limit(PROGRAM_LIMIT)
-                    .dfa_size_limit(PROGRAM_LIMIT)
-                    .build()?;
-                ensure!(!regex.is_match(""), "Rules must not match empty text.");
+                let (regex, detector) = compile_rule(rule)?;
                 rules.push(Compiled {
                     rule: rule.clone(),
                     regex,
@@ -347,6 +296,99 @@ impl Engine {
         })
         .await?
     }
+}
+
+/// The largest text limit of a rule set, in bytes.
+pub const MAX_TEXT_LIMIT: usize = 16 * DEFAULT_TEXT_LIMIT;
+/// The largest number of rules in one rule set.
+pub const MAX_RULES: usize = 64;
+
+/// An empty hook URL, or an HTTP(S) URL with a host and no credentials.
+pub fn valid_hook_url(url: &str) -> bool {
+    url.is_empty()
+        || reqwest::Url::parse(url).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.host_str().is_some()
+                && u.username().is_empty()
+                && u.password().is_none()
+        })
+}
+
+/// The detectors, in the order that the dashboard lists them.
+pub const DETECTORS: [&str; 5] = ["email", "phone", "credit_card", "iban", "secret"];
+
+/// Why a single rule cannot compile. The dashboard maps each case to a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleError {
+    Name,
+    Keywords,
+    UnknownDetector,
+    PatternTooLong,
+    PatternInvalid,
+    MatchesEmpty,
+}
+impl std::fmt::Display for RuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Name => "Rule names must contain 1 to 100 bytes, without control characters.",
+            Self::Keywords => "Add 1 to 256 non-empty keywords.",
+            Self::UnknownDetector => "Unknown detector.",
+            Self::PatternTooLong => "Pattern exceeds 8192 bytes.",
+            Self::PatternInvalid => "Pattern is not valid or exceeds the 1 MiB program limit.",
+            Self::MatchesEmpty => "Rules must not match empty text.",
+        })
+    }
+}
+impl std::error::Error for RuleError {}
+
+/// Compile one rule with the size limits that the Proxy uses.
+pub fn compile_rule(rule: &Rule) -> std::result::Result<(Regex, String), RuleError> {
+    if rule.name.is_empty() || rule.name.len() > 100 || rule.name.chars().any(char::is_control) {
+        return Err(RuleError::Name);
+    }
+    let (pattern, detector) = match &rule.kind {
+        Kind::Regex { pattern } => (pattern.clone(), String::new()),
+        Kind::Keywords {
+            words,
+            whole_word,
+            case_sensitive,
+        } => {
+            if words.is_empty() || words.len() > 256 || words.iter().any(|w| w.is_empty()) {
+                return Err(RuleError::Keywords);
+            }
+            let p = words
+                .iter()
+                .map(|w| regex::escape(w))
+                .collect::<Vec<_>>()
+                .join("|");
+            (
+                format!(
+                    "{}{}(?:{}){}",
+                    if *case_sensitive { "" } else { "(?i)" },
+                    if *whole_word { r"\b" } else { "" },
+                    p,
+                    if *whole_word { r"\b" } else { "" }
+                ),
+                String::new(),
+            )
+        }
+        Kind::Detector { detector } => (
+            detector_pattern(detector).map_err(|_| RuleError::UnknownDetector)?,
+            detector.clone(),
+        ),
+    };
+    if pattern.len() > PATTERN_LIMIT {
+        return Err(RuleError::PatternTooLong);
+    }
+    let regex = RegexBuilder::new(&pattern)
+        .size_limit(PROGRAM_LIMIT)
+        .dfa_size_limit(PROGRAM_LIMIT)
+        .build()
+        .map_err(|_| RuleError::PatternInvalid)?;
+    if regex.is_match("") {
+        return Err(RuleError::MatchesEmpty);
+    }
+    Ok((regex, detector))
 }
 
 fn detector_pattern(name: &str) -> Result<String> {

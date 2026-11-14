@@ -1,40 +1,234 @@
 {% extends "base.html" %}
 {% import "picker.html" as picker %}
+{% import "guardrail_rule.html" as g %}
 {% block title %}Guardrails - Tokomotive{% endblock %}
 {% block nav_guardrails %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Guardrails</h1>
-<p class="muted">Attach rule sets to a Route, Team or Virtual Key. All attached rules apply. Block has priority over redact, then log. Rules also apply in Simple Mode and to cache hits.</p>
-<section class="panel stack" aria-labelledby="guard-add"><h2 id="guard-add">Add a rule set</h2>
-<form action="/admin/guardrails" method="post" class="stack">
-<label>Name<input name="name" required maxlength="100"></label>
-<label>Rules (JSON)<textarea name="rules" rows="8" required>[{"name":"EMAIL","kind":{"type":"detector","detector":"email"},"action":"redact","direction":"both"}]</textarea></label>
-<div class="row"><label>Text limit (bytes)<input type="number" name="max_text_bytes" min="1" max="16777216" value="1048576" required></label>
-<label class="grow">External moderation URL (optional)<input type="url" name="hook_url" placeholder="https://moderation.example/check"></label></div>
-<label class="check"><input type="checkbox" name="fail_closed">Block if the external hook fails</label>
-<button>Add rule set</button></form>
-<p class="hint">Kinds: <code>{"type":"regex","pattern":"..."}</code>, <code>{"type":"keywords","words":["word"],"whole_word":true,"case_sensitive":false}</code> or <code>{"type":"detector","detector":"email"}</code>. Detectors: email, phone, credit_card, iban, secret. Actions: block, redact, log. Directions: request, response, both.</p>
-<p class="hint">Patterns: at most 8192 bytes and a 1 MiB compiled program. Text above the limit or more than 1024 matches blocks the request. Phone detects a plus sign and 7 to 15 digits. Stream inspection retains 8 KiB of text in a bounded window; longer matches across windows can be missed. Hooks have a 2 second timeout and fail open unless selected above.</p>
-</section>
-{% for s in sets %}
-<section class="panel stack"><h2>{{ s.name }}</h2>
-<form action="/admin/guardrails" method="post" class="stack"><input type="hidden" name="id" value="{{ s.id }}">
-<label>Name<input name="name" value="{{ s.name }}" required maxlength="100"></label>
-<label>Rules (JSON)<textarea name="rules" rows="8" required>{{ s.rules }}</textarea></label>
-<div class="row"><label>Text limit (bytes)<input type="number" name="max_text_bytes" min="1" max="16777216" value="{{ s.max_text_bytes }}" required></label><label class="grow">External moderation URL<input type="url" name="hook_url" value="{{ s.hook_url }}"></label></div>
-<label class="check"><input type="checkbox" name="fail_closed"{% if s.fail_closed %} checked{% endif %}>Block if the external hook fails</label><button>Save rule set</button></form>
-<h3>Attachments</h3><ul>{% for a in attachments %}{% if a.set_id == s.id %}<li>{{ a.target }} <form class="inline" method="post" action="/admin/guardrails/attachments/{{ a.id }}/delete" data-confirm="Delete this guardrail attachment?"><button class="ghost danger">Delete attachment</button></form></li>{% endif %}{% endfor %}</ul>
-<form action="/admin/guardrails/{{ s.id }}/attach" method="post" class="stack">
+<p class="muted">A rule set is a list of rules. Attach rule sets to a Route, Team or Virtual Key. All attached rules apply. Block has priority over redact, then log. Rules also apply in Simple Mode and to cache hits.</p>
+<nav class="toc" aria-label="On this page"><ul>
+{%- for ed in forms %}{% if let Some(id) = ed.id %}<li><a href="#set-{{ id }}">{{ ed.title }}</a></li>{% endif %}{% endfor %}
+<li><a href="#set-new">Add a rule set</a></li>
+<li><a href="#guard-test">Test a rule</a></li>
+</ul></nav>
+{% for ed in forms %}
+<section class="panel stack guard-set" id="set-{{ ed.key }}" aria-labelledby="set-{{ ed.key }}-h">
+{% if ed.id.is_some() %}<h2 id="set-{{ ed.key }}-h">{{ ed.title }}</h2>{% else %}<h2 id="set-{{ ed.key }}-h">Add a rule set</h2>{% endif %}
+<form action="/admin/guardrails" method="post" class="stack guard-form" data-key="{{ ed.key }}">
+{% if let Some(id) = ed.id %}<input type="hidden" name="id" value="{{ id }}">{% endif %}
+<div class="fields">
+<div class="field"><label for="g{{ ed.key }}-name">Rule set name</label><input id="g{{ ed.key }}-name" name="name" value="{{ ed.name }}" required maxlength="100" autocomplete="off"{% if ed.bad == "name" %} aria-invalid="true" autofocus aria-describedby="g{{ ed.key }}-err"{% endif %}></div>
+</div>
+<h3 id="g{{ ed.key }}-rules-h">Rules</h3>
+<p class="hint rules-hint">The rules run in this order. Each rule has a kind: a built-in Detector, a Regex pattern or a list of Keywords.</p>
+<div class="quick" role="group" aria-label="Quick start" data-js hidden><span class="muted">Quick start:</span>
+<button type="button" class="ghost" data-preset="contact">Redact emails and phone numbers</button>
+<button type="button" class="ghost" data-preset="secrets">Block secrets and API keys</button>
+<button type="button" class="ghost" data-preset="payment">Redact credit cards and IBANs</button>
+</div>
+<p class="hint nojs-only">Fill in the field of the selected kind. The fields of the other kinds are ignored. An empty row is not saved. To change the order, use the JSON import.</p>
+<ol class="rule-list" aria-labelledby="g{{ ed.key }}-rules-h">
+{%- for r in ed.rows %}
+{% call g::rule(ed, r, loop.index, detectors) %}
+{%- endfor %}
+</ol>
+<p class="empty rules-empty" hidden>No rules. Add a rule or use a quick start.</p>
+<button type="button" class="ghost" data-add-rule data-js hidden>Add a rule</button>
+<fieldset><legend>Limits and external moderation</legend>
+<div class="fields">
+<div class="field"><label for="g{{ ed.key }}-limit">Text limit (bytes)</label><input type="number" id="g{{ ed.key }}-limit" name="max_text_bytes" min="1" max="16777216" value="{{ ed.max_text_bytes }}" required aria-describedby="g{{ ed.key }}-limit-hint{% if ed.bad == "max_text_bytes" %} g{{ ed.key }}-err{% endif %}"{% if ed.bad == "max_text_bytes" %} aria-invalid="true" autofocus{% endif %}><p class="hint" id="g{{ ed.key }}-limit-hint">Longer text is blocked. 1048576 is 1 MiB.</p></div>
+<div class="field wide"><label for="g{{ ed.key }}-hook">External moderation URL (optional)</label><input type="url" id="g{{ ed.key }}-hook" name="hook_url" value="{{ ed.hook_url }}" placeholder="https://moderation.example/check" autocomplete="off" aria-describedby="g{{ ed.key }}-hook-hint{% if ed.bad == "hook_url" %} g{{ ed.key }}-err{% endif %}"{% if ed.bad == "hook_url" %} aria-invalid="true" autofocus{% endif %}><p class="hint" id="g{{ ed.key }}-hook-hint">The Proxy sends the text to this URL and uses the returned action. The timeout is 2 seconds.</p></div>
+</div>
+<label class="check"><input type="checkbox" name="fail_closed"{% if ed.fail_closed %} checked{% endif %}>Block if the external hook fails</label>
+</fieldset>
+<details class="adv"{% if ed.bad == "rules" || !ed.import.is_empty() %} open{% endif %}><summary>Advanced: import or export JSON</summary>
+{%- if !ed.json.is_empty() %}
+<div class="copy-row"><span class="muted" id="g{{ ed.key }}-json-h">Saved rules as JSON (read-only)</span><button type="button" class="ghost" data-copy="{{ ed.json }}">Copy JSON</button></div>
+<pre class="code json" tabindex="0" role="region" aria-labelledby="g{{ ed.key }}-json-h">{{ ed.json }}</pre>
+{%- endif %}
+<div class="field wide"><label for="g{{ ed.key }}-import">Import JSON</label><textarea id="g{{ ed.key }}-import" name="rules" rows="5" spellcheck="false" placeholder='[{"name":"EMAIL","kind":{"type":"detector","detector":"email"},"action":"redact","direction":"both"}]' aria-describedby="g{{ ed.key }}-import-hint{% if ed.bad == "rules" %} g{{ ed.key }}-err{% endif %}"{% if ed.bad == "rules" %} aria-invalid="true" autofocus{% endif %}>{{ ed.import }}</textarea><p class="hint" id="g{{ ed.key }}-import-hint">Paste a JSON array of rules. When this box has text, {% if ed.id.is_some() %}Save rule set{% else %}Add rule set{% endif %} replaces all rules above with the imported rules.</p></div>
+</details>
+<div class="form-error" role="alert" tabindex="-1" id="g{{ ed.key }}-err">{% if !ed.error.is_empty() %}<p>{{ ed.error }}</p>{% endif %}</div>
+<button>{% if ed.id.is_some() %}Save rule set{% else %}Add rule set{% endif %}</button>
+</form>
+{%- if let Some(id) = ed.id %}
+<h3 id="set-{{ id }}-att">Attachments</h3>
+{%- if ed.attached.is_empty() %}
+<p class="empty">Not attached. The rules apply only after you attach the rule set.</p>
+{%- else %}
+<ul class="key-list" aria-labelledby="set-{{ id }}-att">{% for a in ed.attached %}<li><span>{{ a.target }}</span><form class="inline" method="post" action="/admin/guardrails/attachments/{{ a.id }}/delete" data-confirm="Delete the attachment {{ a.target }} of rule set {{ ed.title }}?"><button class="ghost danger">Delete<span class="vh"> attachment {{ a.target }}</span></button></form></li>{% endfor %}</ul>
+{%- endif %}
+<form action="/admin/guardrails/{{ id }}/attach" method="post" class="stack subform">
 <p class="hint">Select one target. To add more targets, submit this form again.</p>
-<div class="row"><label class="grow">Route{% call picker::entity("", "route_name", "", "routes", routes, "No Route", false) %}</label><label class="grow">Team{% call picker::entity("", "team_name", "", "teams", teams, "No Team", false) %}</label>
-<label class="grow">Virtual Key<select name="key_id"><option value="">No Virtual Key</option>{% for k in keys %}{% if k.revoked_at.is_none() %}<option value="{{ k.id }}">{{ k.user }} / {{ k.label }} (#{{ k.id }})</option>{% endif %}{% endfor %}</select></label></div><button>Add attachment</button></form>
-<form action="/admin/guardrails/{{ s.id }}/delete" method="post" data-confirm="Delete rule set {{ s.name }} and its attachments?"><button class="danger ghost">Delete rule set</button></form>
+<div class="fields">
+<div class="field"><label for="a{{ id }}-route">Route</label>{% call picker::entity("a{}-route"|format(id), "route_name", "", "routes", routes, "No Route", false) %}</div>
+<div class="field"><label for="a{{ id }}-team">Team</label>{% call picker::entity("a{}-team"|format(id), "team_name", "", "teams", teams, "No Team", false) %}</div>
+<div class="field"><label for="a{{ id }}-key">Virtual Key</label><select id="a{{ id }}-key" name="key_id"><option value="">No Virtual Key</option>{% for k in keys %}{% if k.revoked_at.is_none() %}<option value="{{ k.id }}">{{ k.user }} / {{ k.label }} (#{{ k.id }})</option>{% endif %}{% endfor %}</select></div>
+</div>
+<button>Add attachment</button></form>
+<form action="/admin/guardrails/{{ id }}/delete" method="post" class="subform" data-confirm="Delete rule set {{ ed.title }} and its attachments?"><button class="danger ghost">Delete rule set</button></form>
+{%- endif %}
 </section>
 {% endfor %}
-<section class="panel stack" aria-labelledby="guard-test"><h2 id="guard-test">Test a rule</h2>
+<section class="panel stack" id="guard-test" aria-labelledby="guard-test-h"><h2 id="guard-test-h">Test a rule</h2>
 <p class="hint">Test a saved rule set on pasted text. The text and results are not stored. External hooks are not called.</p>
+{%- if forms.len() > 1 %}
 <form action="/admin/guardrails/test" method="post" hx-post="/admin/guardrails/test" hx-target="#guard-test-result" hx-swap="innerHTML" class="stack">
-<div class="row"><label>Rule set<select name="set_id" required>{% for s in sets %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></label><label>Direction<select name="direction"><option value="request">Request</option><option value="response">Response</option></select></label></div>
-<label>Text<textarea name="text" rows="5" required></textarea></label><button data-busy="Testing...">Test rule set</button><div class="form-error" role="alert" tabindex="-1"></div>
-</form><div id="guard-test-result"></div></section>
+<div class="fields">
+<div class="field"><label for="test-set">Rule set</label><select id="test-set" name="set_id" required>{% for ed in forms %}{% if let Some(id) = ed.id %}<option value="{{ id }}">{{ ed.title }}</option>{% endif %}{% endfor %}</select></div>
+<div class="field"><label for="test-dir">Direction</label><select id="test-dir" name="direction"><option value="request">Request</option><option value="response">Response</option></select></div>
+<div class="field wide"><label for="test-text">Text</label><textarea id="test-text" name="text" rows="4" required></textarea></div>
+</div>
+<button data-busy="Testing...">Test rule set</button><div class="form-error" role="alert" tabindex="-1"></div>
+</form><div id="guard-test-result"></div>
+{%- else %}
+<p class="empty">Add a rule set first.</p>
+{%- endif %}
+</section>
+<template id="guard-rule-tpl">{% call g::rule(tpl_ed, tpl_row, "__N__", detectors) %}</template>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  // Guardrails rule editor: add, remove and order rules; show the fields of
+  // the selected kind. Without JS the form shows all fields and empty rows.
+  const tpl = document.getElementById('guard-rule-tpl');
+  if (!tpl || !window.toko) { return; }
+  const say = window.toko.say;
+  const PRESETS = {
+    contact: [['EMAIL', 'email', 'redact'], ['PHONE', 'phone', 'redact']],
+    secrets: [['SECRET', 'secret', 'block']],
+    payment: [['CREDIT_CARD', 'credit_card', 'redact'], ['IBAN', 'iban', 'redact']],
+  };
+  const rows = list => [...list.children];
+  const field = (li, name) => li.querySelector(`[name$="[${name}]"]`);
+  const nameOf = li => field(li, 'name').value.trim();
+  const blank = li => ['name', 'detector', 'pattern', 'words'].every(n => !field(li, n).value.trim());
+  const describe = (li, n, total) => {
+    const name = nameOf(li);
+    const who = name ? `rule ${n} (${name})` : `rule ${n}`;
+    li.querySelector('legend').firstChild.textContent = `Rule ${n}`;
+    li.querySelector('.rule-name').textContent = name ? `: ${name}` : '';
+    li.querySelectorAll('[data-rule-act]').forEach(b => {
+      const act = b.dataset.ruleAct;
+      b.setAttribute('aria-label', act === 'remove' ? `Remove ${who}` : `Move ${who} ${act}`);
+      const edge = (act === 'up' && n === 1) || (act === 'down' && n === total);
+      b.setAttribute('aria-disabled', String(edge && act !== 'remove'));
+    });
+  };
+  const refresh = form => {
+    const list = form.querySelector('.rule-list');
+    const all = rows(list);
+    all.forEach((li, i) => describe(li, i + 1, all.length));
+    form.querySelector('.rules-empty').hidden = all.length > 0;
+    // A cheap live check: duplicate names (the server checks all rules).
+    const seen = {};
+    all.forEach(li => { const v = nameOf(li); if (v) { seen[v] = (seen[v] || 0) + 1; } });
+    all.forEach(li => {
+      const input = field(li, 'name');
+      const dup = li.querySelector('[data-dup]');
+      const bad = (seen[nameOf(li)] || 0) > 1;
+      dup.hidden = !bad;
+      const ids = (input.getAttribute('aria-describedby') || '').split(' ').filter(x => x && x !== dup.id);
+      if (bad) { ids.push(dup.id); input.setAttribute('aria-invalid', 'true'); } else if (!input.hasAttribute('data-invalid')) { input.removeAttribute('aria-invalid'); }
+      input.setAttribute('aria-describedby', ids.join(' '));
+    });
+  };
+  const showKind = li => {
+    const checked = li.querySelector('input[type=radio]:checked');
+    const kind = checked ? checked.value : 'detector';
+    li.querySelectorAll('.kind-panel').forEach(p => { p.hidden = p.dataset.kind !== kind; });
+  };
+  const about = sel => {
+    const o = sel.selectedOptions[0];
+    document.getElementById(sel.getAttribute('aria-describedby').split(' ')[0]).textContent = (o && o.dataset.about) || 'Select a detector.';
+  };
+  const prepare = root => {
+    root.querySelectorAll('.nojs-only').forEach(x => x.remove());
+    root.querySelectorAll('[data-js]').forEach(x => { x.hidden = false; });
+    root.querySelectorAll('.rule-list > li').forEach(showKind);
+  };
+  const addRow = form => {
+    const list = form.querySelector('.rule-list');
+    const next = Math.max(-1, ...rows(list).map(li => parseInt(li.querySelector('.rule').dataset.rule, 10) || 0)) + 1;
+    const t = document.createElement('template');
+    t.innerHTML = tpl.innerHTML.replaceAll('__F__', form.dataset.key).replaceAll('__I__', String(next)).replaceAll('__N__', String(rows(list).length + 1));
+    const li = t.content.firstElementChild;
+    list.append(li);
+    prepare(li);
+    refresh(form);
+    return li;
+  };
+  const setup = form => {
+    if (form.dataset.ready) { return; }
+    form.dataset.ready = 'true';
+    const list = form.querySelector('.rule-list');
+    // The empty no-JS rows go; "Add a rule" makes new ones.
+    list.querySelectorAll(':scope > li[data-extra]').forEach(li => li.remove());
+    prepare(form);
+    refresh(form);
+  };
+  document.querySelectorAll('form.guard-form').forEach(setup);
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest('form.guard-form [data-rule-act], form.guard-form [data-add-rule], form.guard-form [data-preset]');
+    if (!b) { return; }
+    const form = b.closest('form');
+    const list = form.querySelector('.rule-list');
+    if (b.hasAttribute('data-add-rule')) {
+      const li = addRow(form);
+      field(li, 'name').focus();
+      say(`Rule ${rows(list).length} added.`);
+      return;
+    }
+    if (b.dataset.preset) {
+      const added = [];
+      PRESETS[b.dataset.preset].forEach(([name, detector, action]) => {
+        if (rows(list).some(li => nameOf(li) === name)) { return; }
+        const li = rows(list).find(blank) || addRow(form);
+        field(li, 'name').value = name;
+        li.querySelector('input[type=radio][value=detector]').checked = true;
+        field(li, 'detector').value = detector;
+        about(field(li, 'detector'));
+        field(li, 'action').value = action;
+        field(li, 'direction').value = 'both';
+        showKind(li);
+        added.push(name);
+      });
+      refresh(form);
+      say(added.length ? `Added ${added.join(' and ')}. Save the rule set to keep them.` : 'These rules are already in the list.');
+      return;
+    }
+    const li = b.closest('li');
+    const all = rows(list);
+    const at = all.indexOf(li);
+    const name = nameOf(li) || `Rule ${at + 1}`;
+    if (b.dataset.ruleAct === 'remove') {
+      const other = all[at + 1] || all[at - 1];
+      li.remove();
+      refresh(form);
+      (other ? other.querySelector('[data-rule-act=remove]') : form.querySelector('[data-add-rule]')).focus();
+      say(`Removed ${name}. Save the rule set to keep the change.`);
+      return;
+    }
+    const up = b.dataset.ruleAct === 'up';
+    const other = up ? all[at - 1] : all[at + 1];
+    if (!other) { say(up ? `${name} is already first.` : `${name} is already last.`); return; }
+    if (up) { other.before(li); } else { other.after(li); }
+    refresh(form);
+    b.focus();
+    say(`Moved ${name} ${up ? 'up' : 'down'}. Position ${rows(list).indexOf(li) + 1} of ${all.length}.`);
+  });
+  document.addEventListener('change', e => {
+    const t = e.target;
+    const li = t.closest('form.guard-form .rule-list > li');
+    if (!li) { return; }
+    if (t.type === 'radio') { showKind(li); }
+    if (t.hasAttribute('data-detector')) { about(t); }
+  });
+  document.addEventListener('input', e => {
+    if (e.target.hasAttribute('data-rule-name')) { refresh(e.target.closest('form')); }
+  });
+})();
+</script>
 {% endblock %}
