@@ -253,12 +253,42 @@ impl Range {
     }
 }
 
+/// An Overview tile (Halogen Tile): label, value, unit, sparkline, note.
+#[derive(Default)]
 pub struct Stat {
     pub label: &'static str,
     pub value: String,
+    /// Small text after the value, such as "ms" or "%".
+    pub unit: &'static str,
     /// Full value for a `title`, empty when the value is exact.
     pub title: String,
     pub sub: String,
+    /// "", "warn" or "crit": the tile state.
+    pub tone: &'static str,
+    /// Text for the state, shown in the tile ("High"). Colour is never the
+    /// only sign.
+    pub tone_label: &'static str,
+    /// Sparkline SVG from chart::spark, or empty.
+    pub spark: String,
+}
+
+/// Error rate (percent) at which the Overview tile shows "High".
+pub const ERROR_RATE_WARN: f64 = 5.0;
+/// Error rate (percent) at which the Overview tile shows "Critical".
+pub const ERROR_RATE_CRIT: f64 = 20.0;
+
+fn error_tone(t: &Totals) -> (&'static str, &'static str) {
+    if t.requests == 0 {
+        return ("", "");
+    }
+    let rate = t.errors as f64 * 100.0 / t.requests as f64;
+    if rate >= ERROR_RATE_CRIT {
+        ("crit", "Critical")
+    } else if rate >= ERROR_RATE_WARN {
+        ("warn", "High")
+    } else {
+        ("", "")
+    }
 }
 
 pub struct GroupView {
@@ -485,21 +515,32 @@ impl OverviewPage {
         let hours = range.span() as f64 / 3600.0;
         let attempts: i64 = d.by_model.iter().map(|g| g.attempts).sum();
         let retried: i64 = d.by_model.iter().map(|g| g.retried).sum();
+        let (tone, tone_label) = error_tone(t);
         let mut stats = vec![
             Stat {
                 label: "Requests",
                 value: int(t.requests),
-                title: String::new(),
                 sub: format!("{} errors, error rate {}", int(t.errors), error_rate(t)),
+                ..Stat::default()
+            },
+            Stat {
+                label: "Error rate",
+                value: error_rate(t).trim_end_matches('%').to_string(),
+                unit: if t.requests == 0 { "" } else { "%" },
+                sub: format!("{} errors in {} requests", int(t.errors), int(t.requests)),
+                tone,
+                tone_label,
+                ..Stat::default()
             },
             Stat {
                 label: "Tokens",
                 value: int(all_tokens(t)),
-                title: String::new(),
                 sub: format!("input {}, output {}", int(t.input), int(t.output)),
+                ..Stat::default()
             },
         ];
         if !base.simple {
+            let loss = t.price_micros < t.cost_micros;
             stats.push(Stat {
                 label: "Price",
                 value: money(t.price_micros),
@@ -510,17 +551,22 @@ impl OverviewPage {
                     money(t.price_micros - t.cost_micros),
                     margin(t)
                 ),
+                tone: if loss { "crit" } else { "" },
+                tone_label: if loss { "Loss" } else { "" },
+                ..Stat::default()
             });
         }
+        let latency = avg_ms(t.latency_ms_sum, t.requests);
         stats.push(Stat {
             label: "Latency",
-            value: avg_ms(t.latency_ms_sum, t.requests),
-            title: String::new(),
+            unit: if latency.ends_with(" ms") { "ms" } else { "" },
+            value: latency.trim_end_matches(" ms").to_string(),
             sub: format!(
                 "TTFT {}, {} output tokens/s",
                 avg_ms(t.ttft_ms_sum, t.ttft_count),
                 tps(t)
             ),
+            ..Stat::default()
         });
         let mut more = vec![
             (
@@ -557,6 +603,7 @@ impl OverviewPage {
         let mut axis = vec![];
         let (mut cost, mut price, mut profit, mut reqs, mut toks) =
             (vec![], vec![], vec![], vec![], vec![]);
+        let (mut errs, mut lat) = (vec![], vec![]);
         let mut it = d.series.iter().peekable();
         let mut at = range.since() / b * b;
         while at <= now {
@@ -581,7 +628,19 @@ impl OverviewPage {
             profit.push((tt.price_micros - tt.cost_micros) as f64 / 1e6);
             reqs.push(tt.requests as f64);
             toks.push(all_tokens(tt) as f64);
+            let n = tt.requests.max(1) as f64;
+            errs.push(tt.errors as f64 * 100.0 / n);
+            lat.push(tt.latency_ms_sum as f64 / n);
             at += b;
+        }
+        for s in &mut stats {
+            s.spark = chart::spark(match s.label {
+                "Requests" => &reqs,
+                "Error rate" => &errs,
+                "Tokens" => &toks,
+                "Price" => &price,
+                _ => &lat,
+            });
         }
         let per = range.per();
         let words = range.words();
@@ -597,19 +656,19 @@ impl OverviewPage {
             &[
                 Series {
                     name: "Price",
-                    color: "#60a5fa",
+                    class: "s1",
                     dash: "",
                     values: price,
                 },
                 Series {
                     name: "Cost",
-                    color: "#f87171",
+                    class: "s4",
                     dash: "6 4",
                     values: cost,
                 },
                 Series {
                     name: "Profit",
-                    color: "#34d399",
+                    class: "s2",
                     dash: "2 3",
                     values: profit,
                 },
@@ -626,7 +685,7 @@ impl OverviewPage {
             &axis,
             &[Series {
                 name: "Requests",
-                color: "#a78bfa",
+                class: "s1",
                 dash: "",
                 values: reqs,
             }],
@@ -642,7 +701,7 @@ impl OverviewPage {
             &axis,
             &[Series {
                 name: "Tokens",
-                color: "#fbbf24",
+                class: "s3",
                 dash: "",
                 values: toks,
             }],

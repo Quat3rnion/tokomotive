@@ -19,6 +19,8 @@ struct Capture {
     caption: String,
     alt: String,
     kind: String,
+    #[serde(default)]
+    theme: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -88,9 +90,30 @@ fn screenshots_cover_dashboard_routes_and_readme() {
         assert!(
             !capture.recipe.is_empty() && !capture.caption.is_empty() && !capture.alt.is_empty()
         );
-        assert!(matches!(capture.kind.as_str(), "hero" | "table"));
+        assert!(matches!(
+            capture.kind.as_str(),
+            "hero" | "hero-light" | "table"
+        ));
+        // The default capture theme is dark; a light hero is the
+        // prefers-color-scheme source of a <picture>.
+        assert_eq!(
+            capture.theme.as_deref() == Some("light"),
+            capture.kind == "hero-light",
+            "theme of {}",
+            capture.image
+        );
+        assert!(matches!(capture.theme.as_deref(), None | Some("light")));
         let reference = if capture.kind == "hero" {
-            format!("![{}](docs/images/{})", capture.alt, capture.image)
+            format!(
+                "<img alt=\"{}\" src=\"docs/images/{}\">",
+                capture.alt.replace('"', "&quot;"),
+                capture.image
+            )
+        } else if capture.kind == "hero-light" {
+            format!(
+                "<source media=\"(prefers-color-scheme: light)\" srcset=\"docs/images/{}\">",
+                capture.image
+            )
         } else {
             format!(
                 "[{}](docs/images/{}) | {}",

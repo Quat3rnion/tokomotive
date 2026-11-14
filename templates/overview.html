@@ -91,7 +91,12 @@
 
 <div class="stats">
   {% for s in stats %}
-  <div class="panel stat"><div class="l">{{ s.label }}</div><div class="v"{% if !s.title.is_empty() %} title="{{ s.title }}"{% endif %}>{{ s.value }}</div><div class="s">{{ s.sub }}</div></div>
+  <div class="tile{% if !s.tone.is_empty() %} {{ s.tone }}{% endif %}">
+    <p class="tile-label"><span>{{ s.label }}</span>{% if !s.tone_label.is_empty() %}<span class="tile-tone">{{ s.tone_label }}</span>{% endif %}</p>
+    <p class="tile-value"{% if !s.title.is_empty() %} title="{{ s.title }}"{% endif %}>{{ s.value }}{% if !s.unit.is_empty() %}<span class="tile-unit">{{ s.unit }}</span>{% endif %}</p>
+    {{ s.spark|safe }}
+    <p class="tile-note">{{ s.sub }}</p>
+  </div>
   {% endfor %}
 </div>
 <dl class="kv">

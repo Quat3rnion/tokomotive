@@ -63,6 +63,11 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/logout", post(logout))
         .route("/admin/assets/htmx.min.js", get(htmx))
         .route("/admin/assets/favicon.svg", get(favicon))
+        .route("/admin/assets/ibm-plex-sans-latin.woff2", get(font_latin))
+        .route(
+            "/admin/assets/ibm-plex-sans-latin-ext.woff2",
+            get(font_latin_ext),
+        )
         .route("/favicon.ico", get(favicon))
         .route("/admin/users", get(users).post(create_user))
         .route("/admin/users/{id}", post(update_user))
@@ -519,6 +524,31 @@ async fn favicon() -> Response {
         include_str!("../../assets/favicon.svg"),
     )
         .into_response()
+}
+
+/// IBM Plex Sans Variable (SIL OFL 1.1, assets/fonts/OFL.txt). The files do
+/// not change between releases, so browsers may keep them for a year.
+fn font(bytes: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+async fn font_latin() -> Response {
+    font(include_bytes!(
+        "../../assets/fonts/ibm-plex-sans-latin.woff2"
+    ))
+}
+
+async fn font_latin_ext() -> Response {
+    font(include_bytes!(
+        "../../assets/fonts/ibm-plex-sans-latin-ext.woff2"
+    ))
 }
 
 // -------------------------------------------------------------------- auth

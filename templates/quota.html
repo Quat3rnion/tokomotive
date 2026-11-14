@@ -7,7 +7,7 @@
   {% if account.windows.is_empty() %}<p class="hint">No quota headers observed.</p>{% else %}
   <ul class="meters">
     {% for w in account.windows %}
-    <li><strong>{{ w.name }}</strong> {% if let Some(pct) = w.percent %}<meter min="0" max="100" value="{{ pct }}" aria-label="{{ account.provider }} {{ account.key }} {{ w.name }} used percent">{{ w.text }}</meter>{% endif %} <span>{{ w.text }}{% if !w.counts.is_empty() %}, {{ w.counts }}{% endif %}{% if let Some(t) = w.reset %}, <time datetime="{{ t.iso }}" data-local-title title="{{ t }}">{{ w.relative }}</time>{% endif %}</span>{% if let Some(t) = w.observed %} <span class="hint">Observed <time datetime="{{ t.iso }}" data-local-title title="{{ t }}">{{ t }}</time></span>{% endif %}</li>
+    <li><strong>{{ w.name }}</strong> {% if let Some(pct) = w.percent %}<meter min="0" max="100" low="70" high="90" optimum="0" value="{{ pct }}" aria-label="{{ account.provider }} {{ account.key }} {{ w.name }} used percent">{{ w.text }}</meter>{% endif %} <span>{{ w.text }}{% if !w.counts.is_empty() %}, {{ w.counts }}{% endif %}{% if let Some(t) = w.reset %}, <time datetime="{{ t.iso }}" data-local-title title="{{ t }}">{{ w.relative }}</time>{% endif %}</span>{% if let Some(t) = w.observed %} <span class="hint">Observed <time datetime="{{ t.iso }}" data-local-title title="{{ t }}">{{ t }}</time></span>{% endif %}</li>
     {% endfor %}
   </ul>{% endif %}
 </div>

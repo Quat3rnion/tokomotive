@@ -4,12 +4,16 @@
 //! `preserveAspectRatio="none"` and non-scaling strokes. Axis labels are HTML,
 //! so their size does not change with the chart width. Each chart has a
 //! one-sentence summary as its accessible name and a data table.
+//!
+//! No colour is written here: series use the classes `s1`..`s5`, and
+//! base.html maps them to the `--s1`..`--s5` tokens of the current theme.
 
 use super::views::{int, money};
 
 pub struct Series<'a> {
     pub name: &'a str,
-    pub color: &'a str,
+    /// Palette class, `s1` to `s5` (the `--s1`..`--s5` tokens).
+    pub class: &'a str,
     /// SVG `stroke-dasharray`; empty for a solid line. Series must differ in
     /// more than color.
     pub dash: &'a str,
@@ -116,6 +120,39 @@ fn value_text(v: f64, unit: Unit) -> String {
     }
 }
 
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// A small sparkline for an Overview tile: a line and a soft area, scaled
+/// from zero to the largest value. Decorative: the tile shows the value.
+pub fn spark(values: &[f64]) -> String {
+    let n = values.len();
+    if n < 2 {
+        return String::new();
+    }
+    let max = values.iter().copied().fold(0.0_f64, f64::max);
+    let y = |v: f64| {
+        if max > 0.0 {
+            25.0 - 24.0 * (v.max(0.0) / max)
+        } else {
+            25.0
+        }
+    };
+    let pts: Vec<String> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| format!("{:.1},{:.2}", i as f64 * 100.0 / (n - 1) as f64, y(*v)))
+        .collect();
+    let pts = pts.join(" ");
+    format!(
+        r#"<svg class="spark" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true" focusable="false"><polygon class="area" points="0,26 {pts} 100,26"/><polyline class="line" points="{pts}" vector-effect="non-scaling-stroke"/></svg>"#
+    )
+}
+
 /// Render a line chart with a summary, a legend and a data table. `labels`
 /// name each bucket in full (table and summary); `axis` are the short
 /// labels under the plot.
@@ -170,9 +207,10 @@ pub fn line(c: &Chart, labels: &[String], axis: &[String], series: &[Series]) ->
     let label = format!("{}, {} (UTC). {}.", c.title, c.range, summary.join("; "));
 
     let mut out = format!(
-        r#"<figure class="chart" id="{id}"><figcaption class="chart-title">{title}</figcaption><div class="chart-plot" role="img" aria-label="{label}"><svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">"#,
+        r#"<figure class="chart" id="{id}"><figcaption class="chart-title"><span>{title}</span><span class="cap">{range}, UTC</span></figcaption><div class="chart-plot" role="img" aria-label="{label}"><svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">"#,
         id = c.id,
         title = esc(&c.title),
+        range = esc(&capitalize(c.range)),
         label = esc(&label),
     );
     for t in &ticks {
@@ -182,7 +220,7 @@ pub fn line(c: &Chart, labels: &[String], axis: &[String], series: &[Series]) ->
             zero = if *t == 0.0 { " zero" } else { "" },
         );
     }
-    for s in series {
+    for (k, s) in series.iter().enumerate() {
         let mut pts: Vec<String> = s
             .values
             .iter()
@@ -194,9 +232,20 @@ pub fn line(c: &Chart, labels: &[String], axis: &[String], series: &[Series]) ->
             let yy = y(s.values[0]);
             pts = vec![format!("0,{yy:.2}"), format!("1000,{yy:.2}")];
         }
+        if k == 0 {
+            // A soft area under the first series, down to the zero line.
+            let base = y(0.0_f64.clamp(lo, hi));
+            let first = pts[0].split(',').next().unwrap_or("0");
+            let last = pts[pts.len() - 1].split(',').next().unwrap_or("1000");
+            out += &format!(
+                r#"<polygon class="area {}" points="{first},{base:.2} {} {last},{base:.2}"/>"#,
+                s.class,
+                pts.join(" ")
+            );
+        }
         out += &format!(
-            r#"<polyline fill="none" stroke="{}" stroke-width="2" stroke-dasharray="{}" stroke-linejoin="round" vector-effect="non-scaling-stroke" points="{}"/>"#,
-            s.color,
+            r#"<polyline class="{}" fill="none" stroke-width="2" stroke-dasharray="{}" stroke-linejoin="round" vector-effect="non-scaling-stroke" points="{}"/>"#,
+            s.class,
             s.dash,
             pts.join(" ")
         );
@@ -226,12 +275,14 @@ pub fn line(c: &Chart, labels: &[String], axis: &[String], series: &[Series]) ->
         );
     }
     out += r#"</div><ul class="legend">"#;
+    // Legend as in Halogen: a short bar, the name and the total in the range.
     for s in series {
         out += &format!(
-            r#"<li><svg width="24" height="10" aria-hidden="true" focusable="false"><line x1="1" y1="5" x2="23" y2="5" stroke="{}" stroke-width="2" stroke-dasharray="{}"/></svg>{}</li>"#,
-            s.color,
-            s.dash,
-            esc(s.name)
+            r#"<li><svg width="16" height="8" aria-hidden="true" focusable="false"><line class="{}" x1="1" y1="4" x2="15" y2="4" stroke-width="3" stroke-dasharray="{}"/></svg>{} <b>{}</b></li>"#,
+            s.class,
+            if s.dash.is_empty() { "" } else { "4 2" },
+            esc(s.name),
+            value_text(s.values.iter().sum(), c.unit)
         );
     }
     out += &format!(
@@ -289,12 +340,15 @@ mod tests {
             &labels,
             &[Series {
                 name: "Requests",
-                color: "#fff",
+                class: "s1",
                 dash: "",
                 values: vec![3.0, 7.0],
             }],
         );
         assert!(html.contains(r#"role="img" aria-label="Requests per hour, the last 24 hours (UTC). Requests: total 10, peak 7 at 11-13 11:00.""#), "{html}");
         assert!(html.contains("<caption>Requests per hour"));
+        assert!(html.contains(r#"<polyline class="s1""#), "{html}");
+        assert!(html.contains("Requests <b>10</b>"), "legend total: {html}");
+        assert!(!html.contains('#'), "no hard-coded colour: {html}");
     }
 }

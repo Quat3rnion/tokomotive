@@ -18,6 +18,10 @@ async function capture() {
       viewport: { width, height: 900 }, deviceScaleFactor: 2,
       colorScheme: 'dark', reducedMotion: 'reduce',
     });
+    // Captures use the dark theme unless the manifest entry says "theme":"light".
+    await context.addInitScript(() => {
+      if (!localStorage.getItem('toko-theme')) localStorage.setItem('toko-theme', 'dark');
+    });
     const page = await context.newPage();
     const errors = [];
     page.on('console', message => {
@@ -126,9 +130,14 @@ async function capture() {
       assert(/^[a-z0-9-]+\.png$/.test(entry.image), `Invalid image ${entry.image}`);
       assert(!captured.has(entry.image), `Duplicate capture ${entry.image}`);
       assert(recipes[entry.recipe], `Missing recipe ${entry.recipe}`);
+      const theme = entry.theme || 'dark';
+      assert(['dark', 'light'].includes(theme), `Invalid theme ${theme}`);
+      await page.evaluate(value => localStorage.setItem('toko-theme', value), theme);
+      await page.emulateMedia({ colorScheme: theme });
       await go(entry.page);
       const [top, bottom] = await recipes[entry.recipe](entry);
       await settle(keepLists.has(entry.recipe));
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), theme, `theme of ${entry.image}`);
       await page.screenshot({ path: path.join(out, entry.image), fullPage: true,
         clip: { x: 0, y: top, width, height: Math.min(bottom, await full()) - top } });
       captured.add(entry.image);

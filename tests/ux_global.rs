@@ -594,3 +594,103 @@ fn dashboard_css_braces_balance() {
     }
     assert_eq!(depth, 0, "unclosed CSS block in templates/base.html");
 }
+
+/// The font is embedded, typed as woff2 and cached for a year.
+#[tokio::test]
+async fn font_assets_are_served_with_a_long_cache() {
+    let a = app().await;
+    for name in ["ibm-plex-sans-latin", "ibm-plex-sans-latin-ext"] {
+        let r =
+            a.c.get(format!("{}/admin/assets/{name}.woff2", a.url))
+                .send()
+                .await
+                .unwrap();
+        assert_eq!(r.status(), 200, "{name}");
+        assert_eq!(r.headers()["content-type"], "font/woff2");
+        let cache = r.headers()["cache-control"].to_str().unwrap().to_owned();
+        assert!(
+            cache.contains("max-age=31536000") && cache.contains("immutable"),
+            "{cache}"
+        );
+        assert!(
+            r.bytes().await.unwrap().starts_with(b"wOF2"),
+            "{name} is woff2"
+        );
+    }
+}
+
+/// The theme script runs in <head> before the stylesheet, so the first paint
+/// already has the chosen theme. The switch is three buttons with aria-pressed.
+#[tokio::test]
+async fn theme_is_set_before_the_first_paint_and_has_a_switch() {
+    let a = app().await;
+    let cookie = a.setup().await;
+    let (_, html) = a.get("/admin", &cookie).await;
+    let head = &html[..html.find("</head>").expect("head")];
+    let script = head.find("dataset.theme =").expect("theme script in head");
+    let style = head.find("<style>").expect("stylesheet");
+    assert!(
+        script < style,
+        "theme script must come before the stylesheet"
+    );
+    assert!(head.contains("localStorage.getItem('toko-theme')"));
+    assert!(head.contains("<meta name=\"color-scheme\" content=\"dark light\">"));
+    assert!(head.contains(":root[data-theme=light]"));
+    for (pref, label) in [
+        ("system", "System theme"),
+        ("dark", "Dark theme"),
+        ("light", "Light theme"),
+    ] {
+        assert!(
+            html.contains(&format!(
+                "data-theme-set=\"{pref}\" aria-pressed=\"false\" aria-label=\"{label}\""
+            )),
+            "{pref} button"
+        );
+    }
+    assert!(html.contains("role=\"group\" aria-label=\"Theme\""));
+}
+
+/// Colours live in the token block of base.html, so both themes cover every
+/// page. A hex colour anywhere else in a template or in the dashboard Rust
+/// code is a colour that the theme switch cannot change.
+#[test]
+fn templates_use_colour_tokens_only() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let is_hex =
+        |w: &str| matches!(w.len(), 3 | 4 | 6 | 8) && w.chars().all(|c| c.is_ascii_hexdigit());
+    // Hex-looking words that are not colours (none yet).
+    let allow: &[&str] = &[];
+    let mut found = vec![];
+    let mut files: Vec<_> = std::fs::read_dir(root.join("templates"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    files.push(root.join("src/web/chart.rs"));
+    files.push(root.join("src/web/views.rs"));
+    for path in files {
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        if path.ends_with("base.html") {
+            // The token block: from the first :root rule to the end of the
+            // light theme (the "Old names" comment follows it).
+            let start = text.find(":root {").expect("token block");
+            let end = text.find("/* Old names").expect("end of token block");
+            text.replace_range(start..end, "");
+        }
+        for (i, part) in text.split('#').enumerate().skip(1) {
+            let word: String = part
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            // "#add-provider-h" is a fragment, not a colour.
+            let id = matches!(part[word.len()..].chars().next(), Some('-' | '_'));
+            if is_hex(&word) && !id && !allow.contains(&word.as_str()) {
+                found.push(format!("{}: #{word} (match {i})", path.display()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "hex colours outside the token block: {found:#?}"
+    );
+}

@@ -123,12 +123,20 @@ controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 ## Screenshots
 
 The screenshots show demo data from a local test server. The keys are not real.
+The dashboard has a dark and a light theme. The two large images show the
+theme of your GitHub appearance setting.
 The current images do not show the new exact-cache controls, hit flag or hit rate.
 The capture manifest records these changes for the next image refresh.
 
-![The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table.](docs/images/overview.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/overview-light.png">
+  <img alt="The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table." src="docs/images/overview.png">
+</picture>
 
-![The Routes page. The Route "smart" uses the weighted strategy with three Deployments on two Providers and two Fallbacks.](docs/images/routes.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/routes-light.png">
+  <img alt="The Routes page. The Route &quot;smart&quot; uses the weighted strategy with three Deployments on two Providers and two Fallbacks." src="docs/images/routes.png">
+</picture>
 
 | Page | What it shows |
 | ---- | ------------- |
