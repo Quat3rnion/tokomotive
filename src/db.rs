@@ -1217,6 +1217,7 @@ pub async fn count_flags_since(db: &Db, since_s: i64) -> Result<(i64, i64)> {
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct CardHistoryRow {
+    pub source: String,
     pub id: i64,
     pub team: Option<String>,
     pub kind: String,
@@ -1226,7 +1227,7 @@ pub struct CardHistoryRow {
 
 pub async fn card_history(db: &Db, model_id: i64) -> Result<Vec<CardHistoryRow>> {
     Ok(sqlx::query_as(
-        "SELECT c.id, t.name AS team, c.kind, c.spec, c.created_at FROM cards c LEFT JOIN teams t ON t.id = c.team_id
+        "SELECT c.id, t.name AS team, c.kind, c.spec, c.created_at, c.source FROM cards c LEFT JOIN teams t ON t.id = c.team_id
          WHERE c.model_id = ? ORDER BY c.id DESC LIMIT 20",
     )
     .bind(model_id)
@@ -1314,7 +1315,7 @@ pub async fn override_teams_page(db: &Db, model: i64, q: &PageQuery) -> Result<P
 
 pub async fn history_page(db: &Db, model: i64, q: &PageQuery) -> Result<Page<CardHistoryRow>> {
     let mut b = sqlx::QueryBuilder::new(
-        "SELECT c.id,t.name AS team,c.kind,c.spec,c.created_at FROM cards c LEFT JOIN teams t ON t.id=c.team_id WHERE c.model_id=",
+        "SELECT c.id,t.name AS team,c.kind,c.spec,c.created_at,c.source FROM cards c LEFT JOIN teams t ON t.id=c.team_id WHERE c.model_id=",
     );
     b.push_bind(model);
     q.keyset_desc(&mut b, "c.id");

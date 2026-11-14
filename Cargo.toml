@@ -15,6 +15,7 @@ axum = { version = "0.8", features = ["macros"] }
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = "0.3"
+flate2 = "1"
 hex = "0.4"
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 metrics = "0.24"

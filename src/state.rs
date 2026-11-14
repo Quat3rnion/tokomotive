@@ -117,6 +117,7 @@ impl AppState {
     ) -> Result<AppState> {
         let secret_key = crate::settings::SecretKey::load(&cfg.server.database)?;
         crate::settings::seed(&db, cfg, &secret_key).await?;
+        crate::models_dev::seed(&db).await?;
         let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
         let router_table = RouterTable::from_config(&runtime);
         let http = reqwest::Client::builder()

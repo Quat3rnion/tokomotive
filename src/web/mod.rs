@@ -38,6 +38,7 @@ macro_rules! tryr {
     };
 }
 
+mod models_dev;
 mod oauth;
 mod settings;
 
@@ -71,6 +72,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/search/{kind}", get(search))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
+        .merge(models_dev::router())
         .merge(oauth::router())
         .fallback(not_found)
         .layer(axum::middleware::from_fn(same_origin))
@@ -721,6 +723,7 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
         .fetch_one(&st.db)
         .await
     );
+    page.model_price_alerts = tryr!(models_dev::alerts(&st).await);
     for (label, value) in &mut page.more {
         if *label == "Attempts" {
             *value = int(attempts);
@@ -1825,6 +1828,7 @@ async fn model_detail(
     page.team_choices = tryr!(db::small_choices(&st.db, "teams").await);
     page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
     page.pager.label = "Card history pages".into();
+    page.models_dev = tryr!(models_dev::detail_view(&st, id).await);
     page.override_pager = Pager::keyset(&uri.to_string(), &override_q, &teams);
     page.override_pager.label = "Team override pages".into();
     page.override_pager.next = teams.next.map(|id| {

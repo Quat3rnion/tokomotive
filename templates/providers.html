@@ -148,6 +148,7 @@
   <datalist id="provider-urls"><option value="https://api.openai.com"><option value="https://api.anthropic.com"></datalist>
   <form method="post" action="/admin/providers" class="stack" id="add-provider">
     <div class="row">
+      <input type="hidden" name="preset" id="np-preset-id" value="{{ preset.name }}">
       <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" value="{{ preset.name }}" required autocomplete="off" spellcheck="false" placeholder="openai" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Letters, digits, dot, underscore or hyphen.</p></div>
       <div class="field"><label for="np-auth">Authentication</label><select id="np-auth" name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT subscription (recommended)</option><option value="codex">ChatGPT via Codex (legacy)</option><option value="claude">Claude Pro/Max</option><option value="hugging_face">Hugging Face OAuth</option><option value="entra">Azure Entra ID</option><option value="google_vertex">Google Vertex (adapter pending)</option></select></div>
       <div class="field"><label for="np-kind">API format</label><select id="np-kind" name="kind"><option value="openai"{% if preset.kind_name() == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if preset.kind_name() == "anthropic" %} selected{% endif %}>Anthropic</option></select></div>
@@ -177,6 +178,7 @@
   preset.addEventListener('change', () => {
     if (auth.value !== 'api_key') { return; }
     const p = preset.selectedOptions[0].dataset;
+    document.getElementById('np-preset-id').value = preset.value;
     document.getElementById('np-name').value = p.name;
     document.getElementById('np-kind').value = p.kind;
     document.getElementById('np-url').value = p.url;

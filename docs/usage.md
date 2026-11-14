@@ -16,6 +16,50 @@ export PROXY=http://127.0.0.1:8787
 export KEY=sk-toko-...
 ```
 
+## models.dev model data and pricing
+
+The first start loads a bundled models.dev snapshot. It works without a network
+connection. Daily sync uses `https://models.dev/api.json` by default. In
+**Settings > models.dev Sync**, change the URL, turn daily sync off, or select
+**Refresh model data**. A failed check keeps old data and shows an error.
+
+Each Model matches a models.dev Provider from its Provider preset or API URL.
+API URLs can differ by a trailing slash or `/v1`. The Model matches by exact ID,
+then `canonical_model_id`, then the longest `<id>-` prefix, as in catalog lookup.
+The Model page shows the matched limits, capabilities, dates, status and Provider
+documentation. It shows **Not in models.dev** when there is no match. Use the
+Provider and Model override fields to correct a match. Blank fields restore
+automatic matching. A saved override applies at the next sync.
+
+Sync updates Cost Cards automatically. A price change creates a Card Version
+with the data date and ETag in its source. An unchanged price creates no version.
+Select **Pinned: models.dev sync does not change this card** to keep manual
+rates. The Operator can still edit a pinned card. Subscription Providers keep
+Cost zero. Old Ledger Entries do not change.
+
+Cache write uses the 5-minute Token Class. The 1-hour rate uses
+`cache_write_1h` when available. Otherwise it is twice the input rate for the
+Anthropic format, and the cache write rate for other formats. Reasoning uses
+the output Token Class. Context tiers and `context_over_200k` become Context
+Tiers. Audio prices have no matching Token Class and are not imported.
+
+A change of more than 50% shows **Price changed a lot. Check it.** on the
+Overview. Open the old and new values and follow the Model link. Check plan
+Models with care: upstream prices can be zero or retail rates that do not match
+your contract. Pin the Cost Card when the data does not match your invoice.
+
+The Add Provider preset list includes Providers with an API URL from models.dev.
+They are marked **from models.dev**. Hand-verified presets take priority. For
+new data presets, the API format is OpenAI unless the package names Anthropic.
+The default key header is bearer. Check the Provider documentation before use.
+
+For a request without `max_tokens` or `max_output_tokens`, the Reservation uses
+the mapped output limit. **Reserved output tokens** is only the fallback when
+the Model is unmapped or has no output limit. It does not cap a larger model limit.
+
+The bundled data is from [models.dev](https://models.dev), fetched on 2026-11-13.
+See [ADR 0005](adr/0005-models-dev-pricing.md) for the pricing decision and risks.
+
 ## Connect a client
 
 Set the base URL of the client to the Proxy. Use a Virtual Key as the API key.

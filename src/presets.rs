@@ -285,3 +285,64 @@ pub static PRESETS: &[Preset] = &[
 pub fn find(name: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|preset| preset.name == name)
 }
+
+#[derive(Clone)]
+pub struct PresetChoice {
+    pub name: String,
+    pub label: String,
+    pub kind: ProviderKind,
+    pub base_url: String,
+    pub key_header: KeyHeader,
+    pub include_usage: bool,
+    pub docs: String,
+    pub key_help: String,
+}
+
+impl PresetChoice {
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            ProviderKind::Openai => "openai",
+            ProviderKind::Anthropic => "anthropic",
+        }
+    }
+}
+
+/// Hand-verified presets take precedence over upstream IDs.
+pub async fn merged(db: &crate::db::Db) -> anyhow::Result<Vec<PresetChoice>> {
+    use sqlx::Row;
+    let mut presets: Vec<_> = PRESETS
+        .iter()
+        .map(|p| PresetChoice {
+            name: p.name.into(),
+            label: p.label.into(),
+            kind: p.kind,
+            base_url: p.base_url.into(),
+            key_header: p.key_header,
+            include_usage: p.include_usage,
+            docs: p.docs.into(),
+            key_help: p.key_help.into(),
+        })
+        .collect();
+    for row in sqlx::query(
+        "SELECT id,name,api,npm,doc FROM models_dev_providers WHERE api!='' ORDER BY name",
+    )
+    .fetch_all(db)
+    .await?
+    {
+        let id: String = row.get("id");
+        if find(&id).is_some() {
+            continue;
+        }
+        let url: String = row.get("api");
+        if !reqwest::Url::parse(&url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")) {
+            continue;
+        }
+        presets.push(PresetChoice {
+            name:id, label:format!("{} (from models.dev)",row.get::<String,_>("name")),
+            kind:if row.get::<String,_>("npm").contains("anthropic") { ProviderKind::Anthropic } else { ProviderKind::Openai },
+            base_url:url,key_header:KeyHeader::Bearer,include_usage:true,docs:row.get("doc"),
+            key_help:"From models.dev. Check the API format, key header and usage options with the Provider.".into(),
+        });
+    }
+    Ok(presets)
+}

@@ -86,9 +86,28 @@ first start. Edit them in **Settings** afterward.
 | `upstream_timeout_secs`  | integer | `600`                          | Time limit in seconds for one request to a Provider. The limit includes the time to read the response body. The connect time limit is 15 seconds and is fixed. |
 | `metrics_token`          | string | none                            | The bearer token for `/metrics`, in the file. It seeds once. Later changes belong in **Settings**. |
 | `metrics_token_env`      | string | `"TOKOMOTIVE_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
-| `reserve_output_tokens`  | integer | `4096` | Output tokens that a Reservation assumes when the request sets no maximum. Must be non-negative. |
+| `reserve_output_tokens`  | integer | `4096` | Fallback output tokens for a Reservation when the request sets no maximum and the Model has no mapped output limit. Must be non-negative. Does not cap a models.dev output limit. |
 | `session_days`           | integer | `7` | Duration of new dashboard sessions, from 1 to 3650 days. |
 | `mode`                   | string | `"full"` | `full` enables pricing and usage limits. `simple` enables routing and token metrics without Budget checks, Reservations or Rate Limits. See "Simple mode". |
+
+### models.dev settings
+
+Use **Settings > models.dev Sync** for these live settings. They are not seed-file fields.
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| Model data URL | `https://models.dev/api.json` | HTTP or HTTPS JSON source. Redirects are not followed. The size limit is 16 MB. |
+| Sync model data once a day | On | Check the saved URL once a day with `If-None-Match` when an ETag is available. |
+
+**Refresh model data** checks the saved URL at once, also when daily sync is off.
+Settings shows the last accepted check and the last error. A bad payload, a
+negative price, or a loss of more than 20% of Models keeps the old data.
+The first start loads the bundled snapshot without a network request.
+
+When a request has no `max_tokens` or `max_output_tokens`, its Reservation uses
+the mapped Model's `limit.output`. `reserve_output_tokens` is the fallback when
+the Model is unmapped or has no output limit. A lower fallback does not cap the
+model limit.
 
 ### Simple mode
 

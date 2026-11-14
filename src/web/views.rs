@@ -443,6 +443,7 @@ impl SetupState {
 #[derive(Template)]
 #[template(path = "overview.html")]
 pub struct OverviewPage {
+    pub model_price_alerts: Vec<super::models_dev::AlertView>,
     pub base: Base,
     pub range: &'static str,
     pub range_words: &'static str,
@@ -646,6 +647,7 @@ impl OverviewPage {
             rows: rows.iter().map(GroupView::new).collect(),
         };
         OverviewPage {
+            model_price_alerts: vec![],
             range: range.name(),
             range_words: words,
             steps: if d.setup.complete() {
@@ -1085,6 +1087,7 @@ pub struct OverrideView {
 }
 
 pub struct HistView {
+    pub source: String,
     pub id: i64,
     /// "Cost Card" or "Price Card".
     pub kind: String,
@@ -1100,6 +1103,7 @@ pub struct HistView {
 #[derive(Template)]
 #[template(path = "model.html")]
 pub struct ModelPage {
+    pub models_dev: super::models_dev::DetailView,
     pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
     pub team_choices: Option<Vec<crate::db::ControlChoice>>,
     pub provider_name: String,
@@ -1185,6 +1189,7 @@ impl ModelPage {
                     }
                 };
                 HistView {
+                    source: h.source.clone(),
                     id: h.id,
                     kind: if h.kind == "cost" {
                         "Cost Card".into()
@@ -1204,6 +1209,7 @@ impl ModelPage {
             .collect();
         let dollars = |micros: i64| format!("{}", micros as f64 / 1e6);
         ModelPage {
+            models_dev: Default::default(),
             provider_choices: None,
             team_choices: None,
             provider_name: m.provider.clone(),

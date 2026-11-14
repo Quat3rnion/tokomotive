@@ -577,25 +577,46 @@ pub async fn handle(
                 );
             }
         };
-        let worst = candidates
-            .iter()
-            .filter_map(|c| {
-                let (prepared, target, _) = prepare_body(c, endpoint, json_body.as_ref()).ok()?;
-                let len = prepared
-                    .as_ref()
-                    .map_or(body.len(), |v| v.to_string().len());
-                Some(worst_case_price(
-                    &catalog,
-                    auth.team_id,
-                    target,
-                    c.model.as_deref(),
-                    prepared.as_ref(),
-                    len,
-                    settings.reserve_output_tokens,
-                ))
-            })
-            .max()
-            .unwrap_or(0);
+        let mut worst = 0;
+        for c in &candidates {
+            let Ok((prepared, target, _)) = prepare_body(c, endpoint, json_body.as_ref()) else {
+                continue;
+            };
+            let len = prepared
+                .as_ref()
+                .map_or(body.len(), |v| v.to_string().len());
+            let model_id = c
+                .model
+                .as_deref()
+                .and_then(|m| catalog.resolve(m))
+                .map(|m| m.id);
+            let reserve_output = match crate::models_dev::reservation_output(
+                &st.db,
+                model_id,
+                settings.reserve_output_tokens,
+            )
+            .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!(error=%e,"model output limit lookup failed");
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "api_error",
+                        "internal error",
+                    );
+                }
+            };
+            worst = worst.max(worst_case_price(
+                &catalog,
+                auth.team_id,
+                target,
+                c.model.as_deref(),
+                prepared.as_ref(),
+                len,
+                reserve_output,
+            ));
+        }
         match st.reserve(auth.user_id, budget, spent, worst) {
             Some(r) => reservation = Some(r),
             None => {

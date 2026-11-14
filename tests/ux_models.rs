@@ -13,6 +13,148 @@ use tokomotive::{
     usage::Usage,
 };
 
+#[tokio::test]
+async fn models_dev_details_mapping_pin_and_settings_are_visible() {
+    let a = app().await;
+    a.provider().await;
+    let id = db::create_model(&a.st.db, "claude-sonnet-4-5", "openai", &[])
+        .await
+        .unwrap();
+    a.st.reload_catalog().await.unwrap();
+    let page = a.page(&format!("/admin/models/{id}")).await;
+    assert!(page.contains("Not in models.dev"));
+    let r = a
+        .post(
+            &format!("/admin/models/{id}/models-dev"),
+            &[
+                ("models_dev_provider", "anthropic"),
+                ("models_dev_model", "claude-sonnet-4-5"),
+                ("cost_pinned", "on"),
+            ],
+        )
+        .await;
+    assert_eq!(r.status(), 303);
+    let page = a.page(&format!("/admin/models/{id}")).await;
+    for text in [
+        "models.dev details",
+        "200,000",
+        "64,000",
+        "Reasoning",
+        "Tool calls",
+        "Structured output",
+        "2025-07-31",
+        "deprecated",
+        "Pinned: models.dev sync does not change this card",
+    ] {
+        assert!(page.contains(text), "{text}");
+    }
+    let settings = a.page("/admin/settings").await;
+    assert!(settings.contains("Refresh model data"));
+    assert!(settings.contains("https://models.dev/api.json"));
+    let cost = CardRates {
+        base: Rates {
+            input: 1_000_000,
+            ..Default::default()
+        },
+        tiers: vec![],
+    };
+    sqlx::query(
+        "INSERT INTO models_dev_alerts(model_id,old_spec,new_spec,created_at) VALUES(?,?,?,0)",
+    )
+    .bind(id)
+    .bind(serde_json::to_string(&cost).unwrap())
+    .bind(serde_json::to_string(&cost.marked_up(10_000)).unwrap())
+    .execute(&a.st.db)
+    .await
+    .unwrap();
+    let overview = a.page("/admin").await;
+    assert!(overview.contains("Price changed a lot. Check it."));
+    assert!(overview.contains(&format!("/admin/models/{id}#cost")));
+}
+
+#[tokio::test]
+async fn models_dev_refresh_uses_saved_url_etag_and_keeps_old_data_on_error() {
+    use axum::{
+        http::{HeaderMap, StatusCode},
+        routing::get,
+    };
+    let a = app().await;
+    let mock = axum::Router::new()
+        .route(
+            "/data",
+            get(|h: HeaderMap| async move {
+                assert_eq!(h["if-none-match"], "\"test\"");
+                StatusCode::NOT_MODIFIED
+            }),
+        )
+        .route("/bad", get(|| async { "not json" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    assert_eq!(
+        a.post(
+            "/admin/settings/models-dev",
+            &[("url", &format!("{url}/data"))]
+        )
+        .await
+        .status(),
+        303
+    );
+    assert_eq!(
+        tokomotive::settings::value(&a.st.db, "models_dev_enabled")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("false")
+    );
+    tokomotive::settings::put(&a.st.db, "models_dev_etag", "\"test\"")
+        .await
+        .unwrap();
+    assert_eq!(
+        a.post("/admin/settings/models-dev/refresh", &[])
+            .await
+            .status(),
+        303
+    );
+    assert_eq!(
+        tokomotive::settings::value(&a.st.db, "models_dev_etag")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("\"test\"")
+    );
+    assert_eq!(
+        a.post(
+            "/admin/settings/models-dev",
+            &[("url", &format!("{url}/bad"))]
+        )
+        .await
+        .status(),
+        303
+    );
+    assert_eq!(
+        tokomotive::settings::value(&a.st.db, "models_dev_etag")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        a.post("/admin/settings/models-dev/refresh", &[])
+            .await
+            .status(),
+        400
+    );
+    let page = a.page("/admin/settings").await;
+    assert!(page.contains("Invalid models.dev payload"));
+    assert_eq!(
+        tokomotive::models_dev::search(&a.st.db, Some("anthropic"), "sonnet", 1)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 struct App {
     _dir: tempfile::TempDir,
     st: AppState,

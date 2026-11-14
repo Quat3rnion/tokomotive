@@ -1918,6 +1918,49 @@ async fn budget_reservation_covers_worst_case() {
 }
 
 #[tokio::test]
+async fn budget_reservation_uses_mapped_output_limit_instead_of_lower_fallback() {
+    let e = env().await;
+    let mut settings: Value = serde_json::from_str(
+        &tokomotive::settings::value(&e.st.db, "runtime_settings")
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    settings["reserve_output_tokens"] = json!(10);
+    tokomotive::settings::put(&e.st.db, "runtime_settings", &settings.to_string())
+        .await
+        .unwrap();
+    e.st.reload_settings().await.unwrap();
+    sqlx::query("UPDATE models SET models_dev_provider='openai',models_dev_model='gpt-4o' WHERE name='gpt-4o'").execute(&e.st.db).await.unwrap();
+    let response = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model":"gpt-4o"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 402);
+    assert!(e.seen.0.lock().unwrap().is_empty());
+    sqlx::query(
+        "UPDATE models SET models_dev_provider=NULL,models_dev_model=NULL WHERE name='gpt-4o'",
+    )
+    .execute(&e.st.db)
+    .await
+    .unwrap();
+    let response = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model":"gpt-4o"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
 async fn metrics_token_is_required() {
     let e = env().await;
     let r = e

@@ -27,6 +27,24 @@
   </form>
 </section>
 
+<section class="panel" id="models-dev" aria-labelledby="models-dev-h">
+  <h2 id="models-dev-h">models.dev details</h2>
+  {% if let Some(d) = models_dev.mapped %}
+  <p><code>{{ d.provider }}/{{ d.model }}</code>{% if !d.doc.is_empty() %} - <a href="{{ d.doc }}" rel="noreferrer">Provider documentation</a>{% endif %}</p>
+  <dl class="kv">{% for (label,value) in models_dev.rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+  {% else %}<p>Not in models.dev</p>{% endif %}
+  <form method="post" action="/admin/models/{{ id }}/models-dev" class="stack">
+    <div class="row fill">
+      <div class="field"><label for="md-provider">models.dev Provider override</label><input id="md-provider" name="models_dev_provider" value="{{ models_dev.provider_override }}" autocomplete="off" spellcheck="false"></div>
+      <div class="field grow"><label for="md-model">models.dev Model override</label><input id="md-model" name="models_dev_model" value="{{ models_dev.model_override }}" autocomplete="off" spellcheck="false"></div>
+    </div>
+    <p class="hint">Leave overrides blank to match the Provider preset or API URL, then the exact Model ID, canonical ID or longest dated prefix.</p>
+    <label class="check"><input type="checkbox" name="cost_pinned" {% if models_dev.pinned %}checked{% endif %}> Pinned: models.dev sync does not change this card</label>
+    <div class="form-error" role="alert" tabindex="-1"></div>
+    <button>Save mapping and pin</button>
+  </form>
+</section>
+
 {% if !base.simple %}
 <section class="panel" id="cost" aria-labelledby="cost-h" tabindex="-1">
   <h2 id="cost-h">Cost Card{% if !has_cost %} <span class="tag warn">Unpriced</span>{% endif %}</h2>
@@ -119,7 +137,7 @@
   {% for h in history %}
    <tr id="card-{{ h.id }}"><th scope="row">#{{ h.id }}</th><td data-label="Card">{{ h.kind }}</td><td data-label="Applies to">{{ h.scope }}</td>
     <td data-label="Rates or Markup">{% if let Some(r) = h.rates %}{% call rates_list(r) %}{% else %}{{ h.desc }}{% endif %}</td>
-    <td data-label="Added (UTC)"><time datetime="{{ h.created.iso }}">{{ h.created.short }}</time></td></tr>
+     <td data-label="Added (UTC)"><time datetime="{{ h.created.iso }}">{{ h.created.short }}</time><p class="hint">Source: {{ h.source }}</p></td></tr>
   {% else %}
   <tr><td colspan="5" class="empty">No cards yet.</td></tr>
   {% endfor %}

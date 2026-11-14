@@ -28,6 +28,16 @@
 {% endmacro %}
 
 {% block content %}
+{% if !base.simple %}{% for alert in model_price_alerts %}
+<section class="panel" aria-label="Model price change">
+  <h2>Price changed a lot. Check it.</h2>
+  <p><a href="/admin/models/{{ alert.model_id }}#cost">{{ alert.name }} Cost Card</a> changed by more than 50%. Rates below are dollars per million tokens.</p>
+  <details><summary>Old and new values</summary>
+    <h3>Old values</h3><dl class="kv">{% for (label,value) in alert.old %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+    <h3>New values</h3><dl class="kv">{% for (label,value) in alert.new %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+  </details>
+</section>
+{% endfor %}{% endif %}
 <div class="toolbar">
   <h1>Overview</h1>
   <nav class="tabs" aria-label="Time range">

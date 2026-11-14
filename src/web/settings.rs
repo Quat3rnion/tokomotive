@@ -29,6 +29,10 @@ pub(super) fn router() -> Router<AppState> {
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    models_dev_url: String,
+    models_dev_enabled: bool,
+    models_dev_error: String,
+    models_dev_updated: String,
     base: Base,
     settings: std::sync::Arc<store::Settings>,
     markup: f64,
@@ -37,6 +41,15 @@ struct SettingsPage {
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
     render(SettingsPage {
+        models_dev_url: tryr!(store::value(&st.db, "models_dev_url").await).unwrap_or_default(),
+        models_dev_enabled: tryr!(store::value(&st.db, "models_dev_enabled").await).as_deref()
+            != Some("false"),
+        models_dev_error: tryr!(store::value(&st.db, "models_dev_error").await).unwrap_or_default(),
+        models_dev_updated: tryr!(store::value(&st.db, "models_dev_updated").await)
+            .and_then(|s| s.parse().ok())
+            .and_then(super::views::stamp_opt)
+            .map(|s| s.text)
+            .unwrap_or_else(|| "Not yet".into()),
         base: Base::new(&st),
         metrics_set: settings.metrics_token.is_some(),
         settings,
@@ -536,8 +549,8 @@ struct ProvidersPage {
     pager: Pager,
     base: Base,
     providers: Vec<ProviderView>,
-    presets: &'static [crate::presets::Preset],
-    preset: &'static crate::presets::Preset,
+    presets: Vec<crate::presets::PresetChoice>,
+    preset: crate::presets::PresetChoice,
 }
 struct ProviderView {
     key_pager: Pager,
@@ -834,21 +847,24 @@ async fn providers(
             keys,
         });
     }
+    let presets = tryr!(crate::presets::merged(&st.db).await);
+    let preset = presets
+        .iter()
+        .find(|p| Some(p.name.as_str()) == query.preset.as_deref())
+        .unwrap_or(&presets[0])
+        .clone();
     render(ProvidersPage {
         pager,
         base: Base::new(&st),
         providers,
-        presets: crate::presets::PRESETS,
-        preset: query
-            .preset
-            .as_deref()
-            .and_then(crate::presets::find)
-            .unwrap_or(&crate::presets::PRESETS[0]),
+        presets,
+        preset,
     })
 }
 
 #[derive(Deserialize)]
 struct ProviderForm {
+    preset: Option<String>,
     name: String,
     /// A Subscription Provider has a fixed API format; the form may omit it.
     #[serde(default)]
@@ -1017,6 +1033,15 @@ async fn save_provider(
             return form_error(format!("A Provider named {} already exists.", f.name));
         }
         return internal(e);
+    }
+    if let Some(preset) = &f.preset {
+        tryr!(
+            sqlx::query("UPDATE providers SET preset=? WHERE name=?")
+                .bind(preset)
+                .bind(&f.name)
+                .execute(&mut *tx)
+                .await
+        );
     }
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);

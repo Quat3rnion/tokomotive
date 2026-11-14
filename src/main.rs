@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
     let cfg = configuration()?;
     let metrics = tokomotive::metrics::install()?;
     let state = tokomotive::init(&cfg, Some(metrics)).await?;
+    let sync = tokomotive::models_dev::start_background(state.clone());
     let app = tokomotive::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.listen)
@@ -26,6 +27,7 @@ async fn main() -> Result<()> {
         .await?;
     // Write the Ledger Entries that are still pending.
     state.flush().await;
+    sync.abort();
     Ok(())
 }
 

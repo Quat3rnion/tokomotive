@@ -42,6 +42,10 @@
 
 **Card Version** - One fixed state of a Cost Card or Price Card. A change to a card makes a new Card Version.
 
+**models.dev Sync** - An update of model data and unpinned Cost Cards from models.dev. It does not change old Ledger Entries.
+
+**Pinned Card** - A Model's Cost Card that models.dev Sync cannot change. The Operator can still change it by hand.
+
 **Context Tier** - A band of input size (for example above 200k input tokens) that selects a different set of rates on a Cost Card or Price Card.
 
 **Cost** - The amount the Operator owes the Provider for one request, from the Cost Card. It is zero for a Subscription Provider.
