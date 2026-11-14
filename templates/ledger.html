@@ -21,7 +21,7 @@
 <div class="scroll"><table><thead><tr><th>Attempt</th><th>Route / Deployment</th><th>Provider / Key</th><th>Status</th><th>Error class / skip reason</th><th>Latency</th><th>TTFT</th></tr></thead><tbody>
 {% for a in attempts %}<tr><td>{{ a.attempt_index }}</td><td>{{ a.route }} / {{ a.deployment }}</td><td>{{ a.provider }}{% if let Some(k) = a.provider_key %} / Key {{ k + 1 }}{% endif %}{% if let Some(k) = a.key_last4 %} (...{{ k }}){% endif %}</td><td>{% if let Some(s) = a.status %}{{ s }}{% else if !a.skip_reason.is_empty() %}Skipped{% else %}No response{% endif %}</td><td>{{ a.error_class }}{% if !a.skip_reason.is_empty() %} / {{ a.skip_reason }}{% endif %}</td><td>{{ a.latency_ms }} ms</td><td>{% if let Some(t) = a.ttft_ms %}{{ t }} ms{% else %}-{% endif %}</td></tr>{% else %}<tr><td colspan="7">No attempt records.</td></tr>{% endfor %}
 </tbody></table></div>
-{% if let Some(b) = bodies %}<h3>Captured bodies (Admin only)</h3><p>Secrets are redacted. Content can still contain personal data.</p><h4>Request{% if b.request_truncated %} (truncated){% endif %}</h4><pre>{{ b.request }}</pre><h4>Response{% if b.response_truncated %} (truncated){% endif %}</h4><pre>{{ b.response }}</pre>{% else %}<p>No captured bodies.</p>{% endif %}
+{% if let Some(b) = bodies %}<h3>Captured bodies (Owner and Admin only)</h3><p>Secrets are redacted. Content can still contain personal data.</p><h4>Request{% if b.request_truncated %} (truncated){% endif %}</h4><pre>{{ b.request }}</pre><h4>Response{% if b.response_truncated %} (truncated){% endif %}</h4><pre>{{ b.response }}</pre>{% else if !base.viewer %}<p>No captured bodies.</p>{% endif %}
 </section>
 {% endif %}
 

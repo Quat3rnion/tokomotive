@@ -2529,7 +2529,9 @@ async fn ledger(
         } else {
             vec![]
         },
-        bodies: if let Some(id) = q.entry {
+        // Captured bodies can hold prompts and personal data: Owners and
+        // Admins only. A Viewer never causes a decryption.
+        bodies: if let Some(id) = q.entry.filter(|_| ctx().role != "viewer") {
             tryr!(crate::observability::bodies(&st.db, &st.secret_key, id).await)
         } else {
             None

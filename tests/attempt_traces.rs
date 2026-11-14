@@ -525,3 +525,82 @@ async fn admin_can_view_timeline_and_bodies_but_virtual_key_cannot() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+/// Captured prompts and responses are sensitive. A read-only Viewer can open
+/// the Ledger Entry, but the server must not decrypt or render its bodies.
+#[tokio::test]
+async fn viewer_sees_the_timeline_but_never_captured_bodies() {
+    let e = env().await;
+    sqlx::query("UPDATE virtual_keys SET capture_bodies=1")
+        .execute(&e.st.db)
+        .await
+        .unwrap();
+    e.send().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let session = |r: reqwest::Response| {
+        r.headers()
+            .get_all("set-cookie")
+            .iter()
+            .find_map(|h| {
+                h.to_str()
+                    .ok()
+                    .filter(|v| v.starts_with("tokomotive_session="))
+            })
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    let owner = session(
+        client
+            .post(format!("{}/admin/login", e.url))
+            .form(&[("password", "password123")])
+            .send()
+            .await
+            .unwrap(),
+    );
+    let r = client
+        .post(format!("{}/admin/settings/accounts", e.url))
+        .header("cookie", &owner)
+        .header("origin", &e.url)
+        .form(&[
+            ("username", "reader"),
+            ("role", "viewer"),
+            ("password", "account-password"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let viewer = session(
+        client
+            .post(format!("{}/admin/login", e.url))
+            .form(&[("username", "reader"), ("password", "account-password")])
+            .send()
+            .await
+            .unwrap(),
+    );
+    let page = client
+        .get(format!("{}/admin/ledger?entry=1", e.url))
+        .header("cookie", &viewer)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("attempt timeline"));
+    assert!(
+        !page.contains("private request"),
+        "Viewer saw a captured request"
+    );
+    assert!(
+        !page.contains("private response"),
+        "Viewer saw a captured response"
+    );
+    assert!(!page.contains("Captured bodies"));
+}
