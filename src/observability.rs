@@ -240,7 +240,7 @@ impl RequestTrace {
         }
     }
     pub async fn store(&self, db: &Db, key: &SecretKey, id: i64, ts: i64) -> Result<()> {
-        let mut tx = crate::db::begin_write(db).await?;
+        let mut tx = crate::db::begin_write(db, "request_diagnostics").await?;
         for a in &self.attempts {
             sqlx::query("INSERT INTO request_attempts(ledger_id,attempt_index,route,deployment,provider,system,provider_key,key_last4,status,error_class,skip_reason,started_ms,latency_ms,ttft_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
                 .bind(id).bind(a.attempt_index).bind(&a.route).bind(&a.deployment).bind(&a.provider).bind(&a.system).bind(a.provider_key).bind(&a.key_last4).bind(a.status).bind(&a.error_class).bind(&a.skip_reason).bind(a.started_ms).bind(a.latency_ms).bind(a.ttft_ms).execute(&mut *tx).await?;
@@ -332,7 +332,10 @@ pub async fn bodies(db: &Db, key: &SecretKey, id: i64) -> Result<Option<Bodies>>
 }
 /// Delete one bounded batch. The scheduler repeats this operation each minute.
 pub async fn purge(db: &Db, retention_days: i64, now_ms: i64) -> Result<u64> {
-    Ok(sqlx::query("DELETE FROM captured_bodies WHERE ledger_id IN (SELECT ledger_id FROM captured_bodies WHERE created_ms<? ORDER BY created_ms LIMIT 500)").bind(now_ms-retention_days.clamp(1,3650)*86400000).execute(db).await?.rows_affected())
+    let mut tx = db::begin_purge(db, "body_purge").await?;
+    let count = sqlx::query("DELETE FROM captured_bodies WHERE ledger_id IN (SELECT ledger_id FROM captured_bodies WHERE created_ms<? ORDER BY created_ms LIMIT 500)").bind(now_ms-retention_days.clamp(1,3650)*86400000).execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    Ok(count)
 }
 pub fn start_retention(st: crate::state::AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {

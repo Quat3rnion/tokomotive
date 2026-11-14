@@ -1,7 +1,8 @@
 //! Persisted account quotas, health, and quota-aware scheduling.
+use crate::db::Db;
 use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
@@ -131,7 +132,7 @@ impl Schedule {
             start = end;
         }
     }
-    pub async fn load(db: &SqlitePool) -> anyhow::Result<Self> {
+    pub async fn load(db: &Db) -> anyhow::Result<Self> {
         let rows = sqlx::query("SELECT h.*,q.window,q.used_percent,q.remaining,q.quota_limit,q.reset_at,q.observed_at AS quota_observed_at FROM provider_health h LEFT JOIN provider_quota q ON q.provider=h.provider AND q.account=h.account").fetch_all(db).await?;
         let mut out = Self::default();
         for r in rows {
@@ -272,7 +273,7 @@ pub fn retry_at(headers: &HeaderMap, now: i64) -> Option<i64> {
 
 /// Persist only static failure reasons. Never inspect or store upstream bodies.
 pub async fn record(
-    db: &SqlitePool,
+    db: &Db,
     provider: &str,
     account: &str,
     status: u16,
@@ -289,7 +290,7 @@ enum Recovery {
     All,
 }
 async fn record_health(
-    db: &SqlitePool,
+    db: &Db,
     provider: &str,
     account: &str,
     status: u16,
@@ -317,7 +318,7 @@ async fn record_health(
         // Other outcomes can carry quotas, but do not clear a known failure.
         _ => ("ok", Some("Upstream request failed"), None),
     };
-    let mut tx = crate::db::begin_write(db).await?;
+    let mut tx = crate::db::begin_write(db, "provider_health").await?;
     let previous: Option<String> =
         sqlx::query_scalar("SELECT state FROM provider_health WHERE provider=? AND account=?")
             .bind(provider)
@@ -354,8 +355,8 @@ async fn record_health(
 }
 
 /// Atomically claim pending, deduplicated state changes for webhook delivery.
-pub async fn take_health_events(db: &SqlitePool) -> anyhow::Result<Vec<crate::alerts::Event>> {
-    let mut tx = crate::db::begin_write(db).await?;
+pub async fn take_health_events(db: &Db) -> anyhow::Result<Vec<crate::alerts::Event>> {
+    let mut tx = crate::db::begin_write(db, "health_events").await?;
     let rows=sqlx::query("UPDATE provider_health_alerts SET pending=0 WHERE pending=1 RETURNING provider,account,state").fetch_all(&mut *tx).await?;
     tx.commit().await?;
     Ok(rows
@@ -387,11 +388,7 @@ pub async fn emit_health_events(st: &crate::state::AppState) {
     }
 }
 /// Explicit credential recovery does not clear a rate limit or quota snapshot.
-pub async fn recover_credentials(
-    db: &SqlitePool,
-    provider: &str,
-    account: &str,
-) -> anyhow::Result<()> {
+pub async fn recover_credentials(db: &Db, provider: &str, account: &str) -> anyhow::Result<()> {
     record_health(
         db,
         provider,
@@ -423,26 +420,26 @@ pub async fn reenable(
     Ok(())
 }
 async fn save_window(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut sqlx::SqliteConnection,
     provider: &str,
     account: &str,
     window: &Window,
     now: i64,
 ) -> anyhow::Result<()> {
     sqlx::query("INSERT INTO provider_quota(provider,account,window,used_percent,remaining,quota_limit,reset_at,observed_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider,account,window) DO UPDATE SET used_percent=excluded.used_percent,remaining=excluded.remaining,quota_limit=excluded.quota_limit,reset_at=excluded.reset_at,observed_at=excluded.observed_at WHERE excluded.observed_at>=provider_quota.observed_at")
-        .bind(provider).bind(account).bind(&window.window).bind(window.used_percent).bind(window.remaining).bind(window.limit).bind(window.reset_at).bind(now).execute(&mut **tx).await?;
+        .bind(provider).bind(account).bind(&window.window).bind(window.used_percent).bind(window.remaining).bind(window.limit).bind(window.reset_at).bind(now).execute(tx).await?;
     Ok(())
 }
 
 /// A plan endpoint updates quotas but must not clear inference failures.
 pub async fn save_plan(
-    db: &SqlitePool,
+    db: &Db,
     provider: &str,
     account: &str,
     usage: &crate::oauth::PlanUsage,
     now: i64,
 ) -> anyhow::Result<()> {
-    let mut tx = crate::db::begin_write(db).await?;
+    let mut tx = crate::db::begin_write(db, "quota_plan").await?;
     sqlx::query("INSERT INTO provider_health(provider,account,state,observed_at) VALUES(?,?,'ok',?) ON CONFLICT(provider,account) DO NOTHING")
         .bind(provider).bind(account).bind(now).execute(&mut *tx).await?;
     for w in &usage.windows {
@@ -465,11 +462,7 @@ pub async fn save_plan(
     Ok(())
 }
 
-pub async fn accounts(
-    db: &SqlitePool,
-    provider: Option<&str>,
-    limit: i64,
-) -> anyhow::Result<Vec<Account>> {
+pub async fn accounts(db: &Db, provider: Option<&str>, limit: i64) -> anyhow::Result<Vec<Account>> {
     let rows = sqlx::query("SELECT * FROM provider_health WHERE (? IS NULL OR provider=?) ORDER BY provider,account LIMIT ?")
         .bind(provider).bind(provider).bind(limit.clamp(1,1000)).fetch_all(db).await?;
     let mut out = Vec::new();
@@ -537,7 +530,7 @@ pub async fn observe(
 
 /// Render persisted gauges on scrape, so they survive process restart and do
 /// not retain obsolete label sets in the process-global recorder.
-pub async fn metrics(db: &SqlitePool) -> anyhow::Result<String> {
+pub async fn metrics(db: &Db) -> anyhow::Result<String> {
     use std::fmt::Write;
     fn escape(s: &str) -> String {
         s.replace('\\', "\\\\")

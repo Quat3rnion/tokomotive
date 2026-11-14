@@ -1708,7 +1708,9 @@ The Proxy rejects the request with HTTP 402 in these cases:
 - The Price so far, plus the open Reservations for the subject and period, plus the new
   Reservation, is more than the Budget.
 
-The Proxy releases the Reservation after it writes the Ledger Entry.
+The Proxy releases the Reservation after it writes the Ledger Entry or syncs it
+to the durable spool. A Batch Reservation stays in its durable job until
+accounting commits.
 
 Example: the User has a Budget of $0.01 (10,000 micro-dollars). The Model is
 `gpt-4o` with the default Markup of 20 percent (input 3.00, output 12.00). The
@@ -2029,6 +2031,24 @@ of the User.
 | `llm_rate_limited_total`              | counter   | `scope`                                      | Rejected requests. `scope` is `key` or `user`. |
 | `llm_circuit_opens_total`             | counter   | `provider`, `model`                          | Times that a Circuit Breaker opened. `model` is the upstream model name. |
 | `llm_upstream_fallbacks_total`        | counter   | `from`, `to`                                 | Moves to the next Deployment after a failed one. The labels are the Route names of both Deployments. |
+| `tokomotive_db_waiting_writers` | gauge | `caller` | Writers waiting for admission, a pool connection or the SQLite writer lock. |
+| `tokomotive_db_writer_wait_seconds` | histogram | `caller` | Time to acquire a writer, or time until cancellation or error. |
+| `tokomotive_db_writer_warnings_total` | counter | `caller` | Writer waits that reach the 10-second warning. |
+| `tokomotive_db_writer_timeouts_total` | counter | `caller` | Writer acquisitions that reach their hard limit. |
+| `tokomotive_ledger_spool_bytes` | gauge | none | Bytes in the active and replay Ledger spool files. |
+| `tokomotive_ledger_spooled_total` | counter | none | Ledger Entries synced to the spool. |
+| `tokomotive_ledger_spool_replayed_total` | counter | none | Spool records processed by replay, including safe repeated records. |
+| `tokomotive_ledger_spool_full_total` | counter | none | Append attempts refused because the spool is full. |
+
+The `caller` label is a fixed code-path name, such as `ledger`, `provider_health`,
+`batch_accounting` or `cache_maintenance`. It never contains a request ID or User
+name. Writer gauges return to zero when a wait ends, including cancellation.
+Alert on writer warnings, Ledger writer timeouts and a nonzero spool size that
+does not decrease. A full spool needs immediate storage repair. The Proxy keeps
+the Reservation until the entry is written or synced to the spool. Batch writer
+timeouts keep the durable batch job and its Reservation for the next poll.
+See [Ledger recovery](configuration.md#database-writer-limits-and-ledger-recovery)
+for limits, file paths and backup steps.
 
 The Proxy omits `llm_tokens_total` series for a class with 0 tokens. The
 histograms use these buckets, in seconds: 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,

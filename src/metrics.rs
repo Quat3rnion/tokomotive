@@ -14,6 +14,10 @@ pub fn install() -> anyhow::Result<PrometheusHandle> {
         .install_recorder()?;
     counter!("tokomotive_trace_export_queue_drops_total").increment(0);
     counter!("tokomotive_captured_bodies_total").increment(0);
+    counter!("tokomotive_ledger_spooled_total").increment(0);
+    counter!("tokomotive_ledger_spool_replayed_total").increment(0);
+    counter!("tokomotive_ledger_spool_full_total").increment(0);
+    metrics::gauge!("tokomotive_ledger_spool_bytes").set(0.0);
     Ok(handle)
 }
 

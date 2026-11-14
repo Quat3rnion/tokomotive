@@ -162,6 +162,7 @@ impl App {
         )
         .await
         .unwrap()
+        .expect("fixture Ledger Entry is written directly")
     }
 
     async fn set_simple(&self) {

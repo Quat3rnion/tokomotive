@@ -435,6 +435,59 @@ and the connection test are not available for this format. See the
 [Chat reference](https://docs.cohere.com/v2/reference/chat) and
 [streaming reference](https://docs.cohere.com/v2/reference/chat-stream).
 
+## Database writer limits and Ledger recovery
+
+Use **Settings > Server and router** to set these limits. Changes apply to new
+writer acquisitions without a restart.
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| Database writer wait limit (`writer_timeout_secs`) | 120 seconds | 1 to 3600 seconds |
+| Ledger spool limit (`ledger_spool_max_bytes`) | 67108864 bytes (64 MiB) | 1 to 1073741824 bytes |
+
+Writer wait time includes admission, pool acquisition, SQLite busy waits and
+retry delays. After 10 seconds, a warning names the waiting caller. At the hard
+limit, acquisition returns an error. Waiting writers share one admission gate;
+they do not each hold a pool connection. This limit does not cancel a transaction
+that has already started.
+
+Normal and blocked Proxy requests save a failed Ledger write in
+`ledger-spool.jsonl`, next to the SQLite database. The file has Unix mode `0600`.
+It contains usage, identities and frozen amounts, not request or response bodies.
+Request diagnostics and body captures are not spooled. The file is not encrypted.
+Each append ends with a newline and is synced to disk before
+the Proxy releases its Reservation. The size limit includes both this file and
+`ledger-spool.replay.jsonl`. If the spool is full or cannot be synced, the Proxy
+logs an error and keeps the entry and its Reservation in memory while it retries.
+Shutdown waits for these writes. Repair the storage problem before you stop the
+process; an unsaved in-memory entry cannot survive a forced stop.
+
+The replay task checks the spool every 5 seconds. It renames the active file to
+`ledger-spool.replay.jsonl` and removes that segment only after all entries commit.
+New writes can append to a new active file during replay. Each entry keeps one
+idempotency key. A repeated replay cannot add a second Ledger row or rollup charge.
+Startup replays pending segments before it accepts requests. A replay error stops
+startup instead of discarding the segment. Do not delete a segment to clear an
+error. Restore damaged data from a backup.
+
+Batch accounting uses its existing durable `batch_jobs` row instead of the spool.
+A writer timeout leaves the job unaccounted and keeps its persisted Reservation.
+The next batch poll retries it. The job state, Ledger Entries and batch entry
+links commit together, so a later poll cannot charge the batch twice.
+
+Retention tasks have a separate 100 ms writer acquisition limit. A busy task
+returns and retries on its next scheduled tick. Body and MCP retention remove at
+most 500 rows per tick; audit retention removes at most 5000. Cache maintenance
+removes at most 500 expired or oversized rows and 500 excess rows per tick.
+Large model imports and explicit repricing remain atomic transactions. Do not
+schedule them together with other large storage operations.
+
+Stop the Proxy for a consistent backup of the database, both spool files if
+present, and the Master Key. Restore them together. Old spool segments are safe
+to replay against the matching database backup because their keys are persistent.
+Do not share one data directory between different databases. In-memory SQLite
+databases have no durable spool and are for tests only.
+
 ## Master Key and backups
 
 The Master Key protects the stored Provider Keys, subscription credentials and

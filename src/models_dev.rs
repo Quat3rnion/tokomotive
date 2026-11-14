@@ -164,7 +164,7 @@ pub async fn import(db: &Db, bytes: &[u8], etag: Option<&str>) -> Result<()> {
             }
         }
     }
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db, "models_dev_import").await?;
     let old: i64 = sqlx::query_scalar("SELECT count(*) FROM models_dev_models")
         .fetch_one(&mut *tx)
         .await?;
@@ -340,7 +340,7 @@ pub async fn refresh(st: &crate::state::AppState) -> Result<()> {
         .await?
         {
             Fetch::NotModified => {
-                let mut tx = st.db.begin().await?;
+                let mut tx = crate::db::begin_write(&st.db, "models_dev_sync").await?;
                 sync_cards(
                     &mut tx,
                     &format!(

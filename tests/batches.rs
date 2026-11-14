@@ -213,6 +213,91 @@ fn batch_upstream_with_result(result: Value, output: axum::routing::MethodRouter
 }
 
 #[tokio::test]
+async fn contended_batch_keeps_durable_job_and_reservation_then_accounts_once() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let first = Arc::new(AtomicBool::new(true));
+    let output = get({
+        let entered = entered.clone();
+        let release = release.clone();
+        move || {
+            let entered = entered.clone();
+            let release = release.clone();
+            let first = first.clone();
+            async move {
+                if first.swap(false, Ordering::SeqCst) {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+                "{\"custom_id\":\"one\",\"response\":{\"status_code\":200,\"body\":{\"model\":\"gpt-test\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}}}\n"
+            }
+        }
+    });
+    let h = Harness::new(batch_upstream_with_output(output)).await;
+    assert_eq!(h.upload(INPUT).send().await.unwrap().status(), 200);
+    assert_eq!(h.request(reqwest::Method::POST, "/v1/batches", "sk-alice")
+        .json(&json!({"input_file_id":"file-input","endpoint":"/v1/chat/completions","completion_window":"24h"}))
+        .send().await.unwrap().status(), 200);
+    sqlx::query("UPDATE settings SET value=json_set(value,'$.writer_timeout_secs',1) WHERE key='runtime_settings'")
+        .execute(&h.state.db).await.unwrap();
+    h.state.reload_settings().await.unwrap();
+    let before: (i64, i64, String) = sqlx::query_as(
+        "SELECT accounted,held_micros,snapshot_json FROM batch_jobs WHERE id='batch-one'",
+    )
+    .fetch_one(&h.state.db)
+    .await
+    .unwrap();
+    assert_eq!(before.0, 0);
+    assert!(before.1 > 0);
+    let state = h.state.clone();
+    let polling = tokio::spawn(async move { tokomotive::batches::poll_once(&state).await });
+    tokio::time::timeout(std::time::Duration::from_secs(3), entered.notified())
+        .await
+        .unwrap();
+    let writer = h.state.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), polling)
+        .await
+        .expect("batch writer acquisition is bounded")
+        .unwrap()
+        .unwrap();
+    let after: (i64, i64, String) = sqlx::query_as(
+        "SELECT accounted,held_micros,snapshot_json FROM batch_jobs WHERE id='batch-one'",
+    )
+    .fetch_one(&h.state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        after, before,
+        "a failed BEGIN must retain the durable job and its full Reservation"
+    );
+    writer.rollback().await.unwrap();
+    tokomotive::batches::poll_once(&h.state).await.unwrap();
+    tokomotive::batches::poll_once(&h.state).await.unwrap();
+    let job: (i64, i64) =
+        sqlx::query_as("SELECT accounted,held_micros FROM batch_jobs WHERE id='batch-one'")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    assert_eq!(job, (1, 0));
+    let totals: (i64, i64, i64) =
+        sqlx::query_as("SELECT COUNT(*),SUM(input),SUM(output) FROM ledger")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    assert_eq!(totals, (1, 100, 50));
+    let requests: i64 = sqlx::query_scalar("SELECT SUM(requests) FROM rollup_hourly")
+        .fetch_one(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(requests, 1);
+}
+
+#[tokio::test]
 async fn batch_completion_accounts_once_with_frozen_discount_and_owned_output() {
     let h = Harness::new(batch_upstream()).await;
     assert_eq!(h.upload(INPUT).send().await.unwrap().status(), 200);

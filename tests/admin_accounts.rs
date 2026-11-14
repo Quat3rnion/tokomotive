@@ -883,9 +883,15 @@ async fn audit_purge_commits_bounded_batches_and_keeps_recent_entries() {
     a.setup().await;
     sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10001) INSERT INTO admin_audit(time,account,action,target_type,target_id,summary,before_json,after_json) SELECT 0,'chief','POST /admin/teams','teams',x,'HTTP 303.','null','null' FROM n")
         .execute(&a.st.db).await.unwrap();
-    // A failure in the second statement must not undo the first 5000 rows.
+    // Each tick commits at most 5000 rows. A later tick cannot undo that batch.
     sqlx::query("CREATE TRIGGER test_purge_failure BEFORE DELETE ON admin_audit WHEN OLD.time=0 AND (SELECT count(*) FROM admin_audit WHERE time=0)<=5001 BEGIN SELECT RAISE(ABORT,'test purge failure'); END")
         .execute(&a.st.db).await.unwrap();
+    assert_eq!(
+        tokomotive::admin::purge_audit(&a.st.db, tokomotive::db::now_s())
+            .await
+            .unwrap(),
+        5000
+    );
     assert!(
         tokomotive::admin::purge_audit(&a.st.db, tokomotive::db::now_s())
             .await
@@ -904,7 +910,13 @@ async fn audit_purge_commits_bounded_batches_and_keeps_recent_entries() {
         tokomotive::admin::purge_audit(&a.st.db, tokomotive::db::now_s())
             .await
             .unwrap(),
-        5001
+        5000
+    );
+    assert_eq!(
+        tokomotive::admin::purge_audit(&a.st.db, tokomotive::db::now_s())
+            .await
+            .unwrap(),
+        1
     );
     let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_audit")
         .fetch_one(&a.st.db)

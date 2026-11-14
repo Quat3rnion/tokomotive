@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default = "default_writer_timeout_secs")]
+    pub writer_timeout_secs: u64,
+    #[serde(default = "default_ledger_spool_max_bytes")]
+    pub ledger_spool_max_bytes: u64,
     #[serde(default)]
     pub cache: crate::cache::Limits,
     pub upstream_timeout_secs: u64,
@@ -26,6 +30,13 @@ pub struct Settings {
     pub router: RouterCfg,
     /// Encrypted at rest; omitted from all HTML views.
     pub metrics_token: Option<String>,
+}
+
+pub fn default_writer_timeout_secs() -> u64 {
+    120
+}
+pub fn default_ledger_spool_max_bytes() -> u64 {
+    crate::ledger_spool::DEFAULT_MAX_BYTES
 }
 
 pub async fn value(db: &Db, key: &str) -> Result<Option<String>> {
@@ -78,6 +89,8 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
     if value(db, "runtime_settings").await?.is_none() {
         let settings = Settings {
+            writer_timeout_secs: default_writer_timeout_secs(),
+            ledger_spool_max_bytes: default_ledger_spool_max_bytes(),
             cache: Default::default(),
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
@@ -88,7 +101,7 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             router: cfg.router.clone(),
             metrics_token: cfg.metrics_token().map(|v| key.encrypt(&v)).transpose()?,
         };
-        let mut tx = db.begin().await?;
+        let mut tx = crate::db::begin_write(db, "settings_seed").await?;
         for p in &cfg.providers {
             let mut keys = Vec::new();
             for env in p.api_key_env.iter().chain(&p.api_keys_env) {

@@ -25,7 +25,7 @@ async fn save_sync(_: Admin, State(st): State<AppState>, Form(f): Form<SyncForm>
         }
         _ => return bad("Use an HTTP or HTTPS model data URL without credentials."),
     };
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(crate::db::begin_write(&st.db, "models_dev_settings").await);
     // ETags are scoped to one URL. Do not send an old server's ETag to another.
     tryr!(sqlx::query("DELETE FROM settings WHERE key='models_dev_etag' AND (SELECT value FROM settings WHERE key='models_dev_url')!=?").bind(url.as_str()).execute(&mut *tx).await);
     for (key, value) in [

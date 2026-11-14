@@ -11,6 +11,7 @@ pub mod config;
 pub mod db;
 pub mod egress;
 pub mod guardrails;
+mod ledger_spool;
 pub mod mcp;
 pub mod metrics;
 pub mod model_search;
@@ -51,7 +52,10 @@ pub async fn init(
 ) -> anyhow::Result<AppState> {
     let db = db::connect(&cfg.server.database).await?;
     db::seed(&db, cfg).await?;
-    AppState::new(cfg, db, metrics).await
+    let state = AppState::new(cfg, db, metrics).await?;
+    // Fail closed at startup if a previous process left uncommitted accounting.
+    db::replay_spool(&state.db).await?;
+    Ok(state)
 }
 
 pub fn router(state: AppState) -> Router {

@@ -399,7 +399,7 @@ async fn retention(_: Admin, State(st): State<AppState>, Form(f): Form<Retention
         return bad("Use 1 to 3650 days and 1 to 1000000 rows for the MCP call log.");
     }
     let _lock = st.settings_write.lock().await;
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(crate::db::begin_write(&st.db, "mcp_retention_settings").await);
     for (key, value) in [("mcp_retention_days", f.days), ("mcp_max_rows", f.max_rows)] {
         tryr!(sqlx::query("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
             .bind(key).bind(value.to_string()).execute(&mut *tx).await);

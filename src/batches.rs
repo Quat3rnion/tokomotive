@@ -818,7 +818,7 @@ async fn create(st: &AppState, auth: &KeyAuth, body: Body) -> Result<Response, A
     admit(st, auth)?;
     let snapshot = serde_json::to_string(&Snapshot { lines, models })?;
     let intent = format!("pending-{:032x}", rand::random::<u128>());
-    {
+    let reservation = {
         let _guard = st.budget_check.lock().await;
         if !simple {
             let budgets = crate::budgets::applicable(&st.db, auth, db::now_s()).await?;
@@ -827,15 +827,26 @@ async fn create(st: &AppState, auth: &KeyAuth, body: Body) -> Result<Response, A
                     "Batch create needs an enabled User, Team or Virtual Key Budget in Full Mode.",
                 ));
             }
-            let _reservation = st.reserve_budgets(&budgets, held).ok_or_else(|| {
+            Some(st.reserve_budgets(&budgets, held).ok_or_else(|| {
                 error_response(
                     StatusCode::PAYMENT_REQUIRED,
                     "Batch estimate exceeds Budget headroom.",
                 )
-            })?;
+            })?)
+        } else {
+            None
         }
+    };
+    {
+        // Match Ledger commit ordering: writer admission before the Budget
+        // lock. Keep the in-memory Reservation until its durable replacement
+        // commits; never wait for the writer while holding the Budget lock.
+        let mut tx = db::begin_write(&st.db, "batch_reservation").await?;
+        let _guard = st.budget_check.lock().await;
         sqlx::query("INSERT INTO batch_jobs(id,key_id,user_id,team_id,held_micros,snapshot_json,simple,created_at,status) VALUES(?,?,?,?,?,?,?,?, 'creating')")
-            .bind(&intent).bind(auth.key_id).bind(auth.user_id).bind(auth.team_id).bind(held).bind(&snapshot).bind(simple).bind(db::now_s()).execute(&st.db).await?;
+            .bind(&intent).bind(auth.key_id).bind(auth.user_id).bind(auth.team_id).bind(held).bind(&snapshot).bind(simple).bind(db::now_s()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        drop(reservation);
     }
     // An ambiguous failure keeps the durable hold. Never retry a create automatically.
     let response = send_json(
@@ -892,7 +903,7 @@ async fn create(st: &AppState, auth: &KeyAuth, body: Body) -> Result<Response, A
         manifest_json: None,
     };
     // Commit the identity and Reservation together; neither can be replaced by a duplicate ID.
-    let mut tx = st.db.begin().await?;
+    let mut tx = db::begin_write(&st.db, "batch_identity").await?;
     sqlx::query("INSERT INTO proxy_objects(kind,id,key_id,provider,provider_key,credential_hash,base_url,created_at,status,object_json) VALUES('batch',?,?,?,?,?,?,?,?,?)")
         .bind(id).bind(auth.key_id).bind(&batch.provider).bind(batch.provider_key).bind(&batch.credential_hash).bind(&batch.base_url).bind(batch.created_at).bind(&batch.status).bind(&batch.object_json).execute(&mut *tx).await?;
     sqlx::query("UPDATE batch_jobs SET id=?,status=? WHERE id=?")
@@ -1123,8 +1134,8 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
             session_affinity: None,
         });
     }
+    let mut tx = db::begin_write(&st.db, "batch_accounting").await?;
     let _guard = st.budget_check.lock().await;
-    let mut tx = db::begin_write(&st.db).await?;
     if sqlx::query("UPDATE batch_jobs SET accounted=1,held_micros=0 WHERE id=? AND accounted=0")
         .bind(&o.id)
         .execute(&mut *tx)

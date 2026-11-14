@@ -8,7 +8,7 @@ use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{FromRow, Row, SqlitePool};
+use sqlx::{FromRow, Row};
 
 use crate::catalog::{Catalog, ModelEntry, Quote};
 use crate::config::{Config, percent_to_bp, usd_to_micros};
@@ -17,7 +17,10 @@ use crate::pricing::{CardRates, PriceSpec};
 use crate::ratelimit::Limits;
 use crate::usage::Usage;
 
-pub type Db = SqlitePool;
+mod writer;
+pub use crate::ledger_spool::{replay as replay_spool, start_replay as start_spool_replay};
+pub use writer::Db;
+pub(crate) use writer::{begin_purge, begin_write};
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -28,6 +31,10 @@ pub fn now_s() -> i64 {
 }
 
 pub async fn connect(url: &str) -> Result<Db> {
+    connect_with_pool_size(url, 8).await
+}
+
+pub async fn connect_with_pool_size(url: &str, max_connections: u32) -> Result<Db> {
     if !url.contains(":memory:") {
         let path = crate::settings::database_path(url)?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -41,35 +48,11 @@ pub async fn connect(url: &str) -> Result<Db> {
         .foreign_keys(true)
         .busy_timeout(std::time::Duration::from_secs(5));
     let pool = SqlitePoolOptions::new()
-        .max_connections(8)
+        .max_connections(max_connections)
         .connect_with(opts)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
-    Ok(pool)
-}
-
-/// Acquire the WAL writer before taking a snapshot. SQLite's busy handler is
-/// bounded, so retry lock acquisition rather than discard an accounting write
-/// when a busy host or another process holds the writer for longer than that.
-/// No statements have run when BEGIN fails; retrying cannot duplicate a write.
-pub(crate) async fn begin_write(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
-    let mut delay = std::time::Duration::from_millis(10);
-    loop {
-        match db.begin_with("BEGIN IMMEDIATE").await {
-            Ok(tx) => return Ok(tx),
-            Err(sqlx::Error::Database(e))
-                if e.code().is_some_and(|code| {
-                    // SQLite extended result codes retain the primary code in
-                    // the low byte. SQLITE_BUSY is 5; other errors must surface.
-                    code.parse::<i32>().is_ok_and(|code| code & 0xff == 5)
-                }) =>
-            {
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(std::time::Duration::from_millis(100));
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
+    Ok(Db::new(pool, crate::ledger_spool::Spool::new(url)?))
 }
 
 // ---------------------------------------------------------------- settings
@@ -597,7 +580,7 @@ pub async fn spend_since(db: &Db, user_id: i64, since_s: i64) -> Result<i64> {
 
 // ------------------------------------------------------------------ ledger
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewEntry {
     pub cache_hit: bool,
     pub ts_ms: i64,
@@ -634,11 +617,11 @@ fn rollup_model(e: &NewEntry) -> String {
         .unwrap_or_default()
 }
 
-pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
-    let mut tx = begin_write(db).await?;
-    let id = insert_entry_in(&mut tx, e).await?;
-    tx.commit().await?;
-    Ok(id)
+/// None means the entry is durable in the spool and awaits replay.
+pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<Option<i64>> {
+    crate::ledger_spool::PendingEntry::new(e.clone())
+        .persist(db)
+        .await
 }
 
 pub(crate) async fn insert_entry_in(tx: &mut sqlx::SqliteConnection, e: &NewEntry) -> Result<i64> {
@@ -739,7 +722,7 @@ pub(crate) async fn insert_entry_in(tx: &mut sqlx::SqliteConnection, e: &NewEntr
 pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
     let mut after = 0_i64;
     let mut n = 0;
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db, "reprice_unpriced").await?;
     // Keep the existing all-or-nothing save without retaining all rows or hours.
     // A connection-local table is created and dropped in this transaction.
     sqlx::query("CREATE TEMP TABLE reprice_hours(hour INTEGER PRIMARY KEY)")
@@ -821,13 +804,10 @@ pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
     Ok(n)
 }
 
-async fn rebuild_rollup_hour(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    hour: i64,
-) -> Result<()> {
+async fn rebuild_rollup_hour(tx: &mut sqlx::SqliteConnection, hour: i64) -> Result<()> {
     sqlx::query("DELETE FROM rollup_hourly WHERE hour = ?")
         .bind(hour)
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await?;
     sqlx::query(
         "INSERT INTO rollup_hourly(hour, user_id, model, requests, errors, input, output, cache_read, cache_write_5m,
@@ -841,7 +821,7 @@ async fn rebuild_rollup_hour(
          GROUP BY user_id, COALESCE(m.name, l.model, l.requested_model, '')",
     )
     .bind(hour)
-    .execute(&mut **tx)
+    .execute(tx)
     .await?;
     Ok(())
 }

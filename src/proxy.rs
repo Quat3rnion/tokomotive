@@ -568,13 +568,11 @@ impl Ctx {
             if self.guardrails.wait().await {
                 entry.status = 400;
             }
-            let guard = alerts_st.budget_check.lock().await;
-            let written = db::insert_entry(&db, &entry).await;
-            drop(reservation);
-            drop(guard);
+            let pending = crate::ledger_spool::PendingEntry::new(entry.clone());
+            let written = pending.persist_reserved(&alerts_st, reservation).await;
             match written {
-                Err(e) => tracing::error!(error = %e, "ledger write failed"),
-                Ok(id) => {
+                None => {}
+                Some(id) => {
                     if let Err(e) = self.guardrails.ledger(&db, id).await {
                         tracing::error!(error=%e,"guardrail ledger write failed");
                     }
@@ -991,16 +989,14 @@ async fn handle_inner(
                 session_affinity: None,
             };
             crate::metrics::record(&auth.user_name, &entry);
-            let db = st.db.clone();
+            let state = st.clone();
             let session = guardrails.clone();
             st.spawn_tracked(async move {
-                match db::insert_entry(&db, &entry).await {
-                    Ok(id) => {
-                        if let Err(e) = session.ledger(&db, id).await {
-                            tracing::error!(error=%e,"guardrail ledger write failed");
-                        }
-                    }
-                    Err(e) => tracing::error!(error=%e,"blocked request ledger write failed"),
+                let pending = crate::ledger_spool::PendingEntry::new(entry);
+                if let Some(id) = pending.persist_reserved(&state, None).await
+                    && let Err(e) = session.ledger(&state.db, id).await
+                {
+                    tracing::error!(error=%e,"guardrail ledger write failed");
                 }
             });
             return crate::guardrails::blocked(&name, anthropic);

@@ -621,6 +621,8 @@ async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
             .header("cookie", &cookie)
             .form(&[
                 ("upstream_timeout_secs", "45"),
+                ("writer_timeout_secs", "7"),
+                ("ledger_spool_max_bytes", "2097152"),
                 ("session_days", "7"),
                 ("failure_threshold", "3"),
                 ("cooldown_secs", "30"),
@@ -639,6 +641,8 @@ async fn simple_seed_and_hidden_settings_survive_edits_and_restart() {
     let restarted = tokomotive::init(&cfg, None).await.unwrap();
     assert_eq!(restarted.settings().mode, "full");
     assert_eq!(restarted.settings().upstream_timeout_secs, 45);
+    assert_eq!(restarted.settings().writer_timeout_secs, 7);
+    assert_eq!(restarted.settings().ledger_spool_max_bytes, 2_097_152);
     task.abort();
 }
 
@@ -1080,6 +1084,50 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
     assert!(page.contains("data-picker=\"multi\" data-ordered data-src=\"route,model\"><input id=\"nr-fb\" name=\"fallbacks\" value=\"\""));
     task.abort();
     upstream_task.abort();
+}
+
+#[tokio::test]
+async fn writer_limit_controls_show_defaults_and_reject_out_of_range_values() {
+    let (_dir, st, url, task) = app().await;
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    let page = c
+        .get(format!("{url}/admin/settings"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("name=\"writer_timeout_secs\" value=\"120\""));
+    assert!(page.contains("name=\"ledger_spool_max_bytes\" value=\"67108864\""));
+    for (wait, cap) in [
+        ("0", "67108864"),
+        ("3601", "67108864"),
+        ("120", "0"),
+        ("120", "1073741825"),
+    ] {
+        let response = c
+            .post(format!("{url}/admin/settings"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("upstream_timeout_secs", "30"),
+                ("session_days", "7"),
+                ("failure_threshold", "3"),
+                ("cooldown_secs", "30"),
+                ("max_attempts", "8"),
+                ("writer_timeout_secs", wait),
+                ("ledger_spool_max_bytes", cap),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+        assert_eq!(st.settings().writer_timeout_secs, 120);
+        assert_eq!(st.settings().ledger_spool_max_bytes, 67_108_864);
+    }
+    task.abort();
 }
 
 #[tokio::test]

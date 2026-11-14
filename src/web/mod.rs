@@ -1277,7 +1277,7 @@ async fn update_user(
         Ok(id) => id,
         Err(r) => return r,
     };
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(db::begin_write(&st.db, "user_settings").await);
     // A blank name keeps the current name.
     let name = f.name.trim();
     if !name.is_empty()

@@ -140,7 +140,10 @@ impl LogRetention {
 /// Delete at most 500 rows per tick, including incomplete calls.
 pub async fn purge_calls(db: &Db, now_ms: i64) -> anyhow::Result<u64> {
     let retention = LogRetention::load(db).await?;
-    Ok(sqlx::query("DELETE FROM mcp_calls WHERE id IN (SELECT id FROM mcp_calls WHERE ts_ms<? OR id<=(SELECT id FROM mcp_calls ORDER BY id DESC LIMIT 1 OFFSET ?) ORDER BY id LIMIT 500)")
+    let mut tx = crate::db::begin_purge(db, "mcp_call_purge").await?;
+    let count = sqlx::query("DELETE FROM mcp_calls WHERE id IN (SELECT id FROM mcp_calls WHERE ts_ms<? OR id<=(SELECT id FROM mcp_calls ORDER BY id DESC LIMIT 1 OFFSET ?) ORDER BY id LIMIT 500)")
         .bind(now_ms - retention.days * 86_400_000).bind(retention.max_rows)
-        .execute(db).await?.rows_affected())
+        .execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    Ok(count)
 }

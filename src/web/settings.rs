@@ -221,6 +221,8 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct ServerForm {
+    writer_timeout_secs: Option<u64>,
+    ledger_spool_max_bytes: Option<u64>,
     cache_max_entries: Option<u64>,
     cache_max_bytes: Option<u64>,
     cache_max_entry_bytes: Option<u64>,
@@ -308,6 +310,12 @@ impl ServerForm {
         }
         cfg.validate()?;
         let settings = store::Settings {
+            writer_timeout_secs: self
+                .writer_timeout_secs
+                .unwrap_or(store::default_writer_timeout_secs()),
+            ledger_spool_max_bytes: self
+                .ledger_spool_max_bytes
+                .unwrap_or(store::default_ledger_spool_max_bytes()),
             cache: Default::default(),
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
@@ -337,6 +345,17 @@ async fn save_settings(
         Err(e) => return form_error(e),
     };
     settings.cache = st.settings().cache.clone();
+    settings.writer_timeout_secs = f
+        .writer_timeout_secs
+        .unwrap_or(st.settings().writer_timeout_secs);
+    settings.ledger_spool_max_bytes = f
+        .ledger_spool_max_bytes
+        .unwrap_or(st.settings().ledger_spool_max_bytes);
+    if !(1..=3600).contains(&settings.writer_timeout_secs)
+        || !(1..=1_073_741_824).contains(&settings.ledger_spool_max_bytes)
+    {
+        return form_error("Use 1 to 3600 writer wait seconds and 1 to 1073741824 spool bytes.");
+    }
     if let Some(n) = f.cache_max_entries {
         settings.cache.max_entries = n;
     }
@@ -360,7 +379,7 @@ async fn save_settings(
         st.settings().metrics_token.clone()
     };
     settings.metrics_token = tryr!(token.map(|v| st.secret_key.encrypt(&v)).transpose());
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(db::begin_write(&st.db, "server_settings").await);
     tryr!(
         sqlx::query("UPDATE settings SET value=? WHERE key='runtime_settings'")
             .bind(tryr!(serde_json::to_string(&settings)))
@@ -425,7 +444,7 @@ async fn change_password(
         return form_error("Incorrect current password.");
     }
     let hash = tryr!(store::hash_password(&f.password));
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(db::begin_write(&st.db, "account_password").await);
     tryr!(
         sqlx::query("UPDATE admin_accounts SET password_hash=? WHERE id=?")
             .bind(&hash)
@@ -816,7 +835,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
             ));
         }
     }
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(db::begin_write(&st.db, "route_settings").await);
     let config_json = tryr!(serde_json::to_string(&route));
     // Keep independent Route controls when the configuration or name changes.
     let written = if let Some(name) = old {
@@ -1742,7 +1761,7 @@ async fn save_provider(
     if f.kind == ProviderKind::Bedrock {
         keys.clear();
     }
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(db::begin_write(&st.db, "provider_settings").await);
     let result = if let Some(name) = old {
         sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=?,include_usage=?,key_header=?,project_id=?,region=? WHERE name=?")
             .bind(&f.name)
@@ -2361,7 +2380,7 @@ async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response
     settings.mode = mode;
     let hash = tryr!(crate::settings::hash_password(&f.password));
     let username = tryform!(crate::admin::username(&f.username));
-    let mut tx = tryr!(st.db.begin().await);
+    let mut tx = tryr!(db::begin_write(&st.db, "setup").await);
     let result=tryr!(
         sqlx::query("INSERT INTO admin_accounts(username,password_hash,role) SELECT ?,?,'owner' WHERE NOT EXISTS(SELECT 1 FROM admin_accounts)")
             .bind(username)

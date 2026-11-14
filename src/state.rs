@@ -137,6 +137,10 @@ impl AppState {
         crate::settings::seed(&db, cfg, &secret_key).await?;
         crate::models_dev::seed(&db).await?;
         let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
+        db.configure_writer(
+            settings.writer_timeout_secs,
+            settings.ledger_spool_max_bytes,
+        );
         let mut router_table = RouterTable::from_config(&runtime);
         let egress = crate::egress::Egress::new(
             crate::egress::Policy::load(&db, &secret_key, settings.upstream_timeout_secs).await?,
@@ -219,6 +223,10 @@ impl AppState {
 
     pub async fn reload_settings(&self) -> Result<()> {
         let (cfg, settings) = crate::settings::load(&self.db, &self.secret_key).await?;
+        self.db.configure_writer(
+            settings.writer_timeout_secs,
+            settings.ledger_spool_max_bytes,
+        );
         let policy =
             crate::egress::Policy::load(&self.db, &self.secret_key, settings.upstream_timeout_secs)
                 .await?;

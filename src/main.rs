@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
     let retention = tokomotive::observability::start_retention(state.clone());
     let cache_purge = tokomotive::cache::start_purge(state.clone());
     let audit_purge = tokomotive::admin::start_audit_purge(state.db.clone());
+    let spool_replay = tokomotive::db::start_spool_replay(state.clone());
     let app = tokomotive::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.listen)
@@ -36,6 +37,7 @@ async fn main() -> Result<()> {
     batches.abort();
     retention.abort();
     cache_purge.abort();
+    spool_replay.abort();
     state.flush().await;
     sync.abort();
     audit_purge.abort();
