@@ -100,6 +100,22 @@ impl OAuthManager {
             basic_secret: false,
         };
         match flow {
+            Flow::GeminiCli => {
+                // gemini-cli @4ed06ed, oauth2.ts:76-92,443. Public installed-app secret.
+                c.authorize = e.google_authorize.clone();
+                c.token = e.google_token.clone();
+                c.client_id =
+                    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+                        .into();
+                c.client_secret = Some("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".into());
+                c.scopes = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile".into();
+                c.authorize_params = vec![
+                    ("access_type".into(), "offline".into()),
+                    ("prompt".into(), "consent".into()),
+                ];
+                c.inference_base = InferenceBase::Fixed(e.code_assist_resource.clone());
+                c.instructions = "Copy the code shown on the Code Assist page and paste it here.";
+            }
             Flow::GithubCopilot => {
                 c.flow_type = FlowType::DeviceCode;
                 c.device = Some(e.copilot_device.clone());

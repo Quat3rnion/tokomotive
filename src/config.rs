@@ -355,6 +355,7 @@ impl Config {
                     ProviderAuth::GithubCopilot => "https://api.githubcopilot.com",
                     ProviderAuth::QwenCode => "https://dashscope.aliyuncs.com/compatible-mode/v1",
                     ProviderAuth::KimiCode => "https://api.kimi.com/coding/v1",
+                    ProviderAuth::GeminiCli => "https://cloudcode-pa.googleapis.com",
                     _ => p.base_url.as_str(),
                 };
                 if p.base_url.trim_end_matches('/') != base
@@ -366,10 +367,11 @@ impl Config {
                     bail!("A Subscription Provider needs the base URL {base} and no API keys.");
                 }
             }
-            if (matches!(
-                p.kind,
-                ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
-            ) && p.auth != ProviderAuth::ApiKey)
+            if (matches!(p.kind, ProviderKind::Bedrock | ProviderKind::Cohere)
+                && p.auth != ProviderAuth::ApiKey)
+                || (p.kind == ProviderKind::Gemini
+                    && !matches!(p.auth, ProviderAuth::ApiKey | ProviderAuth::GeminiCli))
+                || (p.auth == ProviderAuth::GeminiCli && p.kind != ProviderKind::Gemini)
                 || matches!(
                     (p.auth, p.kind),
                     (

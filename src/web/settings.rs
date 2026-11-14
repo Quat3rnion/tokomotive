@@ -734,6 +734,7 @@ fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
         crate::provider::ProviderAuth::GithubCopilot => "GitHub Copilot",
         crate::provider::ProviderAuth::QwenCode => "Qwen Code",
         crate::provider::ProviderAuth::KimiCode => "Kimi Code",
+        crate::provider::ProviderAuth::GeminiCli => "Gemini CLI (unofficial)",
         crate::provider::ProviderAuth::GoogleVertex => {
             "Google Vertex: sign-in ready, adapter pending"
         }
@@ -984,6 +985,7 @@ async fn save_provider(
         | ProviderAuth::GoogleVertex
         | ProviderAuth::QwenCode => f.kind = ProviderKind::Openai,
         ProviderAuth::Claude => f.kind = ProviderKind::Anthropic,
+        ProviderAuth::GeminiCli => f.kind = ProviderKind::Gemini,
     }
     if !matches!(
         f.auth,

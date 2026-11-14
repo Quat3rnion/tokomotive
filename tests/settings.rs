@@ -97,6 +97,52 @@ async fn bedrock_credentials_are_encrypted_not_rendered_and_region_is_validated(
     task.abort();
 }
 
+
+#[tokio::test]
+async fn code_assist_preset_uses_paste_panel_without_publishing_secret() {
+    let (_dir, _st, url, task) = app().await;
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    let page = c
+        .get(format!("{url}/admin/providers?preset=gemini-cli"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("value=\"gemini_cli\" selected"));
+    assert_eq!(
+        c.post(format!("{url}/admin/providers"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "cli"),
+                ("auth", "gemini_cli"),
+                ("base_url", "https://cloudcode-pa.googleapis.com")
+            ])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+    let page = c
+        .post(format!("{url}/admin/providers/cli/oauth/start"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("codeassist.google.com/authcode"));
+    assert!(page.contains("Code Assist"));
+    assert!(!page.contains("GOCSPX"));
+    assert!(!page.contains("device code"));
+    task.abort();
+}
+
 #[tokio::test]
 async fn preset_fills_editable_provider_fields_without_javascript() {
     let (_dir, st, url, task) = app().await;

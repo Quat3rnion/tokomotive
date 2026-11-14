@@ -113,7 +113,8 @@ fn roster_has_all_verified_region_and_protocol_variants() {
             "openrouter-messages",
             "ark-messages",
             "bedrock-native",
-            "cohere"
+            "cohere",
+            "gemini-cli"
         ]
     );
     assert!(!find("deepseek").unwrap().include_usage);

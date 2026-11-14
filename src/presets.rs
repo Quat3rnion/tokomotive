@@ -313,6 +313,16 @@ pub static PRESETS: &[Preset] = &[
         "https://docs.cohere.com/v2/reference/chat",
         "Use a Cohere API key. Chat Completions and Messages are translated to v2 Chat."
     ),
+    preset!(
+        "gemini-cli",
+        "Gemini CLI (Code Assist, unofficial)",
+        Gemini,
+        "https://cloudcode-pa.googleapis.com",
+        Bearer,
+        false,
+        "https://github.com/google-gemini/gemini-cli",
+        "Use Sign in and paste the Code Assist code. This subscription uses unofficial routes."
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Preset> {
@@ -332,6 +342,13 @@ pub struct PresetChoice {
 }
 
 impl PresetChoice {
+    pub fn auth_name(&self) -> &'static str {
+        if self.name == "gemini-cli" {
+            "gemini_cli"
+        } else {
+            "api_key"
+        }
+    }
     pub fn kind_name(&self) -> &'static str {
         match self.kind {
             ProviderKind::Openai => "openai",

@@ -1,5 +1,14 @@
 # Configuration reference
 
+## Gemini CLI subscription
+
+Use `auth = "gemini_cli"`, `kind = "gemini"` and the fixed base URL
+`https://cloudcode-pa.googleapis.com`. Do not add API keys. Use the dashboard
+paste sign-in. The CLI client configuration is fixed. The published
+installed-app secret is not an Operator secret and is not shown in HTML.
+Tokens, the project and the tier are stored in encrypted credentials. See
+[ADR 0009](adr/0009-gemini-cli.md) for the exact trusted hosts and source.
+
 This document lists every setting of tokomotive. The terms are defined in
 [GLOSSARY.md](../GLOSSARY.md).
 

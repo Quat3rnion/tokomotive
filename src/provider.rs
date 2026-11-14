@@ -22,6 +22,7 @@ pub enum ProviderAuth {
     GithubCopilot,
     QwenCode,
     KimiCode,
+    GeminiCli,
 }
 
 impl ProviderAuth {
@@ -37,6 +38,7 @@ impl ProviderAuth {
             Self::GithubCopilot => "github_copilot",
             Self::QwenCode => "qwen_code",
             Self::KimiCode => "kimi_code",
+            Self::GeminiCli => "gemini_cli",
         }
     }
     pub fn is_subscription(self) -> bool {
@@ -48,6 +50,7 @@ impl ProviderAuth {
                 | Self::GithubCopilot
                 | Self::QwenCode
                 | Self::KimiCode
+                | Self::GeminiCli
         )
     }
 }
@@ -527,6 +530,7 @@ impl StreamTracker {
                 true
             }
             ProviderKind::Gemini => {
+                let v = v.get("response").unwrap_or(&v);
                 if let Some(model) = v["modelVersion"].as_str() {
                     self.model = Some(model.into());
                 }

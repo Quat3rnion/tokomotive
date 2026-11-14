@@ -748,6 +748,14 @@ pub async fn handle(
                     continue;
                 }
             };
+        let prepared = if provider.auth == crate::provider::ProviderAuth::GeminiCli {
+            let Ok(project) = st.oauth.code_assist_project(&provider.name).await else {
+                continue;
+            };
+            Some(json!({"model":candidate.model,"project":project,"request":prepared}))
+        } else {
+            prepared
+        };
         let upstream_body = match prepared {
             Some(v) => Bytes::from(serde_json::to_vec(&v).unwrap_or_default()),
             None => body.clone(),
@@ -806,6 +814,14 @@ pub async fn handle(
                     continue;
                 }
             };
+            if provider.auth == crate::provider::ProviderAuth::GeminiCli {
+                path = if streamed {
+                    "/v1internal:streamGenerateContent?alt=sse"
+                } else {
+                    "/v1internal:generateContent"
+                }
+                .into();
+            }
         }
         if provider.kind == ProviderKind::Cohere {
             if method != Method::POST || !subscription_path_allowed(endpoint, path_q) {
@@ -828,6 +844,7 @@ pub async fn handle(
             path = "/responses".into();
         }
         if !codex
+            && provider.auth != crate::provider::ProviderAuth::GeminiCli
             && provider.auth != crate::provider::ProviderAuth::ApiKey
             && !subscription_path_allowed(target_endpoint, &path)
         {
@@ -1140,7 +1157,13 @@ pub async fn handle(
             );
         }
     };
-    let parsed: Option<Value> = serde_json::from_slice(&bytes).ok();
+    let parsed: Option<Value> = serde_json::from_slice::<Value>(&bytes).ok().map(|v| {
+        if ctx.provider.auth == crate::provider::ProviderAuth::GeminiCli && status.is_success() {
+            v.get("response").cloned().unwrap_or(Value::Null)
+        } else {
+            v
+        }
+    });
     let kind = ctx.provider.kind;
     if kind == ProviderKind::Cohere
         && status.is_success()

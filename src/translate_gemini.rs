@@ -411,6 +411,8 @@ impl GeminiStream {
             self.error("invalid upstream SSE JSON", out);
             return;
         };
+        // Code Assist wraps the native Gemini response (converter.ts:145-160).
+        let body = body.get("response").unwrap_or(&body);
         if let Some(error) = body.get("error") {
             self.error(
                 error["message"]
@@ -427,7 +429,7 @@ impl GeminiStream {
             self.model = model.into();
         }
         if body["usageMetadata"].is_object() {
-            self.usage = Some(usage(&body));
+            self.usage = Some(usage(body));
         }
         if !self.started {
             self.started = true;

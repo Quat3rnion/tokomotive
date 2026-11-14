@@ -22,6 +22,7 @@ pub const CLAUDE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's 
 const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const SHARING_SCOPE: &str = "chatgpt.tokens.use.direct";
 
+mod code_assist;
 mod config;
 pub use config::{ClientOptions, FlowConfig, FlowType, InferenceBase, RefreshRule, TokenEncoding};
 
@@ -40,6 +41,7 @@ impl Flow {
     pub const GithubCopilot: Self = Self("github_copilot");
     pub const QwenCode: Self = Self("qwen_code");
     pub const KimiCode: Self = Self("kimi_code");
+    pub const GeminiCli: Self = Self("gemini_cli");
     pub fn as_str(self) -> &'static str {
         self.0
     }
@@ -55,6 +57,7 @@ impl Flow {
             ProviderAuth::GithubCopilot => Some(Self::GithubCopilot),
             ProviderAuth::QwenCode => Some(Self::QwenCode),
             ProviderAuth::KimiCode => Some(Self::KimiCode),
+            ProviderAuth::GeminiCli => Some(Self::GeminiCli),
         }
     }
     pub fn redirect(self) -> &'static str {
@@ -62,6 +65,7 @@ impl Flow {
             Self::Claude => CLAUDE_CALLBACK,
             Self::Chatgpt => "http://localhost:1455/auth/callback",
             Self::Codex => "http://127.0.0.1:1455/auth/callback",
+            Self::GeminiCli => "https://codeassist.google.com/authcode",
             _ => "http://localhost/auth/callback",
         }
     }
@@ -111,6 +115,7 @@ pub struct OAuthEndpoints {
     pub kimi_device: String,
     pub kimi_token: String,
     pub kimi_resource: String,
+    pub code_assist_resource: String,
 }
 impl Default for OAuthEndpoints {
     fn default() -> Self {
@@ -142,6 +147,7 @@ impl Default for OAuthEndpoints {
             kimi_device: "https://auth.kimi.com/api/oauth/device_authorization".into(),
             kimi_token: "https://auth.kimi.com/api/oauth/token".into(),
             kimi_resource: "https://api.kimi.com/coding/v1".into(),
+            code_assist_resource: "https://cloudcode-pa.googleapis.com".into(),
         }
     }
 }
@@ -338,6 +344,19 @@ impl Attempt {
             bail!("Invalid OAuth callback");
         }
         let mut params = HashMap::new();
+        if flow == Flow::GeminiCli
+            && !input.contains('#')
+            && !input.starts_with("https://")
+            && !input.starts_with("http://")
+        {
+            if input.is_empty() || input.len() > 8192 {
+                bail!("Missing OAuth code");
+            }
+            return Ok((
+                input.into(),
+                self.client_id.clone().context("Missing OAuth client")?,
+            ));
+        }
         if !input.starts_with("https://") && !input.starts_with("http://") {
             if flow == Flow::OpenRouter && !input.contains('#') {
                 if input.is_empty() || input.len() > 8192 {
@@ -506,7 +525,7 @@ impl OAuthManager {
     pub(crate) async fn provider_write(
         &self,
         name: &str,
-    ) -> [tokio::sync::OwnedMutexGuard<()>; 10] {
+    ) -> [tokio::sync::OwnedMutexGuard<()>; 11] {
         [
             self.flight(name, Flow::Chatgpt).await,
             self.flight(name, Flow::Claude).await,
@@ -518,6 +537,7 @@ impl OAuthManager {
             self.flight(name, Flow::GithubCopilot).await,
             self.flight(name, Flow::QwenCode).await,
             self.flight(name, Flow::KimiCode).await,
+            self.flight(name, Flow::GeminiCli).await,
         ]
     }
     async fn load(&self, name: &str, flow: Flow) -> Result<Saved> {
@@ -573,6 +593,7 @@ impl OAuthManager {
             ProviderAuth::GithubCopilot => &self.endpoints.copilot_resource,
             ProviderAuth::QwenCode => &self.endpoints.qwen_resource,
             ProviderAuth::KimiCode => &self.endpoints.kimi_resource,
+            ProviderAuth::GeminiCli => &self.endpoints.code_assist_resource,
             _ => self.endpoints.openai_resource.trim_end_matches("/v1"),
         }
     }
@@ -999,6 +1020,11 @@ impl OAuthManager {
         let mut account = None;
         let mut plan = None;
         let mut account_id = None;
+        if flow == Flow::GeminiCli {
+            let (project, tier) = self.code_assist_setup(&tokens.access_token).await?;
+            account_id = Some(project);
+            plan = Some(tier);
+        }
         if flow == Flow::Chatgpt {
             if !has_scope(&scope) {
                 bail!("ChatGPT token sharing scope was not granted");

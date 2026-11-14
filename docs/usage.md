@@ -1,5 +1,17 @@
 # Operator guide
 
+## Gemini CLI (Code Assist)
+
+Select the Gemini CLI preset. Save the Provider. Select **Sign in**, allow
+access on Google, then paste the code from the Code Assist page. Device
+sign-in is not available. The Proxy loads the account tier and project. For a
+new account it starts onboarding and waits for a bounded operation.
+
+This is an unofficial subscription. Use can break the service terms. See
+[ADR 0009](adr/0009-gemini-cli.md). Give each Virtual Key explicit Provider
+Access. Cost is 0. Price follows the Price Card. Use canonical Chat Completions
+or Messages POST requests; the Proxy translates JSON and SSE to Gemini.
+
 This guide is for the Operator. It shows how to connect clients, how the Proxy
 routes requests, how to use the dashboard, how the Proxy calculates amounts, and
 how to monitor the Proxy.

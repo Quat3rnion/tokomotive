@@ -97,6 +97,7 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
                 Flow::Entra => "Azure Entra ID",
                 Flow::GoogleVertex => "Google Vertex (adapter pending)",
                 Flow::OpenRouter => "OpenRouter",
+                Flow::GeminiCli => "Gemini CLI (Code Assist)",
                 _ => "OAuth",
             },
             claude: flow == Flow::Claude,
@@ -106,7 +107,7 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
                 .instructions(&name, flow)
                 .await
                 .unwrap_or("Allow access and copy the redirect URL."),
-            key: flow == Flow::OpenRouter,
+            key: matches!(flow, Flow::OpenRouter | Flow::GeminiCli),
         }),
         Err(_) => bad("Cannot start sign-in for this Provider. Reload the page and try again."),
     }
