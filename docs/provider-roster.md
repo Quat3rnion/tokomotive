@@ -1,7 +1,7 @@
 # Provider roster
 
 This document lists the Providers to add to Tokomotive. It groups them by the
-work that each one needs. Status: research, 2026-11-13. Facts come from the
+work that each one needs. Research date: 2026-11-13. Group status is below. Facts come from the
 official documentation or from public source code at a fixed commit. "Not
 verified" means that the research did not confirm the fact. Do a check before
 you implement an item that is not verified.
@@ -27,9 +27,14 @@ sign-in. The sign-in is in addition to API keys, not a replacement.
 
 ## Group A: OpenAI-compatible presets
 
-These Providers work with the existing `openai` API format. They need a preset
-(name, base URL, key help text) and, for some, a small change to how the
-Proxy reads usage.
+Status: **implemented**, commit `b24aadd`.
+
+These Providers use the `openai` API format. Verified base URLs have editable
+presets with key help and documentation links. Unverified base URLs are not
+presets; `src/presets.rs` lists them as TODO items. Usage tests use doc-derived
+format fixtures, not live account responses. Unverified usage rows below stay
+unverified. The shared reader and the per-Provider `include_usage` switch are
+implemented. See [Provider presets](usage.md#provider-presets).
 
 | Provider | Base URL | Usage change | Sources |
 | --- | --- | --- | --- |
@@ -53,16 +58,19 @@ Proxy reads usage.
 | Cloudflare Workers AI | not verified | Responses only for two GPT-OSS models, without streaming. | [Compatibility](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility) |
 | Local: Ollama, LM Studio, vLLM, llama.cpp, LocalAI | user-supplied | Unpriced by default. Usage fields vary by server version. | - |
 
-Common work for group A:
+Implemented common work for group A:
 
 1. A "preset" list on the Add Provider form that fills the base URL and API
    format.
 2. One usage reader that accepts all the field locations above. Add a
-   unit test for each Provider with a recorded response.
+   unit test for each Provider with a doc-derived format fixture. These do not
+   verify live support where the table says "Not verified".
 3. A per-Provider flag "send `stream_options.include_usage`", on by default,
    off for Providers that reject it.
 
 ## Group B: Anthropic-compatible endpoints
+
+Status: **implemented**, commit `b24aadd`.
 
 These Providers accept `/v1/messages`. They work with the existing
 `anthropic` API format. A Route can use them with Translation for OpenAI
@@ -77,9 +85,11 @@ clients.
 | OpenRouter | `https://openrouter.ai/api/v1/messages` | Support depends on the upstream model. Cache usage can be null. | [Reference](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message) |
 | Volcengine Ark | `https://ark.cn-beijing.volces.com/api/compatible/v1/messages` | Not verified beyond URL and auth. | [Ark](https://www.volcengine.com/docs/ark/agent-model-invocation-practice) |
 
-Work for group B: the Anthropic adapter sends `x-api-key`. Some of these
-Providers want `Authorization: Bearer`. Add a per-Provider setting for the
-key header. Accept a missing or null cache usage.
+Implemented work for group B: a per-Provider key-header setting selects
+`Authorization: Bearer`, `x-api-key` or Azure `api-key`. Anthropic defaults to
+`x-api-key`. Presets select the header for each endpoint. Missing or null
+cache usage is accepted. Endpoint and model support marked "Not verified"
+above still needs a live account check.
 
 ## Group C: dedicated adapters
 

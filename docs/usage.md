@@ -196,9 +196,11 @@ curl -N $PROXY/v1/chat/completions \
   -d '{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-For streamed Chat Completions, the Proxy sets `stream_options.include_usage` to
-get the usage from the Provider. If your request did not ask for usage, the
-Proxy removes the usage chunk from the stream that you receive.
+For streamed Chat Completions, the Proxy adds `stream_options.include_usage`
+when the Provider's **Send stream_options.include_usage** setting is on.
+If the Proxy added the option, it removes the usage-only chunk from the stream
+that you receive. With the setting off, client options stay unchanged and
+natural final usage chunks pass through.
 For an Anthropic Deployment, Translation sends a Chat Completions usage chunk
 only if your request set `stream_options.include_usage` to `true`.
 
