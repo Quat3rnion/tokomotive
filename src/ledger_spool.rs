@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -19,6 +20,42 @@ pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) struct Spool {
     path: Option<PathBuf>,
     limit: AtomicU64,
+    pub(crate) pending: Arc<tokio::sync::RwLock<HashMap<String, PendingCharge>>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PendingCharge {
+    user_id: i64,
+    key_id: i64,
+    team_id: Option<i64>,
+    ts_ms: i64,
+    price_micros: i64,
+}
+impl PendingCharge {
+    pub(crate) fn spend(&self, subject: crate::budgets::Subject, start: i64, end: i64) -> i64 {
+        use crate::budgets::Subject;
+        let matches = match subject {
+            Subject::User(id) => self.user_id == id,
+            Subject::Key(id) => self.key_id == id,
+            Subject::Team(id) => self.team_id == Some(id),
+        };
+        if matches && self.ts_ms >= start && self.ts_ms < end {
+            self.price_micros
+        } else {
+            0
+        }
+    }
+}
+impl From<&NewEntry> for PendingCharge {
+    fn from(entry: &NewEntry) -> Self {
+        Self {
+            user_id: entry.user_id,
+            key_id: entry.key_id,
+            team_id: entry.team_id,
+            ts_ms: entry.ts_ms,
+            price_micros: entry.quote.price_micros,
+        }
+    }
 }
 impl Spool {
     pub(crate) fn new(url: &str) -> Result<Self> {
@@ -27,9 +64,34 @@ impl Spool {
         } else {
             Some(crate::settings::database_path(url)?.with_file_name("ledger-spool.jsonl"))
         };
+        let mut pending = HashMap::new();
+        if let Some(path) = &path {
+            for segment in [path.clone(), path.with_extension("replay.jsonl")] {
+                if !segment.exists() {
+                    continue;
+                }
+                let mut validate = || -> Result<()> {
+                    let mut reader = BufReader::new(File::open(&segment)?);
+                    loop {
+                        let mut line = Vec::new();
+                        if reader.read_until(b'\n', &mut line)? == 0 {
+                            return Ok(());
+                        }
+                        anyhow::ensure!(line.last() == Some(&b'\n'), "incomplete record");
+                        let entry: PendingEntry = serde_json::from_slice(&line)?;
+                        pending.insert(entry.write_key, PendingCharge::from(&entry.entry));
+                    }
+                };
+                validate().with_context(|| format!(
+                    "invalid Ledger spool {}; stop the service and follow docs/configuration.md#ledger-spool-recovery",
+                    segment.display()
+                ))?;
+            }
+        }
         Ok(Self {
             path,
             limit: AtomicU64::new(DEFAULT_MAX_BYTES),
+            pending: Arc::new(tokio::sync::RwLock::new(pending)),
         })
     }
     pub(crate) fn set_limit(&self, bytes: u64) {
@@ -44,6 +106,11 @@ impl Spool {
         let limit = self.limit.load(Ordering::Relaxed);
         let mut bytes = serde_json::to_vec(entry)?;
         bytes.push(b'\n');
+        let write_key = entry.write_key.clone();
+        let charge = PendingCharge::from(&entry.entry);
+        // Keep the durable handoff and its Budget charge together, even if the
+        // caller is cancelled while the blocking append completes.
+        let mut pending = self.pending.clone().write_owned().await;
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
@@ -76,6 +143,7 @@ impl Spool {
                     return Err(error.into());
                 }
                 sync_parent(&path)?;
+                pending.insert(write_key, charge);
                 metrics::gauge!("tokomotive_ledger_spool_bytes")
                     .set((used + bytes.len() as u64) as f64);
                 metrics::counter!("tokomotive_ledger_spooled_total").increment(1);
@@ -229,12 +297,33 @@ fn spool_bytes(path: &Path) -> Result<u64> {
 /// Replay one rotated segment. Keep it until every entry commits. A crash
 /// between commit and removal replays the same keys, not a second Ledger row.
 pub async fn replay(db: &Db) -> Result<u64> {
+    replay_segment(db, false).await
+}
+
+/// No request may enter until every startup segment is valid and committed.
+pub(crate) async fn drain(db: &Db) -> Result<()> {
+    let Some(path) = &db.spool.path else {
+        return Ok(());
+    };
+    loop {
+        replay_segment(db, true).await?;
+        if spool_bytes(path)? == 0 && !path.with_extension("replay.jsonl").exists() {
+            return Ok(());
+        }
+    }
+}
+
+async fn replay_segment(db: &Db, startup: bool) -> Result<u64> {
     let Some(path) = db.spool.path.clone() else {
         return Ok(0);
     };
     let prepare_path = path.clone();
     let prepared = tokio::task::spawn_blocking(move || -> Result<_> {
         let Some(replay_lock) = lock(&prepare_path.with_extension("replay.lock"), true)? else {
+            anyhow::ensure!(
+                !startup,
+                "Ledger spool replay is already running; stop the other process before startup"
+            );
             return Ok(None);
         };
         let _lock = lock(&prepare_path.with_extension("lock"), false)?;
@@ -279,7 +368,13 @@ pub async fn replay(db: &Db) -> Result<u64> {
             break;
         }
         for entry in entries {
-            entry.write(db).await?;
+            // Never wait for SQLite with the pending-charge lock held. Budget
+            // readers can proceed while another writer blocks replay.
+            let mut tx = db::begin_write(db, "ledger_spool").await?;
+            let mut pending = db.spool.pending.write().await;
+            entry.write_in(&mut tx).await?;
+            tx.commit().await?;
+            pending.remove(&entry.write_key);
             count += 1;
             metrics::counter!("tokomotive_ledger_spool_replayed_total").increment(1);
         }

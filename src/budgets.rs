@@ -92,8 +92,17 @@ impl Subject {
 
 pub async fn spend(db: &Db, subject: Subject, start: i64, end: Option<i64>) -> Result<i64> {
     let (col, index, id) = subject.columns();
-    Ok(sqlx::query_scalar(&format!("SELECT IFNULL(SUM(price_micros),0) FROM ledger INDEXED BY {index} WHERE {col}=? AND ts_ms>=? AND ts_ms<?"))
-        .bind(id).bind(start.saturating_mul(1000)).bind(end.map_or(i64::MAX, |e|e.saturating_mul(1000))).fetch_one(db).await?)
+    let start = start.saturating_mul(1000);
+    let end = end.map_or(i64::MAX, |e| e.saturating_mul(1000));
+    // Replay commits and removes the pending charge under the write side of
+    // this lock. The Ledger snapshot and pending total cannot miss a handoff.
+    let mut conn = db.acquire().await?;
+    let pending = db.spool.pending.read().await;
+    let ledger: i64 = sqlx::query_scalar(&format!("SELECT IFNULL(SUM(price_micros),0) FROM ledger INDEXED BY {index} WHERE {col}=? AND ts_ms>=? AND ts_ms<?"))
+        .bind(id).bind(start).bind(end).fetch_one(&mut *conn).await?;
+    Ok(pending.values().fold(ledger, |total, charge| {
+        total.saturating_add(charge.spend(subject, start, end))
+    }))
 }
 
 #[derive(Debug)]

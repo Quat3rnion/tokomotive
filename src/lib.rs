@@ -54,7 +54,7 @@ pub async fn init(
     db::seed(&db, cfg).await?;
     let state = AppState::new(cfg, db, metrics).await?;
     // Fail closed at startup if a previous process left uncommitted accounting.
-    db::replay_spool(&state.db).await?;
+    ledger_spool::drain(&state.db).await?;
     Ok(state)
 }
 

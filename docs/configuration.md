@@ -462,13 +462,18 @@ logs an error and keeps the entry and its Reservation in memory while it retries
 Shutdown waits for these writes. Repair the storage problem before you stop the
 process; an unsaved in-memory entry cannot survive a forced stop.
 
+A synced entry's actual Price counts against its User, Team and Virtual Key
+Budgets until replay commits it. Each Budget uses the entry's timestamp to select
+the UTC period. Startup rebuilds these pending charges from both spool files.
+Writer contention does not give back this Budget capacity.
+
 The replay task checks the spool every 5 seconds. It renames the active file to
 `ledger-spool.replay.jsonl` and removes that segment only after all entries commit.
 New writes can append to a new active file during replay. Each entry keeps one
 idempotency key. A repeated replay cannot add a second Ledger row or rollup charge.
-Startup replays pending segments before it accepts requests. A replay error stops
-startup instead of discarding the segment. Do not delete a segment to clear an
-error. Restore damaged data from a backup.
+Startup validates both files and drains both segments before it accepts requests.
+A corrupt record, an incomplete record or a replay error stops startup. It does
+not discard the segment. See [Ledger spool recovery](#ledger-spool-recovery).
 
 Batch accounting uses its existing durable `batch_jobs` row instead of the spool.
 A writer timeout leaves the job unaccounted and keeps its persisted Reservation.
@@ -487,6 +492,20 @@ present, and the Master Key. Restore them together. Old spool segments are safe
 to replay against the matching database backup because their keys are persistent.
 Do not share one data directory between different databases. In-memory SQLite
 databases have no durable spool and are for tests only.
+
+### Ledger spool recovery
+
+1. Stop the service. Keep a copy of the database, both spool files and the Master
+   Key before you change any file.
+2. Read the startup error to find the damaged spool file. Each JSON record must
+   end with a newline. Do not delete the file, skip a record or start with an
+   empty spool. These actions can lose charges.
+3. Restore the damaged file from a matching backup. If no complete backup exists,
+   recover the original record and its frozen amounts before you restart. Keep
+   its `write_key` unchanged. A missing tail cannot be reconstructed from a
+   partial JSON record alone.
+4. Start the service again. Startup validates both files and commits every
+   pending entry before it accepts traffic. Repeated keys do not charge twice.
 
 ## Master Key and backups
 

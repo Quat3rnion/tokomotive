@@ -82,7 +82,7 @@
 
 **Budget** - A limit on the total Price for a User, Team or Virtual Key. It is for a lifetime, day, week (Monday) or month in UTC. Every applicable Budget must permit a request.
 
-**Reservation** - The worst-case Price of a request in progress. It counts against the Budget until the Ledger Entry is written or synced to the durable spool. A Batch Reservation stays in its durable job until accounting commits.
+**Reservation** - The worst-case Price of a request in progress. It counts against the Budget until the Ledger Entry is written or synced to the durable spool. A synced entry's actual Price still counts against each applicable Budget until replay commits it. A Batch Reservation stays in its durable job until accounting commits.
 
 **Rate Limit** - A limit on requests per minute (RPM) or completed tokens per minute (TPM) for a Virtual Key or a User. It uses the last 60 seconds. A blank limit is unlimited; zero blocks requests.
 

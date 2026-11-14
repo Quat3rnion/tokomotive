@@ -14,7 +14,7 @@ fn metrics_handle() -> metrics_exporter_prometheus::PrometheusHandle {
 
 async fn spool_state(dir: &std::path::Path, cap: u64) -> (Config, tokomotive::state::AppState) {
     let cfg: Config = toml::from_str(&format!(
-        "[server]\ndatabase='sqlite://{}/db.sqlite'\n[[users]]\nname='alice'\nkeys=['key']",
+        "[server]\ndatabase='sqlite://{}/db.sqlite'\n[[providers]]\nname='test'\nkind='openai'\nbase_url='http://127.0.0.1:1'\napi_key='unused'\n[[users]]\nname='alice'\nkeys=['key']",
         dir.display()
     ))
     .unwrap();
@@ -74,6 +74,112 @@ async fn assert_one_entry(db: &tokomotive::db::Db) {
         .await
         .unwrap();
     assert_eq!(requests, 1, "replay must not duplicate the rollup either");
+}
+
+async fn assert_budget_402(st: &tokomotive::state::AppState) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let router = tokomotive::router(st.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth("key")
+        .json(&json!({"model":"test/model","messages":[],"max_tokens":1}))
+        .send()
+        .await
+        .unwrap();
+    server.abort();
+    assert_eq!(response.status(), 402, "spooled spend must block admission");
+}
+
+#[tokio::test]
+async fn spooled_spend_enforces_each_budget_before_and_after_restart() {
+    use tokomotive::budgets::{self, Period, Subject};
+    for (table, subject) in [
+        ("users", Subject::User(1)),
+        ("teams", Subject::Team(1)),
+        ("virtual_keys", Subject::Key(1)),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, st) = spool_state(dir.path(), 65536).await;
+        sqlx::query("INSERT INTO teams(id,name,created_at) VALUES(1,'team',0)")
+            .execute(&st.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET team_id=1")
+            .execute(&st.db)
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            "UPDATE {table} SET budget_micros=24,budget_period='daily'"
+        ))
+        .execute(&st.db)
+        .await
+        .unwrap();
+        let now = tokomotive::db::now_ms() / 1000;
+        let (start, end) = Period::Daily.bounds(now);
+        let writer = st.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let mut charge = entry();
+        charge.team_id = Some(1);
+        charge.ts_ms = start * 1000;
+        assert!(
+            tokomotive::db::insert_entry(&st.db, &charge)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        charge.ts_ms = start * 1000 - 1;
+        assert!(
+            tokomotive::db::insert_entry(&st.db, &charge)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let replay_db = st.db.clone();
+        let replay = tokio::spawn(async move { tokomotive::db::replay_spool(&replay_db).await });
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_millis(250),
+                budgets::spend(&st.db, subject, start, end)
+            )
+            .await
+            .expect("a replay waiting for the writer must not block Budget reads")
+            .unwrap(),
+            24
+        );
+        assert_eq!(budgets::spend(&st.db, subject, 0, None).await.unwrap(), 48);
+        assert_budget_402(&st).await;
+        assert!(
+            replay.await.unwrap().is_err(),
+            "the held writer must block replay"
+        );
+        writer.rollback().await.unwrap();
+        st.flush().await;
+        st.db.close().await;
+        drop(st);
+        let reopened = tokomotive::db::connect(&cfg.server.database).await.unwrap();
+        let writer = reopened.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        assert_eq!(
+            budgets::spend(&reopened, subject, start, end)
+                .await
+                .unwrap(),
+            24,
+            "pending charges must rebuild before replay can acquire the writer"
+        );
+        writer.rollback().await.unwrap();
+        reopened.close().await;
+        let restarted = tokomotive::init(&cfg, None).await.unwrap();
+        assert_eq!(
+            budgets::spend(&restarted.db, subject, start, end)
+                .await
+                .unwrap(),
+            24
+        );
+        assert_budget_402(&restarted).await;
+    }
 }
 
 #[tokio::test]
@@ -146,6 +252,88 @@ async fn restart_replays_a_durable_spooled_entry() {
     let restarted = tokomotive::init(&cfg, None).await.unwrap();
     assert_one_entry(&restarted.db).await;
     assert!(!dir.path().join("ledger-spool.replay.jsonl").exists());
+}
+
+#[tokio::test]
+async fn startup_drains_both_spool_segments_exactly_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cfg, st) = spool_state(dir.path(), 65536).await;
+    let writer = st.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    assert!(
+        tokomotive::db::insert_entry(&st.db, &entry())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let active = dir.path().join("ledger-spool.jsonl");
+    let replay = active.with_extension("replay.jsonl");
+    let record = std::fs::read(&active).unwrap();
+    std::fs::rename(&active, &replay).unwrap();
+    assert!(
+        tokomotive::db::insert_entry(&st.db, &entry())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    writer.rollback().await.unwrap();
+    st.db.close().await;
+    drop(st);
+    for duplicate in [false, true] {
+        if duplicate {
+            std::fs::write(&replay, &record).unwrap();
+        }
+        let restarted = tokomotive::init(&cfg, None).await.unwrap();
+        let totals: (i64, i64) = sqlx::query_as("SELECT COUNT(*),SUM(price_micros) FROM ledger")
+            .fetch_one(&restarted.db)
+            .await
+            .unwrap();
+        assert_eq!(totals, (2, 48));
+        let requests: i64 = sqlx::query_scalar("SELECT SUM(requests) FROM rollup_hourly")
+            .fetch_one(&restarted.db)
+            .await
+            .unwrap();
+        assert_eq!(requests, 2);
+        assert!(!replay.exists());
+        assert!(!active.exists() || std::fs::metadata(&active).unwrap().len() == 0);
+        restarted.db.close().await;
+    }
+}
+
+#[tokio::test]
+async fn startup_rejects_corrupt_active_tail_even_with_a_replay_segment() {
+    for tail in [
+        b"{\"write_key\":\"partial".as_slice(),
+        b"not-json\n".as_slice(),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, st) = spool_state(dir.path(), 65536).await;
+        let writer = st.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        assert!(
+            tokomotive::db::insert_entry(&st.db, &entry())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let active = dir.path().join("ledger-spool.jsonl");
+        std::fs::rename(&active, active.with_extension("replay.jsonl")).unwrap();
+        std::fs::write(&active, tail).unwrap();
+        writer.rollback().await.unwrap();
+        st.db.close().await;
+        drop(st);
+        let error = match tokomotive::init(&cfg, None).await {
+            Ok(_) => panic!("startup must reject a corrupt active spool"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            error.contains("Ledger spool") && error.contains("docs/configuration.md"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&active).unwrap(),
+            tail,
+            "preserve data for recovery"
+        );
+    }
 }
 
 #[derive(Clone, Default)]
