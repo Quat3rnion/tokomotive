@@ -82,18 +82,20 @@ controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 
 The screenshots show demo data from a local test server. The keys are not real.
 
-![The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the start of the By Model table.](docs/images/overview.png)
+![The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table.](docs/images/overview.png)
 
 ![The Routes page. The Route "smart" uses the weighted strategy with three Deployments on two Providers and two Fallbacks.](docs/images/routes.png)
 
 | Page | What it shows |
 | ---- | ------------- |
-| [Ledger](docs/images/ledger.png) | The newest Ledger Entries with filters. Each row shows the User, the Model and Provider, the status, the flags, the tokens, the amounts and the latency. |
-| [Providers](docs/images/providers.png) | API-key and subscription Providers. The page shows only the last 4 characters of each key, or the name of its environment variable. |
-| [Models](docs/images/models.png) | The Models with their Cost Card rates, Price Cards and Team overrides. |
-| [Model page](docs/images/model.png) | The cards of one Model, two Team overrides and the Card history. |
-| [Users](docs/images/users.png) | The Users with their Teams, Budgets, Rate Limits and spend. Edit opens one form for each User. |
-| [Keys](docs/images/keys.png) | The form to add a Virtual Key with Provider Access and Rate Limits, and the active keys. |
+| [Ledger](docs/images/ledger.png) | The newest Ledger Entries with the filters. Each row shows the User, the Model and Provider, the status, the flags, the tokens, the amounts and the latency. |
+| [Providers](docs/images/providers.png) | Two API-key Providers and three Subscription Providers. The page shows only the last 4 characters of each key, or the name of its environment variable. |
+| [Sign-in](docs/images/signin.png) | The sign-in panel of a Codex Provider. Paste the redirect URL here when device sign-in is not available. |
+| [Models](docs/images/models.png) | The Models with their Cost Card rates, Price Cards, Team overrides and the Default Markup. |
+| [Model page](docs/images/model.png) | The cards of one Model, a Team override and the Card history. |
+| [Users](docs/images/users.png) | The name search, the Users with their Teams, Budgets, Rate Limits and spend, and the pager. |
+| [Keys](docs/images/keys.png) | The form to add a Virtual Key with Provider Access and Rate Limits, the active keys and the pager. |
+| [Usage](docs/images/usage.png) | The "Show all" view of the Overview: usage by User, sorted by requests, one page at a time. |
 | [Overview in Simple Mode](docs/images/overview-simple.png) | The Overview without money data: requests, tokens, latency, errors and attempts. |
 
 ## Quick start
