@@ -137,6 +137,7 @@ The capture manifest records these changes for the next image refresh.
 | [Overview in Simple Mode](docs/images/overview-simple.png) | The Overview without money data: requests, tokens, latency, errors and attempts. |
 | [Teams](docs/images/teams.png) | Teams with their Budgets, spend and member counts. |
 | [Settings](docs/images/settings.png) | The operating mode, routing settings, metrics and alert controls. |
+| [Audit log](docs/images/audit.png) | The audit log: who changed what and when, with filters and the pager. |
 
 ## Quick start
 
