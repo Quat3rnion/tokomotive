@@ -7,6 +7,10 @@ pub(super) fn router() -> Router<AppState> {
         .route("/.well-known/oauth-cimd", get(client_metadata))
         .route("/admin/providers/{name}/oauth/start", post(start))
         .route("/admin/providers/{name}/oauth/configure", post(configure))
+        .route(
+            "/admin/providers/{name}/oauth/service-account",
+            post(service_account),
+        )
         .route("/admin/providers/{name}/oauth/paste", post(paste))
         .route(
             "/admin/providers/{name}/oauth/device/status",
@@ -68,6 +72,32 @@ async fn configure(
         "OAuth client saved. Sign in to connect.",
     )
 }
+#[derive(Deserialize)]
+struct ServiceAccountForm {
+    service_account: String,
+}
+async fn service_account(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<ServiceAccountForm>,
+) -> Response {
+    if flow(&st, &name) != Some(Flow::GoogleVertex) {
+        return bad("This Provider does not use Vertex credentials.");
+    }
+    if st
+        .oauth
+        .configure_service_account(&name, &form.service_account)
+        .await
+        .is_err()
+    {
+        return form_error("Check the service-account JSON key and its Google Cloud permissions.");
+    }
+    saved(
+        "/admin/providers",
+        "Service-account key saved and connected.",
+    )
+}
 #[derive(Template)]
 #[template(path = "signin.html")]
 struct AttemptPage {
@@ -95,7 +125,7 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
                 Flow::Codex => "ChatGPT via Codex",
                 Flow::HuggingFace => "Hugging Face",
                 Flow::Entra => "Azure Entra ID",
-                Flow::GoogleVertex => "Google Vertex (adapter pending)",
+                Flow::GoogleVertex => "Google Vertex AI",
                 Flow::OpenRouter => "OpenRouter",
                 Flow::GeminiCli => "Gemini CLI (Code Assist)",
                 _ => "OAuth",

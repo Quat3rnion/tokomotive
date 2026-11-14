@@ -305,6 +305,7 @@ impl OAuthManager {
                 c.inference_base = InferenceBase::Fixed(String::new()); // Operator's validated Azure v1 base.
             }
             Flow::GoogleVertex => {
+                c.inference_base = InferenceBase::Fixed(String::new());
                 c.authorize = e.google_authorize.clone();
                 c.token = e.google_token.clone();
                 c.scopes = "https://www.googleapis.com/auth/cloud-platform".into();

@@ -583,6 +583,8 @@ struct ProvidersPage {
 struct ProviderView {
     aws_region: String,
     aws_saved: bool,
+    project_id: String,
+    region: String,
     key_pager: Pager,
     name: String,
     kind: String,
@@ -735,9 +737,7 @@ fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
         crate::provider::ProviderAuth::QwenCode => "Qwen Code",
         crate::provider::ProviderAuth::KimiCode => "Kimi Code",
         crate::provider::ProviderAuth::GeminiCli => "Gemini CLI (unofficial)",
-        crate::provider::ProviderAuth::GoogleVertex => {
-            "Google Vertex: sign-in ready, adapter pending"
-        }
+        crate::provider::ProviderAuth::GoogleVertex => "Google Vertex AI",
     }
 }
 
@@ -764,7 +764,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,bedrock_credentials IS NOT NULL AS aws_saved FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -854,6 +854,8 @@ async fn providers(
                 .unwrap_or("")
                 .into(),
             aws_saved: row.get("aws_saved"),
+            project_id: row.get("project_id"),
+            region: row.get("region"),
             key_pager,
             name,
             auth: auth.as_str().into(),
@@ -919,6 +921,10 @@ struct ProviderForm {
     aws_session_token: String,
     #[serde(default)]
     aws_clear_token: bool,
+    #[serde(default)]
+    project_id: String,
+    #[serde(default = "crate::config::default_region")]
+    region: String,
     preset: Option<String>,
     name: String,
     /// A Subscription Provider has a fixed API format; the form may omit it.
@@ -974,6 +980,15 @@ async fn save_provider(
     use crate::provider::ProviderAuth;
     f.name = f.name.trim().into();
     f.base_url = f.base_url.trim().trim_end_matches('/').into();
+    if f.auth == ProviderAuth::GoogleVertex {
+        if let Err(e) = crate::vertex::validate_project(&f.project_id) {
+            return form_error(e);
+        }
+        f.base_url = match crate::vertex::base_url(&f.region) {
+            Ok(v) => v,
+            Err(e) => return form_error(e),
+        };
+    }
     // A Subscription Provider has one fixed address and API format. Accept
     // the address with /v1, as the Provider documentation often shows it.
     match f.auth {
@@ -982,10 +997,9 @@ async fn save_provider(
         | ProviderAuth::Codex
         | ProviderAuth::HuggingFace
         | ProviderAuth::Entra
-        | ProviderAuth::GoogleVertex
         | ProviderAuth::QwenCode => f.kind = ProviderKind::Openai,
         ProviderAuth::Claude => f.kind = ProviderKind::Anthropic,
-        ProviderAuth::GeminiCli => f.kind = ProviderKind::Gemini,
+        ProviderAuth::GeminiCli | ProviderAuth::GoogleVertex => f.kind = ProviderKind::Gemini,
     }
     if !matches!(
         f.auth,
@@ -1058,6 +1072,8 @@ async fn save_provider(
         kind: f.kind,
         auth: f.auth,
         base_url: f.base_url.clone(),
+        project_id: f.project_id.clone(),
+        region: f.region.clone(),
         include_usage: f.include_usage,
         key_header: f.key_header,
         api_key: None,
@@ -1121,7 +1137,7 @@ async fn save_provider(
     }
     let mut tx = tryr!(st.db.begin().await);
     let result = if let Some(name) = old {
-        sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=?,include_usage=?,key_header=? WHERE name=?")
+        sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=?,include_usage=?,key_header=?,project_id=?,region=? WHERE name=?")
             .bind(&f.name)
             .bind(tryr!(serde_json::to_string(&f.kind)))
             .bind(f.base_url.trim_end_matches('/'))
@@ -1129,11 +1145,13 @@ async fn save_provider(
             .bind(f.auth.as_str())
             .bind(f.include_usage)
             .bind(f.key_header.map(|h| h.as_str()))
+            .bind(&f.project_id)
+            .bind(&f.region)
             .bind(name)
             .execute(&mut *tx)
             .await
     } else {
-        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json,auth,include_usage,key_header) VALUES(?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json,auth,include_usage,key_header,project_id,region) VALUES(?,?,?,?,?,?,?,?,?)")
             .bind(&f.name)
             .bind(tryr!(serde_json::to_string(&f.kind)))
             .bind(f.base_url.trim_end_matches('/'))
@@ -1141,6 +1159,8 @@ async fn save_provider(
             .bind(f.auth.as_str())
             .bind(f.include_usage)
             .bind(f.key_header.map(|h| h.as_str()))
+            .bind(&f.project_id)
+            .bind(&f.region)
             .execute(&mut *tx)
             .await
     };

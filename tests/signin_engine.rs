@@ -298,7 +298,7 @@ async fn paid_device_bearers_reach_only_their_inference_base_and_model_paths() {
 }
 
 #[tokio::test]
-async fn operator_configures_google_secret_then_pastes_pkce_without_enabling_routing() {
+async fn operator_configures_google_secret_then_pastes_pkce_with_routing_available() {
     use tokomotive::{config::Config, provider::Endpoint, state::AppState};
     let app=Router::new().route("/token",post(|axum::Form(f):axum::Form<std::collections::HashMap<String,String>>|async move {
         assert_eq!(f["client_secret"],"google-private-secret");
@@ -423,7 +423,7 @@ async fn operator_configures_google_secret_then_pastes_pkce_without_enabling_rou
         "google-access-private"
     );
     assert!(
-        st.candidates(
+        !st.candidates(
             &st.router_table(),
             &st.catalog(),
             Some("vertex/model"),
@@ -442,7 +442,7 @@ async fn operator_configures_google_secret_then_pastes_pkce_without_enabling_rou
         )[0]
         .provider
         .name,
-        "or"
+        "vertex"
     );
     let html = c
         .get(format!("{url}/admin/providers"))
@@ -454,7 +454,8 @@ async fn operator_configures_google_secret_then_pastes_pkce_without_enabling_rou
         .await
         .unwrap();
     assert!(html.contains("Sign in with OpenRouter"));
-    assert!(html.contains("adapter pending"));
+    assert!(!html.contains("adapter pending"));
+    assert!(html.contains("Service-account JSON key"));
     assert!(html.contains("registering an app"));
     assert!(html.contains("****KEY4"));
     assert!(!html.contains("issued-private-KEY4"));

@@ -1494,7 +1494,8 @@ They have normal Cost and Price.
 
 1. Create your own Google **Desktop app** OAuth client. Enable the Google Cloud
    services that your account needs. Configure the consent screen for that client.
-2. Add a Provider with authentication **Google Vertex (adapter pending)**.
+2. Add a Provider with authentication **Google Vertex AI**. Set the project ID
+   and region. Use `global` for the global endpoint.
 3. Open **OAuth client settings**. Enter the client ID and secret. Select
    **Save OAuth client**.
 4. Select **Sign in**. Open the Google page and allow the
@@ -1505,10 +1506,23 @@ They have normal Cost and Price.
 
 This uses [Google's installed-app flow](https://developers.google.com/identity/protocols/oauth2/native-app)
 with PKCE and offline access. It does not use Google's discontinued OOB flow.
-The Proxy stores and refreshes the token. The UI marks this Provider
-**sign-in ready, adapter pending**. It is not available for routing or Model
-discovery until the Vertex adapter is implemented. No inference request uses
-this token yet.
+The Proxy stores and refreshes the token. It can route Gemini and Anthropic
+requests on Vertex. For an existing sign-in, save a project ID before the first
+request. Each Virtual Key needs explicit Provider Access. Cost and Price follow
+the cards. This is not a subscription.
+
+Instead of user sign-in, open **Service-account JSON key** and paste the key
+file. Select **Save service-account key**. This replaces user sign-in. The key
+is encrypted and is not shown again. The Proxy signs an RS256 JWT and exchanges
+it for a cloud-platform access token. It caches the token until 5 minutes before
+expiry. Saving OAuth client settings removes the service-account key.
+
+The Provider accepts canonical Chat Completions and Messages POST paths. Use
+`claude-*` model names for Anthropic; other names select Gemini. A Deployment
+can use `anthropic/MODEL` or `google/MODEL` to select a publisher explicitly.
+These prefixes are not sent as part of the Vertex model ID. Use model IDs that
+are available in the selected project and region. Live account support is not
+verified; the tests use mock endpoints.
 
 ## Unofficial subscription sign-in
 

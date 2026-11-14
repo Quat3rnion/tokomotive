@@ -195,6 +195,16 @@ fn prepare_body(
     {
         crate::oauth::prepare_claude(body);
     }
+    if candidate.provider.auth == crate::provider::ProviderAuth::GoogleVertex {
+        let body = prepared
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| translate::TranslateError {
+                message: "Vertex Messages requests must be JSON objects".into(),
+            })?;
+        body.remove("model");
+        body.insert("anthropic_version".into(), json!("vertex-2023-10-16"));
+    }
     Ok((prepared, target, strip))
 }
 
@@ -441,7 +451,13 @@ impl Ctx {
             .limiter
             .record_tokens(&self.rate_scopes, o.usage.total(), db::now_ms());
         let catalog = self.st.catalog();
-        let model = o.model.or_else(|| self.upstream_model.clone());
+        let mut model = o.model.or_else(|| self.upstream_model.clone());
+        if self.provider.auth == crate::provider::ProviderAuth::GoogleVertex
+            && let Some(name) = model.as_deref()
+            && let Ok((_, id)) = crate::vertex::model(name)
+        {
+            model = Some(id.into());
+        }
         let mut quote = catalog.quote(model.as_deref(), self.auth.team_id, &o.usage);
         if self.provider.auth.is_subscription() {
             quote.cost_micros = 0;
@@ -599,6 +615,13 @@ pub async fn handle(
         endpoint,
         anthropic_hint,
     );
+    for c in &mut candidates {
+        if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex
+            && let Ok((kind, _)) = crate::vertex::model(c.model.as_deref().unwrap_or_default())
+        {
+            c.provider.kind = kind;
+        }
+    }
     candidates.retain(|c| compatible(c.provider.kind, endpoint));
     let denied = candidates
         .iter()
@@ -651,17 +674,21 @@ pub async fn handle(
         };
         let mut worst = 0;
         for c in &candidates {
+            let pricing_model = if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex {
+                c.model
+                    .as_deref()
+                    .and_then(|name| crate::vertex::model(name).ok())
+                    .map(|(_, id)| id)
+            } else {
+                c.model.as_deref()
+            };
             let Ok((prepared, target, _)) = prepare_body(c, endpoint, json_body.as_ref()) else {
                 continue;
             };
             let len = prepared
                 .as_ref()
                 .map_or(body.len(), |v| v.to_string().len());
-            let model_id = c
-                .model
-                .as_deref()
-                .and_then(|m| catalog.resolve(m))
-                .map(|m| m.id);
+            let model_id = pricing_model.and_then(|m| catalog.resolve(m)).map(|m| m.id);
             let reserve_output = match crate::models_dev::reservation_output(
                 &st.db,
                 model_id,
@@ -683,7 +710,7 @@ pub async fn handle(
                 &catalog,
                 auth.team_id,
                 target,
-                c.model.as_deref(),
+                pricing_model,
                 prepared.as_ref(),
                 len,
                 reserve_output,
@@ -793,7 +820,34 @@ pub async fn handle(
             });
             continue;
         }
-        if matches!(provider.kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
+        let vertex = provider.auth == crate::provider::ProviderAuth::GoogleVertex;
+        if vertex {
+            if method != Method::POST
+                || !subscription_path_allowed(endpoint, path_q)
+                || !matches!(endpoint, Endpoint::ChatCompletions | Endpoint::Messages)
+            {
+                translation_error = Some(translate::TranslateError {
+                    message:
+                        "Vertex accepts only canonical Chat Completions and Messages POST paths"
+                            .into(),
+                });
+                continue;
+            }
+            path = match crate::vertex::model_path(
+                &provider.project_id,
+                &provider.region,
+                candidate.model.as_deref().unwrap_or_default(),
+                streamed,
+            ) {
+                Ok(path) => path,
+                Err(e) => {
+                    translation_error = Some(translate::TranslateError {
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+        } else if matches!(provider.kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
             if method != Method::POST || !subscription_path_allowed(endpoint, path_q) {
                 translation_error = Some(translate::TranslateError {
                     message:
@@ -844,6 +898,7 @@ pub async fn handle(
             path = "/responses".into();
         }
         if !codex
+            && !vertex
             && provider.auth != crate::provider::ProviderAuth::GeminiCli
             && provider.auth != crate::provider::ProviderAuth::ApiKey
             && !subscription_path_allowed(target_endpoint, &path)
@@ -1393,6 +1448,8 @@ async fn build_request(
                 crate::provider::ProviderAuth::GithubCopilot
                     | crate::provider::ProviderAuth::QwenCode
                     | crate::provider::ProviderAuth::KimiCode
+                    | crate::provider::ProviderAuth::GeminiCli
+                    | crate::provider::ProviderAuth::GoogleVertex
             ) && (matches!(
                 name.as_str(),
                 "user-agent"

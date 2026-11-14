@@ -24,6 +24,7 @@ const SHARING_SCOPE: &str = "chatgpt.tokens.use.direct";
 
 mod code_assist;
 mod config;
+mod service_account;
 pub use config::{ClientOptions, FlowConfig, FlowType, InferenceBase, RefreshRule, TokenEncoding};
 
 /// Stable storage identity, not a protocol enum. The registry supplies the data.
@@ -116,6 +117,7 @@ pub struct OAuthEndpoints {
     pub kimi_token: String,
     pub kimi_resource: String,
     pub code_assist_resource: String,
+    pub vertex_resource: Option<String>,
 }
 impl Default for OAuthEndpoints {
     fn default() -> Self {
@@ -148,12 +150,15 @@ impl Default for OAuthEndpoints {
             kimi_token: "https://auth.kimi.com/api/oauth/token".into(),
             kimi_resource: "https://api.kimi.com/coding/v1".into(),
             code_assist_resource: "https://cloudcode-pa.googleapis.com".into(),
+            vertex_resource: None,
         }
     }
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct Saved {
+    #[serde(default)]
+    service_account: Option<service_account::ServiceAccount>,
     host_id: String,
     client_id: Option<String>,
     credential: Option<Credential>,
@@ -613,7 +618,12 @@ impl OAuthManager {
             return Ok(configured.into());
         };
         if auth == ProviderAuth::GoogleVertex {
-            bail!("Vertex adapter pending");
+            return Ok(self
+                .endpoints
+                .vertex_resource
+                .as_deref()
+                .unwrap_or(configured)
+                .into());
         }
         let saved = self.load(name, flow).await?;
         if let Some(base) = saved.credential.and_then(|c| c.inference_base) {
@@ -657,6 +667,7 @@ impl OAuthManager {
             options.client_secret = saved.options.client_secret.clone();
         }
         saved.options = options;
+        saved.service_account = None;
         self.config(flow, &saved)?;
         saved.credential = None;
         saved.last_error = None;
@@ -707,6 +718,7 @@ impl OAuthManager {
         self.usage_cache.lock().await.remove(name);
         let mut s = self.load(name, flow).await?;
         s.credential = None;
+        s.service_account = None;
         s.last_error = None;
         self.save(name, flow, &s).await
     }
@@ -786,6 +798,9 @@ impl OAuthManager {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
         let mut s = self.load(name, flow).await?;
+        if flow == Flow::GoogleVertex && s.service_account.is_some() {
+            return self.service_account_token(name, &mut s, rejected).await;
+        }
         let config = self.config(flow, &s)?;
         if s.last_error.is_some() {
             bail!("Subscription disconnected; sign in again");

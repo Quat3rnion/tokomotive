@@ -1,5 +1,49 @@
 # Configuration reference
 
+## Google Vertex AI
+
+```toml
+[[providers]]
+name = "vertex"
+kind = "gemini"
+auth = "google_vertex"
+project_id = "my-project"
+region = "us-central1"
+base_url = "https://us-central1-aiplatform.googleapis.com"
+```
+
+Set `project_id` to a Google Cloud project ID: 6 to 30 lowercase letters,
+digits or hyphens. Start with a letter. End with a letter or digit. The region
+must be `global` or two lowercase components, such as `us-central1`. The second
+component ends with a digit. The Proxy builds the host from the region only.
+For `global`, use `https://aiplatform.googleapis.com`. The dashboard builds the
+base URL when you save. An old sign-in can keep an empty project until you edit
+it, but no request can use an empty project.
+
+Do not add API keys. In the dashboard, configure an Operator-supplied Google
+Desktop OAuth client, or save a service-account JSON key. The JSON key must
+have type `service_account` and token URI `https://oauth2.googleapis.com/token`.
+Credential fields are encrypted. JSON key fields cannot change the token host.
+RS256 JWT assertions use cloud-platform scope, the fixed token URI as audience,
+and a lifetime of 1 hour. Token refresh is single-flight. The HTTP clients do
+not follow redirects. Responses use the bounded JSON reader and SSE limits.
+
+The publisher is `anthropic` for `claude-*` names and `google` for other names.
+A Deployment model can use an explicit `anthropic/` or `google/` prefix. Gemini
+uses `generateContent` or `streamGenerateContent?alt=sse`. Anthropic uses
+`rawPredict` or `streamRawPredict`, with `anthropic_version: vertex-2023-10-16`
+and no `model` body field. Both use the project and location in the URL.
+Usage follows the selected API format. Cost follows the Cost Card, not the
+subscription rule. Each Virtual Key needs explicit Provider Access.
+
+Use the bare model ID for Cost and Price Cards. Publisher prefixes select a
+route, not a different billable Model. They are removed for card lookup, even
+when the response omits its model name.
+
+Sources: [Vertex locations](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/locations),
+[Claude on Vertex](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude/use-claude),
+and [service-account OAuth](https://developers.google.com/identity/protocols/oauth2/service-account).
+
 ## Gemini CLI subscription
 
 Use `auth = "gemini_cli"`, `kind = "gemini"` and the fixed base URL

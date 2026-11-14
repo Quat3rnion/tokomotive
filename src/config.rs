@@ -131,6 +131,10 @@ pub struct ProviderCfg {
     pub auth: crate::provider::ProviderAuth,
     pub base_url: String,
     #[serde(default)]
+    pub project_id: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+    #[serde(default)]
     pub key_header: Option<crate::provider::KeyHeader>,
     #[serde(default = "crate::provider::default_include_usage")]
     pub include_usage: bool,
@@ -153,6 +157,10 @@ pub struct ModelCfg {
     pub aliases: Vec<String>,
     pub cost: CardCfg,
     pub price: Option<PriceCfg>,
+}
+
+pub fn default_region() -> String {
+    "global".into()
 }
 
 /// Rates in USD per million tokens.
@@ -351,7 +359,7 @@ impl Config {
                     ProviderAuth::Codex => "https://chatgpt.com/backend-api/codex",
                     ProviderAuth::Claude => "https://api.anthropic.com",
                     ProviderAuth::HuggingFace => "https://router.huggingface.co",
-                    ProviderAuth::GoogleVertex => "https://aiplatform.googleapis.com",
+                    ProviderAuth::GoogleVertex => p.base_url.as_str(),
                     ProviderAuth::GithubCopilot => "https://api.githubcopilot.com",
                     ProviderAuth::QwenCode => "https://dashscope.aliyuncs.com/compatible-mode/v1",
                     ProviderAuth::KimiCode => "https://api.kimi.com/coding/v1",
@@ -367,10 +375,23 @@ impl Config {
                     bail!("A Subscription Provider needs the base URL {base} and no API keys.");
                 }
             }
+            if p.auth == ProviderAuth::GoogleVertex {
+                // Old sign-ins have no project yet. Keep the dashboard usable;
+                // the request URL builder refuses an empty project.
+                if !p.project_id.is_empty() {
+                    crate::vertex::validate_project(&p.project_id)?;
+                }
+                if p.base_url != crate::vertex::base_url(&p.region)? {
+                    bail!("Vertex base URL must match its region");
+                }
+            }
             if (matches!(p.kind, ProviderKind::Bedrock | ProviderKind::Cohere)
                 && p.auth != ProviderAuth::ApiKey)
                 || (p.kind == ProviderKind::Gemini
-                    && !matches!(p.auth, ProviderAuth::ApiKey | ProviderAuth::GeminiCli))
+                    && !matches!(
+                        p.auth,
+                        ProviderAuth::ApiKey | ProviderAuth::GeminiCli | ProviderAuth::GoogleVertex
+                    ))
                 || (p.auth == ProviderAuth::GeminiCli && p.kind != ProviderKind::Gemini)
                 || matches!(
                     (p.auth, p.kind),

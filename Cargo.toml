@@ -19,7 +19,7 @@ flate2 = "1"
 hex = "0.4"
 hmac = "0.12"
 crc32fast = "1"
-jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto", "use_pem"] }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.17", default-features = false }
 rand = "0.9"

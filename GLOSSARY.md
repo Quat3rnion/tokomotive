@@ -14,7 +14,7 @@
 
 **Device Code Sign-in** - A sign-in method in which the Operator enters a short code on the account service's verification page. The Proxy waits for approval and connects automatically.
 
-**OAuth Provider** - A Provider that uses an OAuth bearer token. OAuth does not imply a subscription. Hugging Face and Entra requests have normal Cost. Google Vertex sign-in stores a token but cannot route requests until its adapter is available.
+**OAuth Provider** - A Provider that uses an OAuth bearer token. OAuth does not imply a subscription. Hugging Face, Entra and Google Vertex requests have normal Cost. Vertex can use user sign-in or an encrypted service-account JSON key.
 
 **Provider Access** - The Providers that a Virtual Key can use. Subscription and OAuth bearer Providers need explicit permission. Permission to use a Route does not replace Provider Access.
 

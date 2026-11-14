@@ -1367,7 +1367,7 @@ impl ControlChoice {
 pub async fn small_choices(db: &Db, kind: &str) -> Result<Option<Vec<ControlChoice>>> {
     let sql = match kind {
         "providers" => {
-            "SELECT name,auth IN ('chatgpt','claude','codex','github_copilot','qwen_code','kimi_code','gemini_cli') AS subscription FROM providers WHERE auth != 'google_vertex' ORDER BY name LIMIT 31"
+            "SELECT name,auth IN ('chatgpt','claude','codex','github_copilot','qwen_code','kimi_code','gemini_cli') AS subscription FROM providers ORDER BY name LIMIT 31"
         }
         "teams" => "SELECT name,0 AS subscription FROM teams ORDER BY name LIMIT 31",
         _ => anyhow::bail!("unsupported control choices"),
@@ -1390,12 +1390,7 @@ pub async fn search_names(db: &Db, kind: &str, q: &str) -> Result<Vec<Suggestion
     } else {
         "id"
     };
-    let routable = if table == "providers" {
-        " AND auth != 'google_vertex'"
-    } else {
-        ""
-    };
-    Ok(sqlx::query_as(&format!("SELECT {id} AS id,name FROM {table} WHERE instr(lower(name),lower(?)) > 0{routable} ORDER BY name LIMIT 20"))
+    Ok(sqlx::query_as(&format!("SELECT {id} AS id,name FROM {table} WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT 20"))
         .bind(q).fetch_all(db).await?)
 }
 

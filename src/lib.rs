@@ -21,6 +21,7 @@ pub mod translate;
 pub mod translate_gemini;
 pub mod translate_responses;
 pub mod usage;
+pub mod vertex;
 pub mod web;
 
 use axum::Router;

@@ -1,0 +1,2 @@
+ALTER TABLE providers ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE providers ADD COLUMN region TEXT NOT NULL DEFAULT 'global';

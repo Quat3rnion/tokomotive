@@ -6,7 +6,7 @@ use tokomotive::{config::Config, provider::ProviderAuth};
 async fn google_forms_in_browser() {
     use tokomotive::{db, oauth::OAuthEndpoints, state::AppState};
     let script = std::env::var("TOKOMOTIVE_PLAYWRIGHT").expect("Set TOKOMOTIVE_PLAYWRIGHT");
-    let cfg:Config=toml::from_str("[server]\ndatabase='sqlite::memory:'\n[[providers]]\nname='cli'\nkind='gemini'\nauth='gemini_cli'\nbase_url='https://cloudcode-pa.googleapis.com'").unwrap();
+    let cfg:Config=toml::from_str("[server]\ndatabase='sqlite::memory:'\n[[providers]]\nname='cli'\nkind='gemini'\nauth='gemini_cli'\nbase_url='https://cloudcode-pa.googleapis.com'\n[[providers]]\nname='vertex'\nkind='gemini'\nauth='google_vertex'\nbase_url='https://us-central1-aiplatform.googleapis.com'\nproject_id='test-project'\nregion='us-central1'").unwrap();
     let db = db::connect("sqlite::memory:").await.unwrap();
     db::seed(&db, &cfg).await.unwrap();
     let st = AppState::new_with_oauth_endpoints(&cfg, db, None, OAuthEndpoints::default())

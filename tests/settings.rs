@@ -97,7 +97,6 @@ async fn bedrock_credentials_are_encrypted_not_rendered_and_region_is_validated(
     task.abort();
 }
 
-
 #[tokio::test]
 async fn code_assist_preset_uses_paste_panel_without_publishing_secret() {
     let (_dir, _st, url, task) = app().await;
@@ -140,6 +139,69 @@ async fn code_assist_preset_uses_paste_panel_without_publishing_secret() {
     assert!(page.contains("Code Assist"));
     assert!(!page.contains("GOCSPX"));
     assert!(!page.contains("device code"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn vertex_forms_validate_and_store_region_project_without_pending_state() {
+    let (_dir, st, url, task) = app().await;
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    for (project, region, status) in [
+        ("test-project", "us-central1", 303),
+        ("../bad-project", "global", 400),
+        ("test-project", "global.evil", 400),
+    ] {
+        let r = c
+            .post(format!("{url}/admin/providers"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "vertex"),
+                ("auth", "google_vertex"),
+                ("base_url", "https://ignored.example"),
+                ("project_id", project),
+                ("region", region),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status);
+    }
+    let page = c
+        .get(format!("{url}/admin/providers"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!page.contains("adapter pending"));
+    assert!(page.contains("name=\"project_id\" value=\"test-project\""));
+    assert!(page.contains("name=\"region\" value=\"us-central1\""));
+    assert!(page.contains("Service-account JSON key"));
+    let cfg = tokomotive::settings::load(&st.db, &st.secret_key)
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(
+        cfg.providers[0].base_url,
+        "https://us-central1-aiplatform.googleapis.com"
+    );
+    let r = c
+        .post(format!(
+            "{url}/admin/providers/vertex/oauth/service-account"
+        ))
+        .header("cookie", &cookie)
+        .form(&[("service_account", "not json")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let choices = tokomotive::db::search_names(&st.db, "providers", "vertex")
+        .await
+        .unwrap();
+    assert_eq!(choices.len(), 1);
     task.abort();
 }
 
