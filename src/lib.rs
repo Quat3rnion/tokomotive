@@ -12,6 +12,7 @@ pub mod pagination;
 pub mod presets;
 pub mod pricing;
 pub mod provider;
+pub mod provider_types;
 pub mod proxy;
 pub mod ratelimit;
 pub mod routing;

@@ -406,7 +406,8 @@ async fn add_provider_lists_unofficial_device_signins() {
         .text()
         .await
         .unwrap();
-    for option in ["github_copilot", "qwen_code", "kimi_code"] {
+    // The provider picker (no-JavaScript select) lists each sign-in type.
+    for option in ["github-copilot", "qwen-code", "kimi-code"] {
         assert!(html.contains(&format!("value=\"{option}\"")), "{option}");
     }
     for (auth, base) in [

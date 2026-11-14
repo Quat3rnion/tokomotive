@@ -111,7 +111,7 @@ async fn code_assist_preset_uses_paste_panel_without_publishing_secret() {
         .text()
         .await
         .unwrap();
-    assert!(page.contains("value=\"gemini_cli\" selected"));
+    assert!(page.contains("name=\"auth\" value=\"gemini_cli\""));
     assert_eq!(
         c.post(format!("{url}/admin/providers"))
             .header("cookie", &cookie)

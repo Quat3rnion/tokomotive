@@ -621,11 +621,8 @@ changes without a restart. The settings are in
 
 **Providers**:
 
-1. To add a Provider, enter a name, select the authentication and the API
-   format, and enter a base URL. For an API-key Provider, you can also enter a
-   first Provider Key. Select **Add provider**. For **ChatGPT subscription** and
-   **Claude Pro/Max**, the page sets the API format and the base URL. The Proxy
-   also accepts these base URLs with `/v1` at the end.
+1. To add a Provider, use **Add a Provider** at the top of the page. See
+   [Add a Provider](#add-a-provider).
 2. To add a Provider Key, enter the key in **New Provider Key or env:NAME** and
    select **Add key**. The Proxy encrypts the key. The page shows only its last
    4 characters. Enter `env:NAME` to store a reference to an environment
@@ -644,6 +641,71 @@ changes without a restart. The settings are in
    uses the Provider blocks this.
 
 The dashboard asks for confirmation before it deletes or disconnects.
+
+#### Add a Provider
+
+The **Add a Provider** panel is at the top of **Providers**. When there are no
+Providers, the panel is open. When there are Providers, select the
+**Add a Provider** button to open it.
+
+1. Find the Provider in the **Provider** field. Type a name, an alias or an
+   API host. For example, `glm` finds Z.ai, `kimi` finds Moonshot Kimi and
+   Kimi Code, and `ollama` finds **Local server**. Press Down or click the
+   field to see the popular choices. Use Up, Down and Enter to select a
+   result. The list shows at most 20 results.
+2. Each result shows the name, the sign-in type (for example **API key**,
+   **Subscription sign-in**, **Device code** or **Self-hosted**), the source
+   and the API format. **Verified** entries come from the
+   [roster](provider-roster.md). Entries **from models.dev** are not
+   verified. **Custom** entries accept any compatible API.
+3. The form shows only the fields for that Provider. The name is filled with
+   a name that is not in use. Change it if necessary.
+4. Read the summary line, for example
+   `OpenAI format · Bearer key · api.deepseek.com`. It shows what the
+   Provider uses.
+5. Select **Add provider**, or **Add and sign in** for a sign-in type.
+
+The fields for each type:
+
+- **API key**: the base URL and the API key. A verified base URL is
+  read-only. Select **Edit** to change it, for example for a proxy. **Where to
+  get a key** opens the Provider documentation. **Advanced** has the API
+  format, the key header and `stream_options.include_usage`.
+- **Subscriptions** (ChatGPT subscription, ChatGPT via Codex, Claude Pro/Max,
+  GitHub Copilot, Qwen Code, Kimi Code and Gemini CLI): only the name. GitHub
+  Copilot and Kimi Code also have the API format. Read the risk note and its
+  decision record before you continue. **Add and sign in** adds the Provider
+  and shows its sign-in panel. A device-code sign-in shows the code at once.
+- **AWS Bedrock (native, SigV4)**: the AWS region and the AWS credentials.
+- **Google Vertex AI**: the project ID and the region. The user sign-in needs
+  your OAuth client ID and secret. The service-account type needs the JSON
+  key. Paste it, or choose the file.
+- **Azure Entra ID**: the Azure resource URL, the tenant and the client ID.
+- **Hugging Face OAuth**: the client ID or the CIMD address.
+- **Local server**: the base URL, for example `http://localhost:11434/v1`
+  (Ollama), `http://localhost:1234/v1` (LM Studio) or
+  `http://localhost:8000/v1` (vLLM).
+- **Custom OpenAI-compatible** and **Custom Anthropic-compatible**: all
+  fields.
+
+Select **Change provider** to go back to the search. The name that you typed
+stays. After the Provider is added, its card opens and gets the focus. The card
+shows the next steps. For an API-key Provider, select **Test connection**.
+Then select **add a Model**. The Models page opens with the new Provider
+selected.
+
+To open the form directly, use `/admin/providers?add=ID` or
+`/admin/providers?preset=ID`, for example `/admin/providers?add=deepseek`.
+Without JavaScript, the page shows a list of all Providers in groups. Select
+one and select **Continue**.
+
+Scripts can still send the old form fields to `POST /admin/providers`:
+`name`, `auth`, `kind`, `base_url`, `api_key`, `key_header`,
+`include_usage` and the AWS and Vertex fields. The guided form also sends
+`then` (`card` or `signin`) and, for OAuth types, `client_id`,
+`client_secret`, `tenant` or `service_account`.
+`GET /admin/search/provider-types?q=` returns the search results as HTML
+options, or as JSON for `Accept: application/json`.
 
 **Routes**:
 
@@ -1148,12 +1210,10 @@ notice and can break the service terms.
 ### Sign in
 
 1. Log in to `/admin`. Open **Providers**.
-2. Add a Provider. For ChatGPT, select kind **OpenAI**, authentication
-   **ChatGPT subscription (recommended)**, and base URL `https://api.openai.com`.
-   For legacy Codex, select **ChatGPT via Codex (legacy)** and base URL
-   `https://chatgpt.com/backend-api/codex`. For Claude,
-   select kind **Anthropic**, authentication **Claude Pro/Max**, and base URL
-   `https://api.anthropic.com`. Leave the key field empty.
+2. In **Add a Provider**, find **ChatGPT subscription** (recommended),
+   **ChatGPT via Codex (legacy)** or **Claude Pro/Max**. Select
+   **Add and sign in**. The page sets the API format and the base URL. The
+   sign-in panel opens below the form.
 3. For Codex, select **Sign in with a device code**. Copy the large user code.
    Open the verification page in the new tab. Sign in and enter that code.
    Keep the Tokomotive panel open. It connects automatically after approval.
@@ -1244,11 +1304,11 @@ no extra financial controls.
 
 ## Provider presets
 
-Open **Providers** and select a **Preset** above **Add a Provider**. The preset
+Open **Providers** and find the preset in **Add a Provider**. The preset
 fills the name, API format, base URL, key header and stream-usage setting.
-All fields stay editable. With JavaScript off, select **Apply preset** to fill
-the form on the server. The documentation link and key help show which key
-and endpoint to use. A preset does not add a Model or a Cost Card.
+All fields stay editable. With JavaScript off, select the preset and select
+**Continue**. The documentation link and key help show which key and
+endpoint to use. A preset does not add a Model or a Cost Card.
 
 Presets include OpenAI, Anthropic, DeepSeek, Moonshot Kimi, Z.ai, OpenRouter,
 xAI, Mistral, DeepInfra, Nebius, Cerebras, Alibaba DashScope, Azure v1 and the

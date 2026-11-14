@@ -90,6 +90,13 @@ COPY SHEET (GLOSSARY.md)
       `.deployment` row or form; a change of that field updates the results.
     - Content added later (cloned rows): call `toko.pickers(root)`. htmx
       content is set up automatically.
+    - Other lists: `data-endpoint="/admin/search/provider-types"` replaces
+      the model search URL (it gets `?q=` only). `data-strict` allows only
+      listed options: no "Use '<text>'" row, Enter is never a form submit,
+      and the first result of a typed search is active. `data-empty-note`
+      is the note for an empty query. An option with `data-label` shows that
+      label in the input. Each choice sends a bubbling `toko-pick` event with
+      `detail.value` and `detail.label` (see providers.html).
 #}<!doctype html>
 <html lang="en">
 <head>
@@ -393,6 +400,44 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
 .chip button.chip-x:hover { color:var(--bad); }
 .chip svg { display:block; }
 .chip button:focus-visible { outline-offset:-2px; }
+/* Add a Provider: picker and guided form (providers.html). */
+.toolbar.np-top { margin-bottom:var(--sp-2); }
+button.np-open { display:inline-flex; align-items:center; gap:var(--sp-2); min-height:40px; padding:var(--sp-2) var(--sp-4); font-weight:600; }
+.panel.np { border-color:var(--line-input); }
+.panel.np > h2 { margin:0 0 var(--sp-2); }
+.panel.np > h2:focus { outline:none; }
+.np-intro { margin:0 0 var(--sp-3); max-width:60em; }
+.np-error { margin:0 0 var(--sp-3); padding:var(--sp-2) var(--sp-3); border-left:3px solid var(--bad); background:var(--bad-bg); border-radius:0 6px 6px 0; }
+.field.np-search { max-width:40em; }
+.np-nojs > .field.grow { flex:0 1 40em; }
+.np-nojs > button { align-self:flex-end; }
+.np-search .cb > input { width:100%; min-height:40px; font-size:15px; }
+.np-opt-name { font-weight:500; overflow-wrap:anywhere; min-width:0; }
+.np-unofficial { color:var(--warn); }
+.np-form > .row, .np-form > fieldset, .np-form > .np-head, .np-form > .np-wide { align-self:stretch; }
+.np-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:var(--sp-2) var(--sp-4); padding-bottom:var(--sp-3); border-bottom:1px solid var(--line); }
+.np-title { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--sp-1) var(--sp-2); min-width:0; }
+.np-title h3 { margin:0; font-size:16px; overflow-wrap:anywhere; }
+.np-title h3:focus { outline:none; }
+.np-title h3:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.np-title .tag { margin-left:0; }
+.np-tagline { color:var(--muted); font-size:13px; }
+a.np-change { display:inline-block; min-height:24px; line-height:24px; white-space:nowrap; }
+.np-about { margin:0; max-width:60em; }
+.np-lock { display:flex; gap:var(--sp-2); align-items:center; }
+.np-lock > input { flex:1 1 auto; min-width:0; }
+.np-fill { gap:var(--sp-2); margin-top:var(--sp-2); }
+.np-wide textarea { min-height:7em; }
+details.np-adv { align-self:stretch; }
+details.np-adv[open] { padding:var(--sp-3); border:1px solid var(--line); border-radius:8px; }
+details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
+.np-summary { margin:0; align-self:stretch; padding:var(--sp-2) var(--sp-3); background:var(--field); border:1px solid var(--line); border-radius:6px; font-size:13px; overflow-wrap:anywhere; }
+.np-summary-label { color:var(--muted); }
+.np-submit { align-items:center; }
+.np-submit .hint { margin:0; }
+.notice.np-next, .notice.np-done { max-width:60em; }
+.notice.np-next p:last-child, .notice.np-done p { margin-bottom:0; }
+.notice.np-next .test-form { margin-top:var(--sp-3); }
 </style>
 </head>
 <body>
@@ -597,13 +642,15 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
   let serial = 0;
   const svg = d => `<svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const ICON = { up: svg('M4 10l4-4 4 4'), down: svg('M4 6l4 4 4-4'), x: svg('M4.5 4.5l7 7M11.5 4.5l-7 7') };
-  const helpFor = multi => {
-    const id = multi ? 'cb-help-multi' : 'cb-help';
+  const helpFor = (multi, strict) => {
+    const id = strict ? 'cb-help-strict' : multi ? 'cb-help-multi' : 'cb-help';
     if (!document.getElementById(id)) {
       const h = document.createElement('span');
       h.id = id;
       h.className = 'vh';
-      h.textContent = multi
+      h.textContent = strict
+        ? 'Type to search. Down and Up move through the results, Enter selects one.'
+        : multi
         ? 'Type to search. Down and Up move through the results, Enter adds one. Enter or a comma adds the typed name.'
         : 'Type to search. Down and Up move through the results, Enter selects one. You can also type a name.';
       document.body.append(h);
@@ -629,6 +676,8 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
     const ordered = cb.hasAttribute('data-ordered');
     const src = cb.dataset.src || '';
     const free = src === '-';
+    const endpoint = cb.dataset.endpoint || '';
+    const strict = cb.hasAttribute('data-strict');
     const name = labelOf(input) || 'Model';
     const n = ++serial;
     if (!input.id && input.closest('label')) { input.setAttribute('aria-label', name); }
@@ -648,7 +697,7 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
     input.setAttribute('aria-autocomplete', 'list');
     input.setAttribute('aria-expanded', 'false');
     input.setAttribute('aria-controls', list.id);
-    input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), helpFor(multi)].filter(Boolean).join(' '));
+    input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), helpFor(multi, strict)].filter(Boolean).join(' '));
 
     // Multi: one chip (hidden field + buttons) per value.
     let chips = null;
@@ -772,7 +821,7 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
     const show = (found, q, scope, failed) => {
       const taken = values();
       const opts = found.filter(o => !taken.includes(o.dataset.value));
-      const custom = q && !opts.some(o => o.dataset.value === q) && !taken.includes(q);
+      const custom = !strict && q && !opts.some(o => o.dataset.value === q) && !taken.includes(q);
       // The typed text is the last option, so Down reaches the best match first.
       const rows = [...opts];
       if (custom) {
@@ -785,7 +834,9 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
       items.forEach((o, i) => { o.id = `cb${n}-o${i}`; });
       let text = '';
       if (failed) {
-        text = 'Suggestions are not available now. You can type the exact name.';
+        text = strict ? 'Suggestions are not available now. Reload the page and try again.' : 'Suggestions are not available now. You can type the exact name.';
+      } else if (strict) {
+        text = q ? (opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}.` : 'No matches. Try another name, or choose Custom OpenAI-compatible.') : (cb.dataset.emptyNote || '');
       } else if (!free) {
         const where = scope ? ` for Provider ${scope}` : '';
         text = opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}${where}.` : (q ? `No matches${where}. You can use the typed name.` : `No suggestions${where}. Type a name.`);
@@ -793,7 +844,7 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
       note.textContent = text;
       if (!rows.length && !text) { close(); return; }
       open();
-      setActive(want > 0 ? 0 : want < 0 ? items.length - 1 : -1);
+      setActive(want > 0 || (strict && q && want === 0 && items.length) ? 0 : want < 0 ? items.length - 1 : -1);
       want = 0;
       if (text) { toko.say(text); }
     };
@@ -806,7 +857,7 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
       let s = src.split(',').filter(Boolean);
       // A scoped field with no Provider yet: no provider/model ids.
       if (sf && !scope) { s = s.filter(x => x !== 'provider'); }
-      const url = `/admin/search/models?q=${encodeURIComponent(q)}&provider=${encodeURIComponent(scope)}&src=${encodeURIComponent(s.join(','))}&limit=20`;
+      const url = endpoint ? `${endpoint}?q=${encodeURIComponent(q)}` : `/admin/search/models?q=${encodeURIComponent(q)}&provider=${encodeURIComponent(scope)}&src=${encodeURIComponent(s.join(','))}&limit=20`;
       if (ctrl) { ctrl.abort(); }
       ctrl = new AbortController();
       note.textContent = 'Loading...';
@@ -835,12 +886,13 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
         input.value = '';
         close();
       } else {
-        input.value = v;
+        input.value = o.dataset.label || v;
         close();
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        toko.say(`${v} selected.`);
+        toko.say(`${o.dataset.label || v} selected.`);
       }
       input.focus();
+      cb.dispatchEvent(new CustomEvent('toko-pick', { bubbles: true, detail: { value: v, label: o.dataset.label || v } }));
     };
 
     input.addEventListener('input', () => {
@@ -873,7 +925,7 @@ ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-
       } else if (e.key === 'Enter') {
         if (shown && active >= 0) { e.preventDefault(); choose(items[active]); }
         else if (multi && input.value.trim()) { e.preventDefault(); commitText(); }
-        else { close(); }
+        else { if (strict) { e.preventDefault(); } close(); }
       } else if (e.key === 'Escape') {
         if (!pop.hidden) { e.preventDefault(); e.stopPropagation(); close(); }
       } else if (e.key === 'Tab') {

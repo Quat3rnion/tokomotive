@@ -14,10 +14,35 @@
 {% endmacro %}
 
 {% block content %}
-<h1>Providers</h1>
+<div class="toolbar np-top">
+  <h1>Providers</h1>
+  {% if any_provider %}<div class="end"><button type="button" class="np-open" data-toggle="add-provider-panel" aria-expanded="{% if add_open %}true{% else %}false{% endif %}" aria-controls="add-provider-panel" data-js hidden><svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Add a Provider</button></div>{% endif %}
+</div>
 <p class="muted">A Provider is an upstream API, such as OpenAI or Anthropic. The Proxy sends requests to it with its Provider Keys or a subscription. Clients never see these credentials.</p>
-{% include "search.html" %}
-{% if providers.is_empty() %}<p class="empty">No Providers yet. Add the first one below. Then add Models or a Route, a User and a Virtual Key.</p>{% endif %}
+{% if !any_provider %}<p class="empty">No Providers yet. Add the first one here. Then add Models or a Route, a User and a Virtual Key.</p>{% endif %}
+
+<section class="panel np"{% if any_provider && !add_open %} data-collapse{% endif %} id="add-provider-panel" aria-labelledby="add-provider-h">
+  <h2 id="add-provider-h" tabindex="-1">Add a Provider</h2>
+  <div id="np-choose"{% if !add_html.is_empty() %} hidden{% endif %}>
+    <p class="hint np-intro">Choose the Provider first. The form then shows only the fields that it needs. There are {{ type_count }} choices: verified presets, subscriptions, cloud sign-ins, local servers and entries from models.dev.</p>
+    {% if !add_error.is_empty() %}<p class="np-error" role="alert">{{ add_error }}</p>{% endif %}
+    <div class="field np-search" data-js hidden>
+      <label for="np-search">Provider</label>
+      <span class="cb" data-picker="single" data-endpoint="/admin/search/provider-types" data-strict data-empty-note="Popular choices. Type to search names, aliases such as glm, or API hosts."><input id="np-search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="For example DeepSeek, glm, copilot or ollama" aria-describedby="np-search-help"></span>
+      <p class="hint" id="np-search-help">Press Down or click for popular choices.</p>
+    </div>
+    <form method="get" action="/admin/providers#add-provider-h" class="row np-nojs" data-nojs aria-label="Choose a Provider">
+      <div class="field grow"><label for="np-type">Provider</label><select id="np-type" name="preset">
+        {% for (label, list) in groups %}{% if !list.is_empty() %}<optgroup label="{{ label }}">{% for t in list %}<option value="{{ t.id }}">{{ t.label }} ({{ t.tagline }})</option>{% endfor %}</optgroup>{% endif %}{% endfor %}
+      </select></div>
+      <button class="ghost">Continue</button>
+    </form>
+  </div>
+  <div id="np-guided">{{ add_html|safe }}</div>
+</section>
+
+{% if any_provider %}{% include "search.html" %}{% endif %}
+{% if any_provider && providers.is_empty() %}<p class="empty">No Provider matches the search.</p>{% endif %}
 
 {% for p in providers %}
 <section class="panel provider" id="p-{{ p.name }}" aria-labelledby="p-{{ p.name }}-h">
@@ -27,6 +52,16 @@
       <form class="inline" method="post" action="/admin/providers/{{ p.name }}/delete" data-confirm="Delete Provider {{ p.name }}? Routes and Models that use it must be changed first. You cannot undo this."><button class="danger" aria-label="Delete Provider {{ p.name }}">Delete provider</button></form>
     </div>
   </div>
+
+  {% if p.added %}<div class="notice np-next" role="status" tabindex="-1" data-added>
+    <p><strong>{{ p.added_message }}</strong></p>
+    <p>Next step: {% if p.auth == "api_key" && p.kind != "bedrock" && p.kind != "cohere" %}test the connection. Then {% else if p.status.is_some() %}sign in below if it is not connected. Then {% endif %}<a href="/admin/models?provider={{ p.name }}#add-model-h">add a Model</a> or <a href="/admin/routes">a Route</a> that uses {{ p.name }}.{% if p.auth != "api_key" %} Give each Virtual Key that needs it Provider Access on <a href="/admin/keys">Keys</a>.{% endif %}</p>
+    {% if p.auth == "api_key" && p.kind != "bedrock" && p.kind != "cohere" %}<form method="post" action="/admin/providers/{{ p.name }}/test" hx-post="/admin/providers/{{ p.name }}/test" hx-target="find .test-result" hx-swap="innerHTML" class="row test-form" hx-on::before-request="this.querySelector('.test-result').textContent=''">
+      <button data-busy="Testing..." aria-label="Test connection of {{ p.name }} now">Test connection</button>
+      <div class="test-result" role="status"></div>
+      <div class="form-error" role="alert" tabindex="-1"></div>
+    </form>{% endif %}
+  </div>{% endif %}
 
   <form method="post" action="/admin/providers/{{ p.name }}" class="stack" aria-label="Edit Provider {{ p.name }}">
     <input type="hidden" name="auth" value="{{ p.auth }}">
@@ -164,77 +199,10 @@
 </section>
 {% endfor %}
 
-<section class="panel" aria-labelledby="add-provider-h">
-  <h2 id="add-provider-h">Add a Provider</h2>
-  <form method="get" action="/admin/providers#add-provider-h" class="row">
-    <div class="field grow"><label for="np-preset">Preset</label><select id="np-preset" name="preset">
-      {% for item in presets %}<option value="{{ item.name }}"{% if item.name == preset.name %} selected{% endif %} data-name="{{ item.name }}" data-kind="{{ item.kind_name() }}" data-url="{{ item.base_url }}" data-header="{{ item.key_header.as_str() }}" data-usage="{{ item.include_usage }}" data-docs="{{ item.docs }}" data-help="{{ item.key_help }}">{{ item.label }}</option>{% endfor %}
-    </select></div>
-    <button type="submit" class="ghost">Apply preset</button>
-  </form>
-  <p class="hint">A preset fills the Provider fields. Check the authentication before you save.</p>
-  <p class="hint"><a id="np-docs" href="{{ preset.docs }}"{% if preset.docs.is_empty() %} hidden{% endif %}>Provider documentation</a></p>
-  <datalist id="provider-urls"><option value="https://api.openai.com"><option value="https://api.anthropic.com"></datalist>
-  <form method="post" action="/admin/providers" class="stack" id="add-provider">
-    <div class="row">
-      <input type="hidden" name="preset" id="np-preset-id" value="{{ preset.name }}">
-      <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" value="{{ preset.name }}" required autocomplete="off" spellcheck="false" placeholder="openai" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Letters, digits, dot, underscore or hyphen.</p></div>
-      <div class="field"><label for="np-auth">Authentication</label><select id="np-auth" name="auth"><option value="api_key">API key</option><option value="chatgpt">ChatGPT subscription (recommended)</option><option value="codex">ChatGPT via Codex (legacy)</option><option value="claude">Claude Pro/Max</option><option value="hugging_face">Hugging Face OAuth</option><option value="entra">Azure Entra ID</option><option value="google_vertex">Google Vertex AI</option><option value="github_copilot">GitHub Copilot (unofficial)</option><option value="qwen_code">Qwen Code (unofficial)</option><option value="kimi_code">Kimi Code (unofficial)</option><option value="gemini_cli"{% if preset.auth_name() == "gemini_cli" %} selected{% endif %}>Gemini CLI (Code Assist, unofficial)</option></select></div>
-      <div class="field"><label for="np-kind">API format</label><select id="np-kind" name="kind"><option value="openai"{% if preset.kind_name() == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if preset.kind_name() == "anthropic" %} selected{% endif %}>Anthropic</option><option value="gemini"{% if preset.kind_name() == "gemini" %} selected{% endif %}>Gemini</option><option value="bedrock"{% if preset.kind_name() == "bedrock" %} selected{% endif %}>AWS Bedrock</option><option value="cohere"{% if preset.kind_name() == "cohere" %} selected{% endif %}>Cohere</option></select></div>
-    </div>
-    <div class="row">
-      <div class="field grow"><label for="np-url">Base URL</label><input id="np-url" name="base_url" value="{{ preset.base_url }}" required list="provider-urls" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com" aria-describedby="np-url-help"><p class="hint" id="np-url-help">Use the preset address, or enter your API base URL. Replace any resource placeholder.</p></div>
-      <div class="field grow" data-key-field><label for="np-key">Provider Key or env:NAME (optional)</label><input id="np-key" type="password" name="api_key" autocomplete="off" spellcheck="false" aria-describedby="np-key-help"><p class="hint" id="np-key-help">{{ preset.key_help }}</p><p class="hint">You can add more keys later. A subscription uses Sign in instead.</p></div>
-    </div>
-    <div class="row" id="np-api-settings">
-      <div class="field"><label for="np-header">Key header</label><select id="np-header" name="key_header"><option value="bearer"{% if preset.key_header.as_str() == "bearer" %} selected{% endif %}>Authorization: Bearer</option><option value="x-api-key"{% if preset.key_header.as_str() == "x-api-key" %} selected{% endif %}>x-api-key</option><option value="api-key"{% if preset.key_header.as_str() == "api-key" %} selected{% endif %}>api-key (Azure)</option><option value="x-goog-api-key"{% if preset.key_header.as_str() == "x-goog-api-key" %} selected{% endif %}>x-goog-api-key</option></select></div>
-      <div class="field"><label for="np-usage">Send stream_options.include_usage</label><select id="np-usage" name="include_usage"><option value="true"{% if preset.include_usage %} selected{% endif %}>On</option><option value="false"{% if !preset.include_usage %} selected{% endif %}>Off</option></select><p class="hint">Off leaves client options unchanged. The Proxy still reads final usage.</p></div>
-    </div>
-    <div class="row" data-vertex-fields>
-      <div class="field"><label for="np-project">Vertex project ID</label><input id="np-project" name="project_id" pattern="[a-z][a-z0-9-]{4,28}[a-z0-9]" autocomplete="off"><p class="hint">For Google Vertex AI only.</p></div>
-      <div class="field"><label for="np-region">Vertex region</label><input id="np-region" name="region" value="global" autocomplete="off"><p class="hint">Use a region such as us-central1, or global.</p></div>
-    </div>
-    <div class="form-error" role="alert" tabindex="-1"></div>
-    <fieldset id="np-aws"{% if preset.kind_name() != "bedrock" %} hidden{% endif %}>
-      <legend>AWS credentials</legend>
-      <div class="row">
-        <div class="field"><label for="np-region">AWS region</label><input id="np-region" name="aws_region" value="us-east-1" pattern="[a-z]{2}(-[a-z]+){1,3}-[0-9]"></div>
-        <div class="field grow"><label for="np-access">AWS access key ID</label><input id="np-access" type="password" name="aws_access_key" autocomplete="off"></div>
-        <div class="field grow"><label for="np-secret">AWS secret access key</label><input id="np-secret" type="password" name="aws_secret_key" autocomplete="new-password"></div>
-        <div class="field grow"><label for="np-token">AWS session token (optional)</label><input id="np-token" type="password" name="aws_session_token" autocomplete="off"></div>
-      </div>
-      <p class="hint">The region sets the fixed AWS host. Saved credentials are encrypted and are not shown again.</p>
-    </fieldset>
-    <div><button>Add provider</button></div>
-  </form>
-</section>
 {% include "pager.html" %}
 {% endblock %}
 {% block scripts %}
 <script>
-(() => {
-  const preset = document.getElementById('np-preset');
-  const auth = document.getElementById('np-auth');
-  const settings = document.getElementById('np-api-settings');
-  if (!preset || !auth || !settings) { return; }
-  auth.addEventListener('change', () => { settings.hidden = auth.value !== 'api_key'; });
-  preset.addEventListener('change', () => {
-    const p = preset.selectedOptions[0].dataset;
-    auth.value = preset.value === 'gemini-cli' ? 'gemini_cli' : 'api_key';
-    document.getElementById('np-preset-id').value = preset.value;
-    document.getElementById('np-name').value = p.name;
-    document.getElementById('np-kind').value = p.kind;
-    document.getElementById('np-url').value = p.url;
-    document.getElementById('np-header').value = p.header;
-    document.getElementById('np-usage').value = p.usage;
-    document.getElementById('np-key-help').textContent = p.help;
-    const docs = document.getElementById('np-docs');
-    docs.href = p.docs;
-    docs.hidden = !p.docs;
-    auth.dispatchEvent(new Event('change'));
-    document.getElementById('np-kind').dispatchEvent(new Event('change'));
-  });
-})();
 (() => {
   // Move focus to a new sign-in panel (once per page load).
   if (!window.tokoSignin) {
@@ -243,48 +211,138 @@
       const t = e.detail.target;
       const h = t && t.classList && t.classList.contains('signin') && t.querySelector('[data-focus]');
       if (h) { h.focus(); }
+      // Add and sign in: the Provider exists now; the form is done.
+      if (t && t.id === 'np-signin' && e.detail.xhr && e.detail.xhr.status < 300) {
+        const f = document.getElementById('add-provider');
+        if (f) { f.hidden = true; }
+      }
     });
   }
-  // A subscription has a fixed API format and base URL, and no key field.
-  const form = document.getElementById('add-provider');
-  if (!form) { return; }
-  const auth = form.querySelector('#np-auth');
-  const kind = form.querySelector('#np-kind');
-  const url = form.querySelector('#np-url');
-  const keyField = form.querySelector('[data-key-field]');
-  const fixed = { chatgpt: ['openai', 'https://api.openai.com'], codex: ['openai', 'https://chatgpt.com/backend-api/codex'], claude: ['anthropic', 'https://api.anthropic.com'], hugging_face: ['openai', 'https://router.huggingface.co'], google_vertex: ['openai', 'https://aiplatform.googleapis.com'], entra: ['openai', ''], github_copilot: ['openai', 'https://api.githubcopilot.com'], qwen_code: ['openai', 'https://dashscope.aliyuncs.com/compatible-mode/v1'], kimi_code: ['openai', 'https://api.kimi.com/coding/v1'] };
-  let auto = '';
-  const sync = () => {
-    fixed.gemini_cli = ['gemini', 'https://cloudcode-pa.googleapis.com'];
-    fixed.google_vertex = ['gemini', 'https://aiplatform.googleapis.com'];
-    const f = fixed[auth.value];
-    const vertex = auth.value === 'google_vertex';
-    form.querySelector('[data-vertex-fields]').hidden = !vertex;
-    form.querySelector('#np-project').required = vertex;
-    form.querySelector('#np-region').required = vertex;
-    keyField.hidden = !!f;
-    url.readOnly = !!f && auth.value !== 'entra';
-    [...kind.options].forEach(o => { o.disabled = !!f && !['github_copilot', 'kimi_code'].includes(auth.value) && o.value !== f[0]; });
-    if (f) {
-      kind.value = f[0];
-      url.value = auto = f[1];
-      keyField.querySelector('input').value = '';
-    } else if (auto && url.value === auto) {
-      url.value = auto = '';
+})();
+(() => {
+  // Add a Provider: the searchable picker and the guided form.
+  const panel = document.getElementById('add-provider-panel');
+  if (!panel || panel.dataset.ready) { return; }
+  panel.dataset.ready = 'true';
+  document.querySelectorAll('[data-js]').forEach(el => { el.hidden = false; });
+  panel.querySelectorAll('[data-nojs]').forEach(el => {
+    el.hidden = true;
+    el.querySelectorAll('select, button').forEach(c => { c.disabled = true; });
+  });
+  const choose = document.getElementById('np-choose');
+  const guided = document.getElementById('np-guided');
+  const search = document.getElementById('np-search');
+  let kept = '';
+  const nameOf = () => guided.querySelector('#np-name');
+  const url = id => `/admin/providers?add=${encodeURIComponent(id)}#add-provider-h`;
+  const setupForm = root => {
+    const form = root.querySelector('#add-provider');
+    if (!form) { return; }
+    const name = form.querySelector('#np-name');
+    if (name) { name.addEventListener('input', () => { kept = name.value.trim(); }); }
+    // A verified base URL is read-only until Edit.
+    form.querySelectorAll('input[data-lock]').forEach(input => {
+      input.readOnly = true;
+      const b = form.querySelector(`[data-unlock="${input.id}"]`);
+      if (!b) { return; }
+      b.hidden = false;
+      b.setAttribute('aria-pressed', 'false');
+      b.setAttribute('aria-label', 'Edit the base URL');
+    });
+    summary(form);
+  };
+  // "OpenAI format · Bearer key · api.deepseek.com".
+  const summary = form => {
+    const out = form.querySelector('[data-summary]');
+    if (!out) { return; }
+    const kind = form.querySelector('select[name=kind]');
+    const fmt = kind ? kind.selectedOptions[0].dataset.sum : out.dataset.format;
+    const header = form.querySelector('select[name=key_header]');
+    const parts = out.textContent.split(' · ');
+    const auth = header ? header.selectedOptions[0].dataset.sum : parts[1];
+    let host = out.dataset.host || 'no base URL yet';
+    const u = form.querySelector('input[name=base_url]:not([type=hidden])');
+    if (u) {
+      try { host = new URL(u.value.trim()).host || host; } catch (_) { host = u.value.trim() ? 'check the base URL' : 'no base URL yet'; }
     }
+    const region = form.querySelector('input[name=aws_region]');
+    if (region) { host = `bedrock-runtime.${region.value.trim() || 'REGION'}.amazonaws.com`; }
+    const projectRegion = form.querySelector('input[name=region]');
+    if (projectRegion) { const r = projectRegion.value.trim(); host = r && r !== 'global' ? `${r}-aiplatform.googleapis.com` : 'aiplatform.googleapis.com'; }
+    out.textContent = [fmt, auth, host].filter(Boolean).join(' · ');
   };
-  auth.addEventListener('change', sync);
-  sync();
-  const awsSync = () => {
-    const aws = kind.value === 'bedrock';
-    document.getElementById('np-aws').hidden = !aws;
-    document.getElementById('np-api-settings').hidden = aws || kind.value === 'cohere' || auth.value !== 'api_key';
-    keyField.hidden = aws || auth.value !== 'api_key';
-    url.readOnly = aws || (!!fixed[auth.value] && auth.value !== 'entra');
+  const show = (id, label) => {
+    const q = new URLSearchParams({ type: id, name: kept });
+    htmx.ajax('GET', `/admin/provider-form?${q}`, { target: guided, swap: 'innerHTML' }).then(() => {
+      if (!guided.querySelector('#add-provider')) { return; }
+      choose.hidden = true;
+      setupForm(guided);
+      history.replaceState(null, '', url(id));
+      const h = guided.querySelector('#np-form-h');
+      if (h) { h.focus(); }
+      window.toko.say(`${label}. The form for this Provider is open.`);
+    });
   };
-  kind.addEventListener('change', awsSync);
-  auth.addEventListener('change', awsSync);
-  awsSync();
+  panel.addEventListener('toko-pick', e => { show(e.detail.value, e.detail.label); });
+  panel.addEventListener('click', e => {
+    const change = e.target.closest('[data-np-change]');
+    if (change) {
+      e.preventDefault();
+      const n = nameOf();
+      if (n && kept) { kept = n.value.trim(); }
+      guided.replaceChildren();
+      choose.hidden = false;
+      history.replaceState(null, '', '/admin/providers?add=#add-provider-h');
+      search.value = '';
+      search.focus();
+      return;
+    }
+    const unlock = e.target.closest('[data-unlock]');
+    if (unlock) {
+      const input = document.getElementById(unlock.dataset.unlock);
+      input.readOnly = !input.readOnly;
+      unlock.setAttribute('aria-pressed', String(!input.readOnly));
+      unlock.textContent = input.readOnly ? 'Edit' : 'Lock';
+      if (!input.readOnly) { input.focus(); input.select(); }
+      return;
+    }
+    const fill = e.target.closest('[data-fill]');
+    if (fill) {
+      const input = document.getElementById(fill.dataset.fill);
+      input.value = fill.dataset.value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+    }
+  });
+  panel.addEventListener('input', e => { const f = e.target.closest('#add-provider'); if (f) { summary(f); } });
+  panel.addEventListener('change', e => {
+    const f = e.target.closest('#add-provider');
+    if (f) { summary(f); }
+    const file = e.target.closest('input[type=file][data-json-into]');
+    if (file && file.files[0]) {
+      const r = new FileReader();
+      r.onload = () => { document.getElementById(file.dataset.jsonInto).value = String(r.result); window.toko.say('The key file is read.'); };
+      r.readAsText(file.files[0]);
+    }
+  });
+  // The toggle focuses the first control; prefer the visible step.
+  document.addEventListener('click', e => {
+    if (!e.target.closest('[data-toggle="add-provider-panel"]') || panel.hidden) { return; }
+    const target = choose.hidden ? guided.querySelector('#np-form-h') : search;
+    if (target) { setTimeout(() => target.focus(), 0); }
+  });
+  setupForm(guided);
+  // A new Provider: its card takes focus.
+  // After load: the #fragment navigation runs first and would reset focus.
+  const added = document.querySelector('[data-added]');
+  const focusAdded = () => {
+    const card = added.closest('section');
+    if (card) { card.scrollIntoView({ block: 'start' }); }
+    added.focus({ preventScroll: true });
+  };
+  if (added) {
+    if (document.readyState === 'complete') { focusAdded(); } else { window.addEventListener('load', () => setTimeout(focusAdded, 0), { once: true }); }
+  }
 })();
 </script>
 {% endblock %}

@@ -1028,6 +1028,8 @@ pub struct ModelView {
 #[template(path = "models.html")]
 pub struct ModelsPage {
     pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
+    /// The Provider that "Add a Model" preselects (`?provider=`).
+    pub new_provider: String,
     pub pager: crate::pagination::Pager,
     pub base: Base,
     pub models: Vec<ModelView>,
@@ -1046,6 +1048,7 @@ impl ModelsPage {
     ) -> ModelsPage {
         ModelsPage {
             provider_choices: None,
+            new_provider: String::new(),
             pager: Default::default(),
             base,
             models: models

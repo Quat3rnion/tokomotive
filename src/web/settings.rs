@@ -2,6 +2,7 @@
 use super::*;
 use crate::config::{Config, DeploymentCfg, ProviderCfg, RouteCfg, Strategy};
 use crate::provider::ProviderKind;
+use crate::provider_types::ProviderType;
 use crate::settings as store;
 use anyhow::Context;
 use sqlx::Row;
@@ -18,6 +19,8 @@ pub(super) fn router() -> Router<AppState> {
             post(delete_key),
         )
         .route("/admin/providers/{name}/test", post(test_provider))
+        .route("/admin/search/provider-types", get(search_provider_types))
+        .route("/admin/provider-form", get(provider_form))
         .route("/admin/routes", get(routes).post(create_route))
         .route("/admin/routes/{name}", post(update_route))
         .route("/admin/routes/{name}/delete", post(delete_route))
@@ -577,10 +580,62 @@ struct ProvidersPage {
     pager: Pager,
     base: Base,
     providers: Vec<ProviderView>,
-    presets: Vec<crate::presets::PresetChoice>,
-    preset: crate::presets::PresetChoice,
+    /// The no-JavaScript provider select: (group label, types).
+    groups: Vec<(&'static str, Vec<ProviderType>)>,
+    type_count: usize,
+    /// The guided form of the chosen type (`?add=` or `?preset=`), as
+    /// rendered provider_add.html.
+    add_html: String,
+    /// The Add a Provider panel starts open.
+    add_open: bool,
+    /// There is at least one Provider (the panel can collapse).
+    any_provider: bool,
+    add_error: String,
+}
+/// The guided Add a Provider form for one provider type.
+struct AddForm {
+    t: ProviderType,
+    name: String,
+}
+impl AddForm {
+    fn signin(&self) -> bool {
+        use crate::provider_types::Category;
+        matches!(
+            self.t.category,
+            Category::Subscription | Category::Vertex | Category::Entra | Category::HuggingFace
+        )
+    }
+    fn api_key(&self) -> bool {
+        use crate::provider_types::Category;
+        matches!(
+            self.t.category,
+            Category::ApiKey | Category::Local | Category::Custom
+        )
+    }
+    fn cat(&self) -> &'static str {
+        self.t.category_name()
+    }
+}
+#[derive(Template)]
+#[template(path = "provider_add.html")]
+struct AddFormFragment {
+    form: AddForm,
+}
+#[derive(Template)]
+#[template(path = "provider_type_options.html")]
+struct TypeOptions {
+    hits: Vec<ProviderType>,
+}
+#[derive(Template)]
+#[template(path = "provider_added_signin.html")]
+struct AddedSignin {
+    name: String,
+    panel: String,
 }
 struct ProviderView {
+    /// Just added: the card shows the next steps and takes focus.
+    added: bool,
+    added_message: String,
     aws_region: String,
     aws_saved: bool,
     project_id: String,
@@ -748,6 +803,97 @@ struct ProvidersQ {
     pool_page: Option<i64>,
     pool_provider: Option<String>,
     preset: Option<String>,
+    /// A provider type ID: opens the guided form (an empty value opens the
+    /// picker).
+    add: Option<String>,
+    /// The name of a Provider that was just added.
+    added: Option<String>,
+}
+
+async fn provider_types(st: &AppState) -> anyhow::Result<Vec<ProviderType>> {
+    Ok(crate::provider_types::catalog(
+        &crate::presets::merged(&st.db).await?,
+    ))
+}
+
+/// The type's base name, or the base name with the first free `-N`.
+async fn suggest_name(st: &AppState, base: &str) -> anyhow::Result<String> {
+    let taken: std::collections::HashSet<String> =
+        sqlx::query_scalar("SELECT name FROM providers WHERE substr(name,1,?)=?")
+            .bind(base.len() as i64)
+            .bind(base)
+            .fetch_all(&st.db)
+            .await?
+            .into_iter()
+            .collect();
+    if !taken.contains(base) {
+        return Ok(base.into());
+    }
+    Ok((2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|c| !taken.contains(c))
+        .unwrap_or_else(|| base.into()))
+}
+
+async fn add_form(st: &AppState, t: ProviderType, name: Option<&str>) -> anyhow::Result<AddForm> {
+    let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n.chars().take(64).collect(),
+        None => suggest_name(st, &t.name_base()).await?,
+    };
+    Ok(AddForm { t, name })
+}
+
+#[derive(Deserialize)]
+struct TypeSearchQ {
+    #[serde(default)]
+    q: String,
+}
+
+/// The provider picker search: `<li role="option">` items for the picker,
+/// or JSON for `Accept: application/json`. At most 20 results.
+async fn search_provider_types(
+    _: Admin,
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<TypeSearchQ>,
+) -> Response {
+    let types = tryr!(provider_types(&st).await);
+    let text: String = q.q.chars().take(200).collect();
+    let hits: Vec<ProviderType> = crate::provider_types::search(&types, &text)
+        .into_iter()
+        .cloned()
+        .collect();
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !headers.contains_key("hx-request") && !accept.contains("text/html") {
+        return axum::Json(hits).into_response();
+    }
+    render(TypeOptions { hits })
+}
+
+#[derive(Deserialize)]
+struct TypeFormQ {
+    #[serde(default, rename = "type")]
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// The guided form of one provider type, for the picker (htmx).
+async fn provider_form(
+    _: Admin,
+    State(st): State<AppState>,
+    Query(q): Query<TypeFormQ>,
+) -> Response {
+    let types = tryr!(provider_types(&st).await);
+    let Some(t) = types.into_iter().find(|t| t.id == q.id) else {
+        return bad("This Provider type is not known. Search again.");
+    };
+    render(AddFormFragment {
+        form: tryr!(add_form(&st, t, Some(&q.name)).await),
+    })
 }
 
 async fn providers(
@@ -850,6 +996,8 @@ async fn providers(
             vec![]
         };
         providers.push(ProviderView {
+            added: false,
+            added_message: String::new(),
             aws_region: crate::sigv4::region_from_base(row.get::<&str, _>("base_url"))
                 .unwrap_or("")
                 .into(),
@@ -894,23 +1042,71 @@ async fn providers(
             keys,
         });
     }
-    let presets = tryr!(crate::presets::merged(&st.db).await);
-    let preset = presets
-        .iter()
-        .find(|p| Some(p.name.as_str()) == query.preset.as_deref())
-        .unwrap_or(&presets[0])
-        .clone();
+    let mut base = Base::new(&st);
+    if let Some(name) = &query.added
+        && let Some(p) = providers.iter_mut().find(|p| &p.name == name)
+    {
+        // The card shows the success message with the next steps.
+        p.added = true;
+        p.added_message = base
+            .flash
+            .take()
+            .unwrap_or_else(|| format!("Provider {name} added."));
+    }
+    let any_provider: bool = tryr!(
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM providers)")
+            .fetch_one(&st.db)
+            .await
+    );
+    let types = tryr!(provider_types(&st).await);
+    let wanted = query.add.or(query.preset);
+    let mut add_error = String::new();
+    let mut add_html = String::new();
+    if let Some(id) = wanted.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        match types.iter().find(|t| t.id == id) {
+            Some(t) => {
+                let form = tryr!(add_form(&st, t.clone(), None).await);
+                add_html = tryr!(AddFormFragment { form }.render());
+            }
+            None => {
+                add_error =
+                    format!("No Provider type has the ID {id}. Search for the Provider below.")
+            }
+        }
+    }
+    let groups = crate::provider_types::groups(&types)
+        .into_iter()
+        .map(|(label, list)| (label, list.into_iter().cloned().collect()))
+        .collect();
     render(ProvidersPage {
         pager,
-        base: Base::new(&st),
+        base,
         providers,
-        presets,
-        preset,
+        groups,
+        type_count: types.len(),
+        add_open: wanted.is_some() || !any_provider,
+        add_html,
+        any_provider,
+        add_error,
     })
 }
 
 #[derive(Deserialize)]
 struct ProviderForm {
+    /// The guided form: "card" opens the new card, "signin" also starts
+    /// the sign-in. Empty for the old form (back to the list).
+    #[serde(default)]
+    then: String,
+    /// OAuth client settings that the guided form saves with a new Provider.
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    client_secret: String,
+    #[serde(default)]
+    tenant: String,
+    /// A Vertex service-account JSON key for a new Provider.
+    #[serde(default)]
+    service_account: String,
     #[serde(default)]
     aws_region: String,
     #[serde(default)]
@@ -959,9 +1155,11 @@ fn encode_key(st: &AppState, key: &str) -> anyhow::Result<String> {
 async fn create_provider(
     admin: Admin,
     State(st): State<AppState>,
+    headers: HeaderMap,
     Form(f): Form<ProviderForm>,
 ) -> Response {
-    save_provider(admin, st, None, f).await
+    let hx = headers.contains_key("hx-request");
+    save_provider(admin, st, None, f, hx).await
 }
 async fn update_provider(
     admin: Admin,
@@ -969,13 +1167,14 @@ async fn update_provider(
     Path(name): Path<String>,
     Form(f): Form<ProviderForm>,
 ) -> Response {
-    save_provider(admin, st, Some(name), f).await
+    save_provider(admin, st, Some(name), f, false).await
 }
 async fn save_provider(
     _: Admin,
     st: AppState,
     old: Option<String>,
     mut f: ProviderForm,
+    hx: bool,
 ) -> Response {
     use crate::provider::ProviderAuth;
     f.name = f.name.trim().into();
@@ -1007,7 +1206,7 @@ async fn save_provider(
     ) {
         f.base_url = f.base_url.trim_end_matches("/v1").into();
     }
-    let _guard = st.settings_write.lock().await;
+    let guard = st.settings_write.lock().await;
     let added = old.is_none();
     let aws_credentials = if f.kind == ProviderKind::Bedrock {
         if f.auth != ProviderAuth::ApiKey || !f.api_key.is_empty() {
@@ -1189,8 +1388,82 @@ async fn save_provider(
     );
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
-    let verb = if added { "added" } else { "saved" };
-    saved("/admin/providers", &format!("Provider {} {verb}.", f.name))
+    if !added {
+        return saved("/admin/providers", &format!("Provider {} saved.", f.name));
+    }
+    drop(_oauth_guard);
+    drop(guard);
+    after_add(st, f, hx).await
+}
+
+/// Saves the credentials of the guided form, then opens the new card or
+/// starts the sign-in. A refused credential removes the new Provider again.
+async fn after_add(st: AppState, f: ProviderForm, hx: bool) -> Response {
+    use crate::oauth::Flow;
+    use crate::provider::ProviderAuth;
+    let name = f.name.clone();
+    let flow = Flow::from_auth(f.auth);
+    let account = f.service_account.trim();
+    let result = if f.auth == ProviderAuth::GoogleVertex && !account.is_empty() {
+        st.oauth
+            .configure_service_account(&name, account)
+            .await
+            .map_err(|_| "Check the service-account JSON key and its Google Cloud permissions.")
+    } else if let Some(flow) = flow.filter(|_| {
+        !f.client_id.trim().is_empty()
+            || (f.auth == ProviderAuth::GithubCopilot && !f.tenant.trim().is_empty())
+    }) {
+        st.oauth
+            .configure(
+                &name,
+                flow,
+                crate::oauth::ClientOptions {
+                    client_id: f.client_id.trim().into(),
+                    client_secret: f.client_secret.trim().into(),
+                    tenant: f.tenant.trim().into(),
+                    scope: String::new(),
+                },
+            )
+            .await
+            .map_err(|_| "Check the client ID, secret and tenant settings. For CIMD, use the public HTTPS metadata URL with no secret.")
+    } else {
+        Ok(())
+    };
+    if let Err(message) = result {
+        let _guard = st.settings_write.lock().await;
+        tryr!(
+            sqlx::query("DELETE FROM providers WHERE name=?")
+                .bind(&name)
+                .execute(&st.db)
+                .await
+        );
+        tryr!(st.reload_settings().await);
+        return form_error(format!("{message} The Provider was not added."));
+    }
+    let card = format!("/admin/providers?added={name}#p-{name}");
+    let signin = f.then == "signin" && flow.is_some() && account.is_empty();
+    if signin && hx {
+        let panel = super::oauth::start_panel(st, name.clone()).await;
+        if panel.status() == StatusCode::OK {
+            let body = tryr!(axum::body::to_bytes(panel.into_body(), 1 << 20).await);
+            return render(AddedSignin {
+                name,
+                panel: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
+        return saved(
+            &card,
+            &format!("Provider {name} added. Sign-in did not start. Select Sign in to try again."),
+        );
+    }
+    match f.then.as_str() {
+        "signin" if signin => saved(
+            &card,
+            &format!("Provider {name} added. Select Sign in to connect it."),
+        ),
+        "signin" | "card" => saved(&card, &format!("Provider {name} added.")),
+        _ => saved("/admin/providers", &format!("Provider {name} added.")),
+    }
 }
 
 async fn delete_provider(

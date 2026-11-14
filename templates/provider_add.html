@@ -1,0 +1,129 @@
+{#
+The guided Add a Provider form for one provider type (`form`: AddForm in
+web/settings.rs). providers.html shows it for `?add=ID` and `?preset=ID`;
+GET /admin/provider-form?type=ID&name= returns it for the picker.
+#}
+{%- macro kind_select(t, label) -%}
+<div class="field"><label for="np-kind">{{ label }}</label><select id="np-kind" name="kind">
+  <option data-sum="OpenAI format" value="openai"{% if t.kind_name() == "openai" %} selected{% endif %}>OpenAI</option>
+  <option data-sum="Anthropic format" value="anthropic"{% if t.kind_name() == "anthropic" %} selected{% endif %}>Anthropic</option>
+  {% if !t.kind_choice || t.category_name() == "custom" %}<option data-sum="Gemini format" value="gemini"{% if t.kind_name() == "gemini" %} selected{% endif %}>Gemini</option>
+  <option data-sum="Cohere format" value="cohere"{% if t.kind_name() == "cohere" %} selected{% endif %}>Cohere</option>{% endif %}
+</select></div>
+{%- endmacro -%}
+{%- macro key_settings(t) -%}
+<div class="field"><label for="np-header">Key header</label><select id="np-header" name="key_header">
+  <option data-sum="Bearer key" value="bearer"{% if t.key_header.as_str() == "bearer" %} selected{% endif %}>Authorization: Bearer</option>
+  <option data-sum="x-api-key key" value="x-api-key"{% if t.key_header.as_str() == "x-api-key" %} selected{% endif %}>x-api-key</option>
+  <option data-sum="api-key key (Azure)" value="api-key"{% if t.key_header.as_str() == "api-key" %} selected{% endif %}>api-key (Azure)</option>
+  <option data-sum="x-goog-api-key key" value="x-goog-api-key"{% if t.key_header.as_str() == "x-goog-api-key" %} selected{% endif %}>x-goog-api-key</option>
+</select></div>
+<div class="field"><label for="np-usage">Send stream_options.include_usage</label><select id="np-usage" name="include_usage" aria-describedby="np-usage-help"><option value="true"{% if t.include_usage %} selected{% endif %}>On</option><option value="false"{% if !t.include_usage %} selected{% endif %}>Off</option></select><p class="hint" id="np-usage-help">Off leaves client options unchanged. The Proxy still reads final usage.</p></div>
+{%- endmacro -%}
+<form method="post" action="/admin/providers" class="stack np-form" id="add-provider" aria-labelledby="np-form-h" data-cat="{{ form.cat() }}"{% if form.signin() %} hx-post="/admin/providers" hx-target="#np-signin" hx-swap="innerHTML"{% endif %}>
+  <div class="np-head">
+    <div class="np-title">
+      <h3 id="np-form-h" tabindex="-1">{{ form.t.label }}</h3>
+      <span class="tag{% if form.t.source_label() == "Verified" %} good{% else if form.t.source_label() == "Custom" %} info{% endif %}">{{ form.t.source_label() }}</span>{% if form.t.unofficial %}<span class="tag warn">Unofficial</span>{% endif %}
+      <span class="np-tagline">{{ form.t.tagline }}</span>
+    </div>
+    <a class="np-change" href="/admin/providers?add=#add-provider-h" data-np-change>Change provider</a>
+  </div>
+  {% if !form.t.about.is_empty() %}<p class="np-about">{{ form.t.about }}</p>{% endif %}
+  {% if let Some((risk, adr)) = form.t.risk %}<p class="hint warn-note">{{ risk }} <a href="https://github.com/Quat3rnion/tokomotive/blob/main/docs/adr/{{ adr }}" target="_blank" rel="noopener noreferrer">Read the decision record (opens in a new tab)</a>.</p>{% endif %}
+  <input type="hidden" name="then" value="{% if form.signin() %}signin{% else %}card{% endif %}">
+  {% if form.t.preset %}<input type="hidden" name="preset" value="{{ form.t.id }}">{% endif %}
+  <input type="hidden" name="auth" value="{{ form.t.auth_name() }}">
+  <div class="row">
+    <div class="field"><label for="np-name">Name</label><input id="np-name" name="name" value="{{ form.name }}" required autocomplete="off" spellcheck="false" aria-describedby="np-name-help"><p class="hint" id="np-name-help">Routes, Models and clients use this name. Use letters, digits, dot, underscore or hyphen.</p></div>
+    {% if form.cat() == "custom" %}{% call kind_select(form.t, "API format") %}{% endif %}
+    {% if form.cat() == "subscription" && form.t.kind_choice %}{% call kind_select(form.t, "API format") %}{% endif %}
+  </div>
+
+  {% if form.api_key() %}
+  <div class="row">
+    <div class="field grow"><label for="np-url">Base URL</label><div class="np-lock"><input id="np-url" name="base_url" value="{{ form.t.base_url }}" required autocomplete="off" spellcheck="false" inputmode="url"{% if form.cat() == "local" %} placeholder="http://localhost:11434/v1"{% else if form.cat() == "custom" %} placeholder="https://llm.example.com/v1"{% endif %}{% if form.t.locked() %} data-lock{% endif %} aria-describedby="np-url-help"><button type="button" class="ghost" data-unlock="np-url" aria-controls="np-url" hidden>Edit</button></div>
+      <p class="hint" id="np-url-help">{% if form.t.locked() %}This is the verified address. Select Edit only for another region or a proxy.{% else if form.t.base_url.contains("<") %}Replace the part in angle brackets with your resource name.{% else if form.cat() == "local" %}Enter the address of your server, with the API version path.{% else if form.cat() == "custom" %}Enter the API base URL. It can include a version path, such as /v1.{% else %}This address comes from models.dev. Check it with the Provider documentation.{% endif %}</p>
+      {% if form.cat() == "local" %}<p class="hint np-examples">Examples: Ollama <code>http://localhost:11434/v1</code>, LM Studio <code>http://localhost:1234/v1</code>, vLLM <code>http://localhost:8000/v1</code>. Use the host name of the server if it runs on another computer.</p>
+      <div class="row np-fill" data-js hidden><button type="button" class="ghost" data-fill="np-url" data-value="http://localhost:11434/v1">Use Ollama</button><button type="button" class="ghost" data-fill="np-url" data-value="http://localhost:1234/v1">Use LM Studio</button><button type="button" class="ghost" data-fill="np-url" data-value="http://localhost:8000/v1">Use vLLM</button></div>{% endif %}
+    </div>
+  </div>
+  <div class="row">
+    <div class="field grow"><label for="np-key">API key{% if form.cat() != "api_key" %} (optional){% endif %}</label><input id="np-key" type="password" name="api_key" autocomplete="off" spellcheck="false" aria-describedby="np-key-help"><p class="hint" id="np-key-help">{{ form.t.key_help }} You can write env:NAME to read the key from an environment variable. You can add more keys later.</p>{% if !form.t.docs.is_empty() %}<p class="hint"><a href="{{ form.t.docs }}" target="_blank" rel="noopener noreferrer">Where to get a key (opens in a new tab)</a></p>{% endif %}</div>
+  </div>
+  {% if form.cat() == "custom" %}
+  <div class="row">{% call key_settings(form.t) %}</div>
+  {% else %}
+  <details class="np-adv"><summary>Advanced</summary>
+    <div class="row">{% call kind_select(form.t, "API format") %}{% call key_settings(form.t) %}</div>
+  </details>
+  {% endif %}
+  {% else %}
+  {% if form.cat() != "entra" %}<input type="hidden" name="base_url" value="{{ form.t.base_url }}">{% endif %}
+  {% if !(form.cat() == "subscription" && form.t.kind_choice) %}<input type="hidden" name="kind" value="{{ form.t.kind_name() }}">{% endif %}
+  {% endif %}
+
+  {% if form.cat() == "bedrock" %}
+  <fieldset class="stack">
+    <legend>AWS credentials</legend>
+    <div class="row">
+      <div class="field"><label for="np-aws-region">AWS region</label><input id="np-aws-region" name="aws_region" value="us-east-1" required pattern="[a-z]{2}(-[a-z]+){1,3}-[0-9]" autocomplete="off" spellcheck="false" aria-describedby="np-aws-region-help"><p class="hint" id="np-aws-region-help">For example us-east-1 or eu-central-1. It sets the AWS host.</p></div>
+      <div class="field grow"><label for="np-access">AWS access key ID</label><input id="np-access" type="password" name="aws_access_key" required autocomplete="off" spellcheck="false"></div>
+      <div class="field grow"><label for="np-secret">AWS secret access key</label><input id="np-secret" type="password" name="aws_secret_key" required autocomplete="new-password" spellcheck="false"></div>
+      <div class="field grow"><label for="np-token">AWS session token (optional)</label><input id="np-token" type="password" name="aws_session_token" autocomplete="off" spellcheck="false"></div>
+    </div>
+    <p class="hint">The credentials are encrypted and are not shown again. Add Models by model ID or inference profile ARN.</p>
+  </fieldset>
+  {% endif %}
+
+  {% if form.cat() == "vertex" || form.cat() == "vertex_sa" %}
+  <div class="row">
+    <div class="field"><label for="np-project">Project ID</label><input id="np-project" name="project_id" required pattern="[a-z][a-z0-9-]{4,28}[a-z0-9]" autocomplete="off" spellcheck="false" aria-describedby="np-project-help"><p class="hint" id="np-project-help">The Google Cloud project ID, for example my-project-123.</p></div>
+    <div class="field"><label for="np-region">Region</label><input id="np-region" name="region" value="global" required autocomplete="off" spellcheck="false" aria-describedby="np-region-help"><p class="hint" id="np-region-help">Use global, or a region such as us-central1.</p></div>
+  </div>
+  {% endif %}
+  {% if form.cat() == "vertex" %}
+  <div class="row">
+    <div class="field grow"><label for="np-client">OAuth client ID</label><input id="np-client" name="client_id" type="password" required autocomplete="off" spellcheck="false" aria-describedby="np-client-help"><p class="hint" id="np-client-help">Use your own Google Desktop OAuth client with the scope https://www.googleapis.com/auth/cloud-platform. The redirect address is http://localhost/auth/callback.</p></div>
+    <div class="field grow"><label for="np-client-secret">OAuth client secret</label><input id="np-client-secret" name="client_secret" type="password" required autocomplete="new-password" spellcheck="false"></div>
+  </div>
+  {% endif %}
+  {% if form.cat() == "vertex_sa" %}
+  <div class="field np-wide"><label for="np-sa">Service-account JSON key</label>
+    <input type="file" id="np-sa-file" accept="application/json,.json" data-json-into="np-sa" aria-label="Read the service-account JSON key from a file" hidden data-js>
+    <textarea id="np-sa" name="service_account" required rows="5" autocomplete="off" spellcheck="false" aria-describedby="np-sa-help"></textarea>
+    <p class="hint" id="np-sa-help">Paste the key, or choose the JSON file. The key is encrypted and is not shown again. The Proxy signs RS256 assertions and caches access tokens.</p>
+  </div>
+  {% endif %}
+
+  {% if form.cat() == "entra" %}
+  <div class="row">
+    <div class="field grow"><label for="np-url">Azure resource URL</label><input id="np-url" name="base_url" value="" required autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://RESOURCE.openai.azure.com/openai" aria-describedby="np-url-help"><p class="hint" id="np-url-help">Enter the address of your Azure OpenAI resource without /v1.</p></div>
+  </div>
+  <div class="row">
+    <div class="field"><label for="np-tenant">Tenant ID or domain</label><input id="np-tenant" name="tenant" required autocomplete="off" spellcheck="false"></div>
+    <div class="field grow"><label for="np-client">Client ID</label><input id="np-client" name="client_id" type="password" required autocomplete="off" spellcheck="false" aria-describedby="np-client-help"><p class="hint" id="np-client-help">Register a public client in your tenant and enable device code sign-in. The scope is https://cognitiveservices.azure.com/.default offline_access.</p></div>
+  </div>
+  {% endif %}
+
+  {% if form.cat() == "hugging_face" %}
+  <div class="row">
+    <div class="field grow"><label for="np-client">Client ID or CIMD address</label><input id="np-client" name="client_id" type="password" required autocomplete="off" spellcheck="false" aria-describedby="np-client-help"><p class="hint" id="np-client-help">Enter the client ID of your Hugging Face OAuth app with the scope inference-api. For automatic registration, enter https://YOUR-PUBLIC-PROXY/.well-known/oauth-cimd, leave the secret empty, and use the paste flow. <a href="{{ form.t.docs }}" target="_blank" rel="noopener noreferrer">How to register an app (opens in a new tab)</a></p></div>
+    <div class="field grow"><label for="np-client-secret">Client secret (optional)</label><input id="np-client-secret" name="client_secret" type="password" autocomplete="new-password" spellcheck="false"></div>
+  </div>
+  {% endif %}
+
+  {% if form.t.auth_name() == "github_copilot" %}
+  <details class="np-adv"><summary>GitHub Enterprise (optional)</summary>
+    <div class="field"><label for="np-enterprise">GitHub Enterprise domain</label><input id="np-enterprise" name="tenant" placeholder="company.ghe.com" autocomplete="off" spellcheck="false" aria-describedby="np-enterprise-help"><p class="hint" id="np-enterprise-help">Leave empty for github.com.</p></div>
+  </details>
+  {% endif %}
+
+  <p class="np-summary"><span class="np-summary-label">This adds:</span> <span data-summary data-format="{{ form.t.format }} format" data-auth="" data-host="{{ form.t.host }}">{{ form.t.summary() }}</span></p>
+  <div class="form-error" role="alert" tabindex="-1"></div>
+  <div class="row np-submit">
+    <button{% if form.signin() %} data-busy="Adding..."{% endif %}>{% if form.signin() %}Add and sign in{% else %}Add provider{% endif %}</button>
+    {% if form.signin() %}<p class="hint">{% if form.t.device %}Next, you sign in with a device code on the Provider site.{% else if form.cat() == "vertex" || form.t.auth_name() == "gemini_cli" || form.t.auth_name() == "claude" || form.t.auth_name() == "chatgpt" %}Next, you open the sign-in page and paste the result here.{% endif %}</p>{% endif %}
+  </div>
+</form>
+<div class="signin" id="np-signin"></div>

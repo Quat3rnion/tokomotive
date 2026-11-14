@@ -395,6 +395,14 @@ fn render_user_error(
 async fn htmx_redirect(req: Request, next: Next) -> Response {
     let htmx = req.headers().contains_key("hx-request");
     let referer = referer_path(req.headers());
+    // The page that sent the htmx request, without its #fragment.
+    let current = req
+        .headers()
+        .get("hx-current-url")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<axum::http::Uri>().ok())
+        .and_then(|u| u.path_and_query().map(|pq| pq.as_str().to_owned()))
+        .or_else(|| referer.clone());
     let mut resp = next.run(req).await;
     if let Some(err) = resp.extensions_mut().remove::<UserError>() {
         return render_user_error(resp.status(), err, htmx, referer);
@@ -406,7 +414,11 @@ async fn htmx_redirect(req: Request, next: Next) -> Response {
         let mut out = StatusCode::OK.into_response();
         // A redirect to `#fragment` on the same page changes only the hash,
         // so the browser would not load the page. Ask htmx to reload it.
-        if to.to_str().is_ok_and(|v| v.contains('#')) {
+        // Not for another page: the reload would load the old address.
+        if to.to_str().is_ok_and(|v| {
+            v.split_once('#')
+                .is_some_and(|(page, _)| current.as_deref().is_none_or(|c| c == page))
+        }) {
             out.headers_mut()
                 .insert("hx-refresh", HeaderValue::from_static("true"));
         }
@@ -863,6 +875,8 @@ struct ListQ {
     revoked_before: Option<i64>,
     overrides_after: Option<i64>,
     overrides_before: Option<i64>,
+    /// Models: the Provider that "Add a Model" preselects.
+    provider: Option<String>,
 }
 
 async fn search(
@@ -1526,6 +1540,14 @@ async fn models(
         .collect();
     let mut page = ModelsPage::build(Base::new(&st), &selected, cat.default_markup_bp, providers);
     page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
+    if let Some(p) = q.provider.as_deref().filter(|p| {
+        st.router_table()
+            .providers
+            .iter()
+            .any(|known| known.name == *p)
+    }) {
+        page.new_provider = p.into();
+    }
     page.pager = Pager::keyset(&uri.to_string(), &q.page, &ids);
     render(page)
 }

@@ -143,6 +143,10 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
     }
 }
 async fn start(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    start_panel(st, name).await
+}
+/// The sign-in panel of a Provider: a device code or the sign-in link.
+pub(super) async fn start_panel(st: AppState, name: String) -> Response {
     let Some(flow) = flow(&st, &name) else {
         return bad("This Provider does not use OAuth.");
     };
