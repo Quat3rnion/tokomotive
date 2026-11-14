@@ -2,7 +2,8 @@
   "pending_refresh": [
     {"page":"/admin", "reason":"Exact cache hit rate added. Keep the current image until the next requested capture."},
     {"page":"/admin/routes", "reason":"Exact response cache enable, lifetime and scope controls added. Keep the current image until the next requested capture."},
-    {"page":"/admin/settings", "reason":"Exact response cache limits and hit Price added. Keep the current image until the next requested capture."},
+    {"page":"/admin/settings", "reason":"Exact response cache limits, hit Price and global egress proxy controls added. Keep the current image until the next requested capture."},
+    {"page":"/admin/providers", "reason":"Per-Provider egress proxy controls and connection path results added. Keep the current image until the next requested capture."},
     {"page":"/admin/ledger", "reason":"Cache hit flag added. Keep the current image until the next requested capture."}
   ],
   "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],

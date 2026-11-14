@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 
 use anyhow::Result;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -87,7 +86,9 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub db: Db,
     pub limiter: crate::ratelimit::RateLimiter,
-    http: RwLock<reqwest::Client>,
+    #[cfg(test)]
+    test_http: RwLock<Option<reqwest::Client>>,
+    pub egress: crate::egress::Egress,
     settings: RwLock<Arc<crate::settings::Settings>>,
     pub secret_key: crate::settings::SecretKey,
     pub oauth: crate::oauth::OAuthManager,
@@ -133,13 +134,12 @@ impl AppState {
         crate::models_dev::seed(&db).await?;
         let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
         let router_table = RouterTable::from_config(&runtime);
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(settings.upstream_timeout_secs))
-            .connect_timeout(Duration::from_secs(15))
-            .build()?;
+        let egress = crate::egress::Egress::new(
+            crate::egress::Policy::load(&db, &secret_key, settings.upstream_timeout_secs).await?,
+        );
         let catalog = db::load_catalog(&db).await?;
-        let oauth = crate::oauth::OAuthManager::new(db.clone(), secret_key.clone(), endpoints)?;
+        let oauth = crate::oauth::OAuthManager::new(db.clone(), secret_key.clone(), endpoints)?
+            .with_egress(egress.clone());
         oauth.check_storage().await?;
         let observability = crate::observability::Observer::new(
             crate::observability::load(&db, &secret_key).await?,
@@ -147,7 +147,9 @@ impl AppState {
         Ok(AppState(Arc::new(Inner {
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
-            http: RwLock::new(http),
+            #[cfg(test)]
+            test_http: RwLock::new(None),
+            egress,
             settings: RwLock::new(Arc::new(settings)),
             secret_key,
             oauth,
@@ -177,21 +179,28 @@ impl AppState {
     }
 
     pub fn http(&self) -> reqwest::Client {
-        self.http.read().expect("http lock").clone()
+        self.egress.client(None, crate::egress::Purpose::Upstream)
+    }
+    pub fn provider_http(&self, name: &str) -> reqwest::Client {
+        // Preserve the trusted TLS test seam used by Bedrock tests.
+        #[cfg(test)]
+        if let Some(http) = self.test_http.read().expect("test http").as_ref() {
+            return http.clone();
+        }
+        self.egress
+            .client(Some(name), crate::egress::Purpose::Upstream)
     }
     #[cfg(test)]
     pub(crate) fn set_test_http(&self, http: reqwest::Client) {
-        *self.http.write().expect("http lock") = http;
+        *self.test_http.write().expect("test http") = Some(http);
     }
 
     pub async fn reload_settings(&self) -> Result<()> {
         let (cfg, settings) = crate::settings::load(&self.db, &self.secret_key).await?;
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(settings.upstream_timeout_secs))
-            .connect_timeout(Duration::from_secs(15))
-            .build()?;
-        *self.http.write().expect("http lock") = http;
+        let policy =
+            crate::egress::Policy::load(&self.db, &self.secret_key, settings.upstream_timeout_secs)
+                .await?;
+        self.egress.replace(policy);
         *self.settings.write().expect("settings lock") = Arc::new(settings);
         self.set_router_table(RouterTable::from_config(&cfg));
         self.reload_catalog().await

@@ -47,6 +47,42 @@ Use **Test a rule** to test a saved set on pasted text. It shows the rule
 names, byte offsets and changed text. It does not store the text or results
 and does not call external hooks.
 
+## Egress proxies
+
+Open **Settings > Global egress proxy** to set the default outbound proxy.
+On a Provider card, open **Egress proxy** and select one connection:
+
+- **Use global** uses the default from Settings. This is the initial setting.
+- **None** connects directly, even when a global proxy is set.
+- **Custom proxy** uses the URL saved for that Provider.
+
+Enter a URL such as `http://user:password@proxy.example:8080` or
+`socks5h://user:password@proxy.example:1080`. The port is required. Do not add
+a trailing slash, path, query or fragment. Percent-encode reserved characters
+in the user name and password. A blank field keeps the saved URL. Select
+**None** to remove it. The Master Key encrypts the complete URL. The page
+shows only `scheme://host:port`, without the user name or password.
+
+The Provider setting applies to inference, retries, model discovery, file and
+batch requests, sign-in, device sign-in, token refresh and plan usage checks.
+It also applies to Vertex service-account grants and Code Assist discovery.
+models.dev Sync and alert webhooks use only the global default. Trace export
+has its own client and does not use these proxy settings.
+
+Select **Test connection** on an API-key Provider card. The result identifies
+the connection as `via proxy host:port` or a direct connection. Proxy connection
+and authentication failures have fixed messages. Upstream replies show the
+status, not the response text. Existing API-format restrictions still apply.
+Monitor `tokomotive_proxy_connect_errors_total{provider="NAME"}` for proxy
+connection errors on inference, sign-in, refresh and connection tests.
+
+Use only a trusted proxy. An egress proxy can reach private network services.
+It can read unencrypted HTTP traffic and its Provider credentials. HTTPS
+upstream certificate checks remain enabled. Redirects are not followed.
+Changing a proxy URL is a trusted configuration operation, not a way to grant
+Provider Access to a Virtual Key. Process proxy environment variables do not
+override these explicit connection settings.
+
 ## Request diagnostics
 
 Use **Ledger** as the request log. Filter by User, Provider, Model, UTC dates,

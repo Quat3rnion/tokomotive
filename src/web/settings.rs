@@ -24,12 +24,14 @@ pub(super) fn router() -> Router<AppState> {
             post(delete_key),
         )
         .route("/admin/providers/{name}/test", post(test_provider))
+        .route("/admin/providers/{name}/egress", post(save_provider_egress))
         .route("/admin/search/provider-types", get(search_provider_types))
         .route("/admin/provider-form", get(provider_form))
         .route("/admin/routes", get(routes).post(create_route))
         .route("/admin/routes/{name}", post(update_route))
         .route("/admin/routes/{name}/delete", post(delete_route))
         .route("/admin/settings", get(settings_page).post(save_settings))
+        .route("/admin/settings/egress", post(save_global_egress))
         .route("/admin/settings/password", post(change_password))
         .route("/admin/settings/mode", post(save_mode))
         .route("/admin/settings/alerts", post(save_alert))
@@ -165,6 +167,8 @@ async fn delete_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    egress_label: String,
+    egress_set: bool,
     observability: std::sync::Arc<crate::observability::Settings>,
     export_headers_set: bool,
     audit_retention_days: String,
@@ -183,6 +187,11 @@ struct SettingsPage {
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
     render(SettingsPage {
+        egress_label: st
+            .egress
+            .label(None)
+            .unwrap_or_else(|| "None (direct connection)".into()),
+        egress_set: st.egress.label(None).is_some(),
         observability: st.observability.settings(),
         export_headers_set: !st.observability.settings().headers.is_empty(),
         audit_retention_days: tryr!(store::value(&st.db, "audit_retention_days").await)
@@ -913,6 +922,8 @@ struct AddedSignin {
     panel: String,
 }
 struct ProviderView {
+    proxy_mode: String,
+    proxy_label: String,
     key_strategy: String,
     quota: Vec<super::quota::AccountView>,
     /// Just added: the card shows the next steps and takes focus.
@@ -1250,7 +1261,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region,proxy_mode FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -1355,6 +1366,11 @@ async fn providers(
             vec![]
         };
         providers.push(ProviderView {
+            proxy_mode: row.get("proxy_mode"),
+            proxy_label: st
+                .egress
+                .label(Some(&name))
+                .unwrap_or_else(|| "None (direct connection)".into()),
             key_strategy: row.get("key_strategy"),
             quota: tryr!(super::quota::views(&st, Some(&name), 50).await),
             added: false,
@@ -2061,6 +2077,125 @@ async fn reenable_account(
     )
 }
 
+#[derive(Deserialize)]
+struct EgressForm {
+    mode: String,
+    #[serde(default)]
+    proxy_url: String,
+}
+
+async fn save_global_egress(
+    _: Admin,
+    State(st): State<AppState>,
+    Form(f): Form<EgressForm>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let proxy = match f.mode.as_str() {
+        "none" => Ok(None),
+        "custom" if f.proxy_url.is_empty() => tryr!(store::value(&st.db, "egress_proxy").await)
+            .map(|v| st.secret_key.decrypt(&v))
+            .transpose(),
+        "custom" => Ok(Some(f.proxy_url)),
+        _ => return form_error("Choose None or Custom proxy."),
+    };
+    let proxy = tryr!(proxy);
+    if f.mode == "custom" && proxy.is_none() {
+        return form_error("Enter a proxy URL.");
+    }
+    if let Some(value) = &proxy
+        && let Err(e) = crate::egress::ProxyUrl::parse(value)
+    {
+        return form_error(e);
+    }
+    let policy = match crate::egress::Policy::prepare(
+        &st.db,
+        &st.secret_key,
+        st.settings().upstream_timeout_secs,
+        Some(proxy.clone()),
+        None,
+    )
+    .await
+    {
+        Ok(policy) => policy,
+        Err(e) => return form_error(e),
+    };
+    if let Some(proxy) = proxy {
+        tryr!(
+            store::put(
+                &st.db,
+                "egress_proxy",
+                &tryr!(st.secret_key.encrypt(&proxy))
+            )
+            .await
+        );
+    } else {
+        tryr!(
+            sqlx::query("DELETE FROM settings WHERE key='egress_proxy'")
+                .execute(&st.db)
+                .await
+        );
+    }
+    st.egress.replace(policy);
+    saved("/admin/settings#egress", "Global egress proxy saved.")
+}
+
+async fn save_provider_egress(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(f): Form<EgressForm>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let old: Option<Option<String>> = tryr!(
+        sqlx::query_scalar("SELECT proxy_url FROM providers WHERE name=?")
+            .bind(&name)
+            .fetch_optional(&st.db)
+            .await
+    );
+    let Some(old) = old else {
+        return form_error("Provider not found.");
+    };
+    let proxy = match f.mode.as_str() {
+        "global" | "none" => None,
+        "custom" if f.proxy_url.is_empty() => {
+            tryr!(old.map(|v| st.secret_key.decrypt(&v)).transpose())
+        }
+        "custom" => Some(f.proxy_url),
+        _ => return form_error("Choose Use global, None or Custom proxy."),
+    };
+    if f.mode == "custom" && proxy.is_none() {
+        return form_error("Enter a proxy URL.");
+    }
+    if let Some(value) = &proxy
+        && let Err(e) = crate::egress::ProxyUrl::parse(value)
+    {
+        return form_error(e);
+    }
+    let policy = match crate::egress::Policy::prepare(
+        &st.db,
+        &st.secret_key,
+        st.settings().upstream_timeout_secs,
+        None,
+        Some((&name, &f.mode, proxy.clone())),
+    )
+    .await
+    {
+        Ok(policy) => policy,
+        Err(e) => return form_error(e),
+    };
+    let secret = tryr!(proxy.map(|v| st.secret_key.encrypt(&v)).transpose());
+    tryr!(
+        sqlx::query("UPDATE providers SET proxy_mode=?,proxy_url=? WHERE name=?")
+            .bind(&f.mode)
+            .bind(secret)
+            .bind(&name)
+            .execute(&st.db)
+            .await
+    );
+    st.egress.replace(policy);
+    saved("/admin/providers", "Provider egress proxy saved.")
+}
+
 async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
     let table = st.router_table();
     let Some(p) = table.providers.iter().find(|p| p.name == name) else {
@@ -2083,7 +2218,7 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
         );
     };
     let req = st
-        .http()
+        .provider_http(&p.name)
         .get(url)
         .timeout(std::time::Duration::from_secs(15));
     let req = p.key_header.apply(req, key);
@@ -2093,20 +2228,43 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
         req
     };
     let (class, text) = match req.send().await {
+        Err(e) if st.egress.connect_error(&p.name, &e) => (
+            "bad",
+            "Cannot connect to the egress proxy. Check its address, credentials and network."
+                .to_owned(),
+        ),
         Err(_) => (
             "bad",
             "Cannot reach the Provider. Check the base URL and the network.".to_owned(),
         ),
+        Ok(r) if r.status().as_u16() == 407 && st.egress.label(Some(&p.name)).is_some() => {
+            metrics::counter!("tokomotive_proxy_connect_errors_total", "provider" => p.name.clone()).increment(1);
+            (
+                "bad",
+                "The egress proxy refused authentication. Check its credentials.".to_owned(),
+            )
+        }
         Ok(r) => test_message(r.status().as_u16()),
     };
+    let via = st
+        .egress
+        .label(Some(&p.name))
+        .map(|label| {
+            format!(
+                " via proxy {}",
+                label.split_once("://").expect("proxy scheme").1
+            )
+        })
+        .unwrap_or_else(|| " via direct connection".into());
     Html(format!(
-        "<p><span class=\"tag {class}\">{}</span> {}</p>",
+        "<p><span class=\"tag {class}\">{}</span> {}{}</p>",
         match class {
             "good" => "OK",
             "warn" => "Warning",
             _ => "Failed",
         },
-        esc(&text)
+        esc(&text),
+        esc(&via)
     ))
     .into_response()
 }

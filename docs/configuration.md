@@ -55,6 +55,40 @@ fail-closed behavior. The Ledger name for a hook action is
 `rule-set-name:external`. A hook receives prompt or response text, which
 can contain private data. Test-box text is never sent to the hook.
 
+## Egress proxies
+
+Set egress proxies in the dashboard. These settings use the database, not the
+seed file. New installations have no global proxy. Each Provider initially
+uses **Use global**. Select **None** to bypass the global proxy, or **Custom
+proxy** to save a separate URL.
+
+Accepted schemes are `http`, `https`, `socks5` and `socks5h`. The host and an
+explicit port from 1 to 65535 are required. A URL can contain a user name and
+password. It cannot contain whitespace, a path, query or fragment. The maximum
+URL length is 4096 bytes. With SOCKS5, `socks5` resolves the upstream host
+locally. `socks5h` asks the proxy to resolve it.
+
+The complete URL is encrypted with the Master Key, including credentials.
+Only `scheme://host:port` is shown. Blank password fields keep the saved URL.
+Switching a Provider to **Use global** or **None** removes its custom URL.
+
+The cache permits at most 64 distinct proxy URLs, plus a direct connection.
+Providers that share a URL share clients. Separate client profiles preserve
+the upstream timeout and 15-second connect timeout, the 30-second OAuth
+timeout with automatic retries disabled, the 60-second models.dev timeout,
+and the 10-second webhook timeout. Settings reload builds a new cache before
+it replaces the old cache. Requests do not build clients. An invalid edit or
+an edit above the cache limit is rejected before it is stored.
+
+Redirects and response body limits do not change. Provider overrides apply
+to all outbound Provider operations. models.dev Sync and alert webhooks use
+the global default only. Trace export is separate. The clients do not inherit
+`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or `NO_PROXY` from the process.
+
+Use network policy to restrict proxy destinations. Private addresses are
+allowed for Operator-managed proxies. A proxy URL must therefore be changed
+only by a trusted Operator. See [Egress proxies](usage.md#egress-proxies).
+
 ## Traces and body capture
 
 Use **Settings > Traces and body capture**. These settings are stored in the

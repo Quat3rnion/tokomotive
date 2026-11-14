@@ -192,7 +192,7 @@ fn request(
     path: &str,
 ) -> reqwest::RequestBuilder {
     p.key_header.apply(
-        st.http()
+        st.provider_http(&p.name)
             .request(method, provider::upstream_url(&p.base_url, path)),
         key,
     )

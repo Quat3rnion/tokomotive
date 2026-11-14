@@ -249,7 +249,7 @@ pub struct OAuthManager {
     db: Db,
     key: SecretKey,
     endpoints: OAuthEndpoints,
-    http: reqwest::Client,
+    egress: crate::egress::Egress,
     locks: FlightLocks,
     pending: Mutex<HashMap<Identity, Attempt>>,
     devices: Mutex<HashMap<Identity, DeviceAttempt>>,
@@ -486,11 +486,11 @@ impl OAuthManager {
             db,
             key,
             endpoints,
-            http: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .timeout(Duration::from_secs(30))
-                .build()?,
+            egress: crate::egress::Egress::new(crate::egress::Policy::new(
+                None,
+                HashMap::new(),
+                30,
+            )?),
             locks: Mutex::default(),
             pending: Mutex::default(),
             devices: Mutex::default(),
@@ -502,6 +502,23 @@ impl OAuthManager {
     pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.clock = Arc::new(clock);
         self
+    }
+    pub fn with_egress(mut self, egress: crate::egress::Egress) -> Self {
+        self.egress = egress;
+        self
+    }
+    fn http(&self, name: &str) -> reqwest::Client {
+        self.egress
+            .client(Some(name), crate::egress::Purpose::OAuth)
+    }
+    fn request_error(
+        &self,
+        name: &str,
+        error: reqwest::Error,
+        message: &'static str,
+    ) -> anyhow::Error {
+        self.egress.connect_error(name, &error);
+        anyhow::anyhow!(message)
     }
     /// Trusted process-construction seam, like OAuthEndpoints; not an HTTP input.
     pub fn with_flow_config(mut self, flow: Flow, config: FlowConfig) -> Self {
@@ -834,7 +851,7 @@ impl OAuthManager {
         {
             s.credential.as_ref().and_then(|c| c.inference_base.clone())
         } else {
-            self.derive_inference(&config, &t).await?
+            self.derive_inference(name, &config, &t).await?
         };
         let c = s.credential.as_mut().expect("credential checked");
         let scope = t.scope.unwrap_or_else(|| c.scope.clone());
@@ -891,11 +908,10 @@ impl OAuthManager {
         if flow != Flow::Claude {
             body.as_object_mut().expect("token object").remove("state");
         }
-        let req = self.oauth_request(&config, &config.token, body)?;
-        let response = req
-            .send()
-            .await
-            .map_err(|_| anyhow::anyhow!("OAuth token request failed; sign in again"))?;
+        let req = self.oauth_request(name, &config, &config.token, body)?;
+        let response = req.send().await.map_err(|e| {
+            self.request_error(name, e, "OAuth token request failed; sign in again")
+        })?;
         if !response.status().is_success() {
             bail!("OAuth token request rejected; sign in again");
         }
@@ -919,11 +935,12 @@ impl OAuthManager {
     }
     fn oauth_request(
         &self,
+        name: &str,
         config: &FlowConfig,
         url: &str,
         mut body: Value,
     ) -> Result<reqwest::RequestBuilder> {
-        let mut req = self.http.post(url);
+        let mut req = self.http(name).post(url);
         for (k, v) in &config.headers {
             req = req.header(k, v);
         }
@@ -941,9 +958,9 @@ impl OAuthManager {
             }
         })
     }
-    async fn profile(&self, token: &str) -> Result<Value> {
+    async fn profile(&self, name: &str, token: &str) -> Result<Value> {
         let response = self
-            .http
+            .http(name)
             .get(format!(
                 "{}/api/oauth/profile",
                 self.endpoints.claude_resource
@@ -951,13 +968,14 @@ impl OAuthManager {
             .bearer_auth(token)
             .header("anthropic-beta", "oauth-2025-04-20")
             .send()
-            .await?;
+            .await
+            .map_err(|e| self.request_error(name, e, "Profile request failed"))?;
         if !response.status().is_success() {
             bail!("Profile not available");
         }
         bounded_json(response).await
     }
-    async fn verify(&self, token: &str, client: &str, nonce: &str) -> Result<Value> {
+    async fn verify(&self, name: &str, token: &str, client: &str, nonce: &str) -> Result<Value> {
         use jsonwebtoken::{
             Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet,
         };
@@ -968,11 +986,11 @@ impl OAuthManager {
         }
         let kid = header.kid.ok_or_else(fail)?;
         let response = self
-            .http
+            .http(name)
             .get(format!("{}/.well-known/jwks.json", self.endpoints.issuer))
             .send()
             .await
-            .map_err(|_| fail())?;
+            .map_err(|e| self.request_error(name, e, "Invalid OAuth ID token"))?;
         if !response.status().is_success() {
             return Err(fail());
         }
@@ -1008,13 +1026,14 @@ impl OAuthManager {
         if config.flow_type == FlowType::PkceKey {
             let response = self
                 .oauth_request(
+                    name,
                     &config,
                     &config.token,
                     json!({"code":code,"code_verifier":a.verifier,"code_challenge_method":"S256"}),
                 )?
                 .send()
                 .await
-                .map_err(|_| anyhow::anyhow!("OAuth key request failed"))?;
+                .map_err(|e| self.request_error(name, e, "OAuth key request failed"))?;
             if !response.status().is_success() {
                 bail!("OAuth key request rejected");
             }
@@ -1041,7 +1060,7 @@ impl OAuthManager {
         tokens: Tokens,
     ) -> Result<()> {
         let config = self.config(flow, &self.load(name, flow).await?)?;
-        let inference_base = self.derive_inference(&config, &tokens).await?;
+        let inference_base = self.derive_inference(name, &config, &tokens).await?;
         let refresh = match tokens.refresh_token {
             Some(v) => v,
             None if config.refresh == RefreshRule::None => String::new(),
@@ -1052,7 +1071,7 @@ impl OAuthManager {
         let mut plan = None;
         let mut account_id = None;
         if flow == Flow::GeminiCli {
-            let (project, tier) = self.code_assist_setup(&tokens.access_token).await?;
+            let (project, tier) = self.code_assist_setup(name, &tokens.access_token).await?;
             account_id = Some(project);
             plan = Some(tier);
         }
@@ -1062,6 +1081,7 @@ impl OAuthManager {
             }
             let claims = self
                 .verify(
+                    name,
                     tokens
                         .id_token
                         .as_deref()
@@ -1094,7 +1114,7 @@ impl OAuthManager {
                 .as_str()
                 .map(str::to_owned);
         } else if flow == Flow::Claude
-            && let Ok(profile) = self.profile(&tokens.access_token).await
+            && let Ok(profile) = self.profile(name, &tokens.access_token).await
         {
             account = profile["account"]["email"].as_str().map(str::to_owned);
             plan = profile["organization"]["plan_display_name"]
@@ -1126,6 +1146,7 @@ impl OAuthManager {
     }
     async fn derive_inference(
         &self,
+        name: &str,
         config: &FlowConfig,
         tokens: &Tokens,
     ) -> Result<Option<String>> {
@@ -1154,14 +1175,17 @@ impl OAuthManager {
                 entitlement,
             } => {
                 let mut request = self
-                    .http
+                    .http(name)
                     .get(url)
                     .bearer_auth(&tokens.access_token)
                     .header("accept", "application/json");
                 for (k, v) in headers {
                     request = request.header(k, v);
                 }
-                let response = request.send().await.context("Inference discovery failed")?;
+                let response = request
+                    .send()
+                    .await
+                    .map_err(|e| self.request_error(name, e, "Inference discovery failed"))?;
                 if !response.status().is_success() {
                     bail!("Inference discovery rejected");
                 }
@@ -1191,12 +1215,12 @@ impl OAuthManager {
             ),
             InferenceBase::FollowUp { url, field, origin } => {
                 let response = self
-                    .http
+                    .http(name)
                     .get(url)
                     .bearer_auth(&tokens.access_token)
                     .send()
                     .await
-                    .map_err(|_| anyhow::anyhow!("Inference discovery failed"))?;
+                    .map_err(|e| self.request_error(name, e, "Inference discovery failed"))?;
                 if !response.status().is_success() {
                     bail!("Inference discovery rejected");
                 }
@@ -1265,11 +1289,12 @@ impl OAuthManager {
             body["code_challenge"] = json!(URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes())));
         }
         let request = if flow == Flow::Codex {
-            self.http
+            self.http(name)
                 .post(config.device.as_ref().expect("device checked"))
                 .json(&body)
         } else {
             self.oauth_request(
+                name,
                 &config,
                 config.device.as_ref().expect("device checked"),
                 body,
@@ -1278,7 +1303,7 @@ impl OAuthManager {
         let response = request
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Cannot start device sign-in"))?;
+            .map_err(|e| self.request_error(name, e, "Cannot start device sign-in"))?;
         if !response.status().is_success() {
             bail!("Device sign-in is not available; use the redirect URL instead");
         }
@@ -1438,7 +1463,7 @@ impl OAuthManager {
     ) -> Result<&'static str> {
         let config = self.config(flow, &self.load(name, flow).await?)?;
         let request = if flow == Flow::Codex {
-            self.http
+            self.http(name)
                 .post(format!(
                     "{}/api/accounts/deviceauth/token",
                     self.endpoints.issuer
@@ -1449,12 +1474,12 @@ impl OAuthManager {
             if let Some(v) = device_verifier {
                 body["code_verifier"] = json!(v);
             }
-            self.oauth_request(&config, &config.token, body)?
+            self.oauth_request(name, &config, &config.token, body)?
         };
         let response = request
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Device poll failed"))?;
+            .map_err(|e| self.request_error(name, e, "Device poll failed"))?;
         let status = response.status();
         // Never log issuer bodies. 403 and 404 with no OAuth error are pending
         // in Codex's protocol; an explicit denial is terminal.
@@ -1536,14 +1561,17 @@ impl OAuthManager {
             };
             let token = self.token(name, Flow::GithubCopilot, None).await?;
             let mut request = self
-                .http
+                .http(name)
                 .get(url)
                 .bearer_auth(token)
                 .header("accept", "application/json");
             for (key, value) in headers {
                 request = request.header(key, value);
             }
-            let response = request.send().await?;
+            let response = request
+                .send()
+                .await
+                .map_err(|e| self.request_error(name, e, "Usage request failed"))?;
             if !response.status().is_success() {
                 return Ok(None);
             }
@@ -1560,14 +1588,15 @@ impl OAuthManager {
             .and_then(|c| c.account_id.as_ref())
             .context("Missing usage account")?;
         let response = self
-            .http
+            .http(name)
             .get(&self.endpoints.codex_usage)
             .bearer_auth(token)
             .header("chatgpt-account-id", account)
             .header("originator", "codex_cli_rs")
             .header("user-agent", "codex-cli")
             .send()
-            .await?;
+            .await
+            .map_err(|e| self.request_error(name, e, "Usage request failed"))?;
         if !response.status().is_success() {
             return Ok(None);
         }

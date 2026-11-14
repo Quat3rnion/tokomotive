@@ -91,7 +91,7 @@ impl OAuthManager {
             .context("Missing service-account key")?;
         let assertion = account.assertion(self.now() / 1000)?;
         let response = self
-            .http
+            .http(name)
             .post(&self.endpoints.google_token)
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
@@ -99,7 +99,7 @@ impl OAuthManager {
             ])
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Service-account token request failed"))?;
+            .map_err(|e| self.request_error(name, e, "Service-account token request failed"))?;
         if !response.status().is_success() {
             bail!("Service-account token request rejected");
         }

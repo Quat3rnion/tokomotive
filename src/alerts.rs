@@ -142,10 +142,7 @@ async fn deliver(st: &AppState, event: &Event, id: Option<i64>) -> Result<()> {
     .bind(id)
     .fetch_all(&st.db)
     .await?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let client = st.egress.client(None, crate::egress::Purpose::Webhook);
     for (id, secret, format) in hooks {
         let mut status = "Stored URL could not be decrypted".to_owned();
         if let Ok(url) = st.secret_key.decrypt(&secret) {

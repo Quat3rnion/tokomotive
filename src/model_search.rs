@@ -481,13 +481,14 @@ impl ModelSource for ProviderSource {
         if stale.is_empty() {
             return None;
         }
-        let http = ctx.state.http();
+        let state = ctx.state.clone();
         let cache = self.cache.clone();
         let locks = self.locks.clone();
         let (ttl, failure_ttl, timeout) = (self.ttl, self.failure_ttl, self.timeout);
         Some(Box::pin(async move {
             let jobs = stale.into_iter().map(|p| {
-                let (http, cache, locks) = (http.clone(), cache.clone(), locks.clone());
+                let (http, cache, locks) =
+                    (state.provider_http(&p.name), cache.clone(), locks.clone());
                 // The fetch runs in its own task, so a search that stops
                 // waiting still fills the cache for the next one.
                 let job = tokio::spawn(async move {

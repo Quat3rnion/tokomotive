@@ -263,6 +263,19 @@ pub enum Fetch {
 
 /// Redirects are disabled entirely, including cross-host redirects.
 pub async fn fetch(url: &str, etag: Option<&str>) -> Result<Fetch> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    fetch_with_client(&client, url, etag).await
+}
+
+async fn fetch_with_client(
+    client: &reqwest::Client,
+    url: &str,
+    etag: Option<&str>,
+) -> Result<Fetch> {
     let url = reqwest::Url::parse(url)?;
     ensure!(
         matches!(url.scheme(), "https" | "http")
@@ -270,15 +283,14 @@ pub async fn fetch(url: &str, etag: Option<&str>) -> Result<Fetch> {
             && url.password().is_none(),
         "Use an HTTP or HTTPS model data URL without credentials"
     );
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(60))
-        .build()?;
     let mut request = client.get(url);
     if let Some(etag) = etag.filter(|s| !s.is_empty()) {
         request = request.header(reqwest::header::IF_NONE_MATCH, etag);
     }
-    let mut response = request.send().await?;
+    let mut response = request
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("Model data connection failed"))?;
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(Fetch::NotModified);
     }
@@ -316,7 +328,13 @@ pub async fn refresh(st: &crate::state::AppState) -> Result<()> {
             .await?
             .context("Missing model data URL")?;
         let etag = settings::value(&st.db, "models_dev_etag").await?;
-        match fetch(&url, etag.as_deref()).await? {
+        match fetch_with_client(
+            &st.egress.client(None, crate::egress::Purpose::Models),
+            &url,
+            etag.as_deref(),
+        )
+        .await?
+        {
             Fetch::NotModified => {
                 let mut tx = st.db.begin().await?;
                 sync_cards(

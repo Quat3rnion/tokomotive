@@ -96,6 +96,17 @@
     <div><button aria-label="Save Provider {{ p.name }}">Save</button></div>
   </form>
 
+  <details><summary>Egress proxy: {{ p.proxy_label }}</summary>
+    <form method="post" action="/admin/providers/{{ p.name }}/egress" class="stack" aria-label="Egress proxy of {{ p.name }}">
+      <div class="fields">
+      <div class="field"><label for="p-{{ p.name }}-proxy-mode">Connection</label><select id="p-{{ p.name }}-proxy-mode" name="mode"><option value="global"{% if p.proxy_mode == "global" %} selected{% endif %}>Use global</option><option value="none"{% if p.proxy_mode == "none" %} selected{% endif %}>None (direct connection)</option><option value="custom"{% if p.proxy_mode == "custom" %} selected{% endif %}>Custom proxy</option></select></div>
+      <div class="field wide"><label for="p-{{ p.name }}-proxy-url">New proxy URL</label><input id="p-{{ p.name }}-proxy-url" type="password" name="proxy_url" autocomplete="new-password" spellcheck="false" placeholder="socks5h://user:password@host:port" aria-describedby="p-{{ p.name }}-proxy-help"></div>
+      </div>
+      <p class="hint" id="p-{{ p.name }}-proxy-help">Blank keeps the saved custom URL. Include a host and port, without a path, query or fragment. The Master Key encrypts the full URL. This proxy applies to inference, sign-in, token refresh and usage checks. Only trusted Operators must change proxy URLs.</p>
+      <div class="form-error" role="alert" tabindex="-1"></div><button>Save Provider proxy</button>
+    </form>
+  </details>
+
   <details class="health" id="health-{{ p.name }}"{% if p.health_open() %} open{% endif %}>
     <summary><span class="health-title">Subscription quota and account health</span> <span class="tag {{ p.health_class() }}">{{ p.health_text() }}</span></summary>
     {% if let Some(s) = p.status %}{% if !s.connected %}<p><span class="tag warn">Disabled</span> - No active subscription sign-in. Saved observations below do not show current access.</p>{% endif %}{% endif %}

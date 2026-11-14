@@ -1621,7 +1621,8 @@ async fn handle_inner(
                 }
                 Err(e) => {
                     permit.record(false);
-                    tracing::warn!(error = %e, url = %url, "upstream request failed");
+                    st.egress.connect_error(&provider.name, &e);
+                    tracing::warn!(provider = %provider.name, "upstream request failed");
                 }
             }
             if permit.is_probe() {
@@ -2042,7 +2043,7 @@ async fn build_request(
 ) -> Option<reqwest::RequestBuilder> {
     if provider.kind == ProviderKind::Cohere {
         return Some(
-            st.http()
+            st.provider_http(&provider.name)
                 .request(method.clone(), url)
                 .bearer_auth(key)
                 .header("content-type", "application/json"),
@@ -2060,7 +2061,7 @@ async fn build_request(
             .await
             .ok()?;
         return crate::sigv4::request(
-            &st.http(),
+            &st.provider_http(&provider.name),
             &creds,
             region,
             path,
@@ -2069,7 +2070,9 @@ async fn build_request(
         )
         .ok();
     }
-    let mut req = st.http().request(method.clone(), url);
+    let mut req = st
+        .provider_http(&provider.name)
+        .request(method.clone(), url);
     for (name, value) in headers.iter() {
         if !skip_header(name)
             && !(matches!(

@@ -23,6 +23,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Uses a Circuit Breaker for each Deployment. A failing Deployment rests for a
   cooldown. Then one probe request tests it.
 - Limits the number of upstream attempts for each request with `max_attempts`.
+- Sends Provider traffic through an optional HTTP, HTTPS or SOCKS5 egress proxy.
+  Each Provider can use the global default, connect directly or use its own
+  encrypted proxy URL. See [Egress proxies](docs/usage.md#egress-proxies).
 - Accepts `provider/model` names when no Route or catalog Model matches. The
   Proxy removes the Provider prefix before the upstream request.
 - Rewrites the Model name of the request to the upstream model name of the

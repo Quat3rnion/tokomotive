@@ -11,20 +11,24 @@ impl OAuthManager {
             .context("Code Assist project is missing; sign in again")
     }
 
-    pub(super) async fn code_assist_setup(&self, token: &str) -> Result<(String, String)> {
+    pub(super) async fn code_assist_setup(
+        &self,
+        provider: &str,
+        token: &str,
+    ) -> Result<(String, String)> {
         let base = format!(
             "{}/v1internal",
             self.endpoints.code_assist_resource.trim_end_matches('/')
         );
         let metadata = json!({"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"});
         let response = self
-            .http
+            .http(provider)
             .post(format!("{base}:loadCodeAssist"))
             .bearer_auth(token)
             .json(&json!({"metadata":metadata}))
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Code Assist discovery failed"))?;
+            .map_err(|e| self.request_error(provider, e, "Code Assist discovery failed"))?;
         if !response.status().is_success() {
             bail!("Code Assist discovery rejected");
         }
@@ -49,13 +53,13 @@ impl OAuthManager {
                 .unwrap_or("legacy-tier")
                 .to_owned();
             let response = self
-                .http
+                .http(provider)
                 .post(format!("{base}:onboardUser"))
                 .bearer_auth(token)
                 .json(&json!({"tierId":tier,"metadata":metadata}))
                 .send()
                 .await
-                .map_err(|_| anyhow::anyhow!("Code Assist onboarding failed"))?;
+                .map_err(|e| self.request_error(provider, e, "Code Assist onboarding failed"))?;
             if !response.status().is_success() {
                 bail!("Code Assist onboarding rejected");
             }
@@ -82,12 +86,12 @@ impl OAuthManager {
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let response = self
-                    .http
+                    .http(provider)
                     .get(format!("{base}/{name}"))
                     .bearer_auth(token)
                     .send()
                     .await
-                    .map_err(|_| anyhow::anyhow!("Code Assist operation failed"))?;
+                    .map_err(|e| self.request_error(provider, e, "Code Assist operation failed"))?;
                 if !response.status().is_success() {
                     bail!("Code Assist operation rejected");
                 }

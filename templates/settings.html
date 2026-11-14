@@ -8,6 +8,7 @@
     <li><a href="#mode-h">Mode</a></li>
     <li><a href="#proxy-h">Proxy address</a></li>
     <li><a href="#server-h">Server and router</a></li>
+    <li><a href="#egress-h">Global egress proxy</a></li>
     {% if !base.simple %}<li><a href="#markup-h">Pricing</a></li>{% endif %}
     <li><a href="#models-dev-h">models.dev Sync</a></li>
     {% if !base.simple %}<li><a href="#alerts-h">Usage alerts</a></li>{% endif %}
@@ -91,6 +92,18 @@
   <button>Save settings</button>
 </form>
 </section>
+
+<section class="panel" id="egress" aria-labelledby="egress-h">
+<h2 id="egress-h">Global egress proxy</h2>
+<p>Current proxy: <code>{{ egress_label }}</code></p>
+<form method="post" action="/admin/settings/egress" class="stack" aria-labelledby="egress-h">
+<div class="fields">
+<div class="field"><label for="egress-mode">Connection</label><select id="egress-mode" name="mode"><option value="custom"{% if egress_set %} selected{% endif %}>Custom proxy (blank keeps saved URL)</option><option value="none"{% if !egress_set %} selected{% endif %}>None (direct connection)</option></select></div>
+<div class="field wide"><label for="egress-url">New proxy URL</label><input id="egress-url" type="password" name="proxy_url" autocomplete="new-password" spellcheck="false" placeholder="http://user:password@host:port" aria-describedby="egress-help"></div>
+</div>
+<p class="hint" id="egress-help">Use http, https, socks5 or socks5h. Include the port. Do not add a path, query or fragment. The Master Key encrypts the full URL. Providers can override this proxy. models.dev Sync and webhooks use only this global default. Only trusted Operators must change proxy URLs.</p>
+<div class="form-error" role="alert" tabindex="-1"></div><button>Save global proxy</button>
+</form></section>
 
 {% if !base.simple %}
 <section class="panel" id="pricing" aria-labelledby="markup-h">
