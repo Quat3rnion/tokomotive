@@ -98,7 +98,7 @@ above still needs a live account check.
 | --- | --- | --- |
 | Google Gemini (native) | **Implemented.** `generateContent` / `streamGenerateContent`, header `x-goog-api-key`. Map `usageMetadata` (`cachedContentTokenCount`, `thoughtsTokenCount`). Translation from Chat and Messages, JSON and SSE. Native preset and model list. Mock tests pass; live account support is not verified. | [API](https://ai.google.dev/api), [generateContent](https://ai.google.dev/api/generate-content) |
 | Google Vertex AI | Gemini on Vertex and Anthropic on Vertex (`rawPredict`). Auth with a Google OAuth access token from a service account or from user sign-in. | Not fully verified |
-| AWS Bedrock (native) | Converse / ConverseStream with SigV4, for accounts that do not use Bedrock API keys. Usage in `usage.inputTokens` / `outputTokens`. | [Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html) |
+| AWS Bedrock (native) | **Implemented.** Converse / ConverseStream with SigV4 and encrypted AWS credentials. Chat and Messages, text, base64 images, tools, JSON and binary event-stream. Input and both cache classes are exclusive. Mock TLS tests pass; live account support is not verified. | [Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html), [ConverseStream](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html), [cache usage](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) |
 | Cohere | `/v2/chat`, usage in `meta.billed_units`. | [Chat](https://docs.cohere.com/v2/docs/chat-api) |
 
 Do group C after groups A and B. Bedrock API keys and Azure v1 already cover

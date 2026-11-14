@@ -62,6 +62,7 @@ pub enum ProviderKind {
     Anthropic,
     /// Google native `generateContent` API.
     Gemini,
+    Bedrock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,7 @@ impl KeyHeader {
             ProviderKind::Openai => Self::Bearer,
             ProviderKind::Anthropic => Self::XApiKey,
             ProviderKind::Gemini => Self::XGoogApiKey,
+            ProviderKind::Bedrock => Self::Bearer,
         }
     }
 
@@ -223,6 +225,7 @@ impl ProviderKind {
             (ProviderKind::Openai, _) => openai_usage(usage_object(v)?),
             (ProviderKind::Anthropic, _) => anthropic_usage(v.get("usage")?, None),
             (ProviderKind::Gemini, _) => gemini_usage(v.get("usageMetadata")?),
+            (ProviderKind::Bedrock, _) => crate::translate_bedrock::usage(v.get("usage")?),
         }
     }
 
@@ -398,6 +401,7 @@ pub struct StreamTracker {
     /// True when the Provider sent its final usage report.
     pub usage_final: bool,
     gemini_finished: bool,
+    eventstream: crate::eventstream::Decoder,
     pub saw_content: bool,
 }
 
@@ -407,6 +411,48 @@ impl StreamTracker {
     /// Process a chunk. Returns the bytes to forward to the client: whole
     /// events only, without dropped events.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
+        if self.kind == ProviderKind::Bedrock {
+            return match self.eventstream.feed(chunk) {
+                Ok(frames) => {
+                    let mut out = Vec::new();
+                    for frame in frames {
+                        let body = serde_json::from_slice::<Value>(&frame.payload);
+                        let event = frame
+                            .headers
+                            .get(":event-type")
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        let value = if frame
+                            .headers
+                            .get(":message-type")
+                            .is_none_or(|t| t != "event")
+                        {
+                            serde_json::json!({"error":{"message":"upstream Bedrock exception or invalid event"}})
+                        } else if let Ok(body) = body {
+                            if event == "metadata" {
+                                self.usage =
+                                    body.get("usage").and_then(crate::translate_bedrock::usage);
+                                self.usage_final = self.gemini_finished && self.usage.is_some();
+                            }
+                            if event == "messageStop" {
+                                self.gemini_finished = true;
+                            }
+                            if event == "contentBlockDelta" {
+                                self.saw_content = true;
+                            }
+                            serde_json::json!({"event":event,"body":body})
+                        } else {
+                            serde_json::json!({"error":{"message":"invalid Bedrock event JSON"}})
+                        };
+                        out.extend_from_slice(format!("data: {value}\n\n").as_bytes());
+                    }
+                    out
+                }
+                Err(_) => {
+                    b"data: {\"error\":{\"message\":\"invalid Bedrock event-stream\"}}\n\n".to_vec()
+                }
+            };
+        }
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::with_capacity(chunk.len());
         while let Some((end, sep)) = find_event_end(&self.buf) {
@@ -425,6 +471,13 @@ impl StreamTracker {
     /// Call at end of stream. Processes a trailing event with no separator
     /// and returns the bytes to forward.
     pub fn finish(&mut self) -> Vec<u8> {
+        if self.kind == ProviderKind::Bedrock {
+            return if self.eventstream.finish().is_err() {
+                b"data: {\"error\":{\"message\":\"truncated Bedrock event-stream\"}}\n\n".to_vec()
+            } else {
+                Vec::new()
+            };
+        }
         let event = std::mem::take(&mut self.buf);
         if !event.is_empty() && self.handle_event(&event) {
             event
@@ -485,6 +538,7 @@ impl StreamTracker {
                 }
                 true
             }
+            ProviderKind::Bedrock => true,
         }
     }
 

@@ -29,6 +29,20 @@ pub async fn value(db: &Db, key: &str) -> Result<Option<String>> {
         .await?)
 }
 
+pub async fn bedrock_credentials(
+    db: &Db,
+    key: &SecretKey,
+    name: &str,
+) -> Result<crate::sigv4::Credentials> {
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT bedrock_credentials FROM providers WHERE name=?")
+            .bind(name)
+            .fetch_one(db)
+            .await?;
+    let raw = key.decrypt(&raw.context("AWS credentials are not configured")?)?;
+    serde_json::from_str(&raw).context("invalid stored AWS credentials")
+}
+
 pub async fn put(db: &Db, key: &str, value: &str) -> Result<()> {
     sqlx::query("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .bind(key).bind(value).execute(db).await?;

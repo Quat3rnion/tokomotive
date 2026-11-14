@@ -18,6 +18,7 @@ impl Preset {
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::Gemini => "gemini",
+            ProviderKind::Bedrock => "bedrock",
         }
     }
 }
@@ -291,6 +292,16 @@ pub static PRESETS: &[Preset] = &[
         "https://www.volcengine.com/docs/ark/agent-model-invocation-practice",
         "Use an Ark API key. Only the endpoint and authentication are verified."
     ),
+    preset!(
+        "bedrock-native",
+        "AWS Bedrock (native, SigV4)",
+        Bedrock,
+        "https://bedrock-runtime.us-east-1.amazonaws.com",
+        Bearer,
+        false,
+        "https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html",
+        "Set the AWS region and encrypted AWS credentials below. No bearer key is used."
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Preset> {
@@ -315,6 +326,7 @@ impl PresetChoice {
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::Gemini => "gemini",
+            ProviderKind::Bedrock => "bedrock",
         }
     }
 }

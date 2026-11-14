@@ -36,6 +36,68 @@ fn client() -> reqwest::Client {
 }
 
 #[tokio::test]
+async fn bedrock_credentials_are_encrypted_not_rendered_and_region_is_validated() {
+    let (_dir, st, url, task) = app().await;
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    let fields = [
+        ("name", "aws"),
+        ("kind", "bedrock"),
+        ("base_url", "https://ignored.example"),
+        ("aws_region", "us-east-1"),
+        ("aws_access_key", "PRIVATEACCESSKEY"),
+        ("aws_secret_key", "PRIVATESECRETKEY"),
+        ("aws_session_token", "PRIVATESESSIONTOKEN"),
+    ];
+    let r = c
+        .post(format!("{url}/admin/providers"))
+        .header("cookie", &cookie)
+        .form(&fields)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303, "{}", r.text().await.unwrap());
+    let creds = tokomotive::settings::bedrock_credentials(&st.db, &st.secret_key, "aws")
+        .await
+        .unwrap();
+    assert_eq!(creds.secret_key, "PRIVATESECRETKEY");
+    let raw: String =
+        sqlx::query_scalar("SELECT bedrock_credentials FROM providers WHERE name='aws'")
+            .fetch_one(&st.db)
+            .await
+            .unwrap();
+    assert!(!raw.contains("PRIVATE"));
+    let page = c
+        .get(format!("{url}/admin/providers"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!page.contains("PRIVATE"));
+    assert!(page.contains("AWS credentials saved"));
+    assert!(page.contains("type=\"password\" name=\"aws_secret_key\""));
+    for region in ["us-east-1.evil", "us-east-1/path", "us-east-1\r\nx: y"] {
+        let mut bad = fields;
+        bad[0].1 = "bad";
+        bad[3].1 = region;
+        assert_eq!(
+            c.post(format!("{url}/admin/providers"))
+                .header("cookie", &cookie)
+                .form(&bad)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            400
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
 async fn preset_fills_editable_provider_fields_without_javascript() {
     let (_dir, st, url, task) = app().await;
     let c = client();

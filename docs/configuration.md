@@ -148,6 +148,33 @@ changes on **Settings** apply at once. The token is encrypted in SQLite and is
 never shown in HTML. Leave the field blank to keep it, or select **Remove token**.
 If no token is set, `/metrics` needs no authentication.
 
+## Native AWS Bedrock credentials
+
+Select **AWS Bedrock (native, SigV4)** in Providers. Set the region, access key
+ID, secret access key and optional session token. These credentials are dashboard
+settings, not TOML seed fields. All credential fields use encrypted storage.
+Saved fields are empty in HTML. An empty field keeps its saved value. Select
+**Clear saved session token** to remove that token. Temporary credentials must
+be replaced before they expire; automatic AWS credential refresh is not supported.
+
+The region must match `[a-z]{2}(-[a-z]+){1,3}-[0-9]`, with a maximum of 40
+characters. It sets `https://bedrock-runtime.REGION.amazonaws.com`. Other hosts,
+ports, paths and URL schemes are refused. This adapter does not use a Key Pool
+or a bearer key. SigV4 uses service `bedrock` and signs the exact request bytes.
+The existing Bedrock OpenAI API-key route is separate and is not changed.
+
+Use a Model ID or inference profile ARN for the upstream Model. The Proxy
+URL-encodes the whole ID as one path segment. The API paths are
+`/model/{modelId}/converse` and `/model/{modelId}/converse-stream`; see the
+[Converse reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html)
+and [ConverseStream reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html).
+Only Chat Completions and Messages POST requests use this adapter.
+
+The binary stream reader checks both IEEE CRC32 values. A frame is at most
+16 MiB and has at most 64 headers. A damaged or incomplete stream returns a
+client error event and a failed Ledger Entry. HTTP 401 and 403 are not retried.
+HTTP 429 and 5xx keep the normal retry rules.
+
 ## Master Key and backups
 
 The Master Key protects the stored Provider Keys, subscription credentials and

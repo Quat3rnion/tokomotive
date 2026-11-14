@@ -434,7 +434,16 @@ fn usage_to_chat(usage: &Value) -> Value {
 fn usage_to_messages(usage: &Value) -> Value {
     let prompt = number(usage, "prompt_tokens");
     let cached = number(&usage["prompt_tokens_details"], "cached_tokens").min(prompt);
-    json!({"input_tokens":prompt-cached,"cache_read_input_tokens":cached,"output_tokens":number(usage,"completion_tokens")})
+    let write =
+        number(&usage["prompt_tokens_details"], "cache_creation_tokens").min(prompt - cached);
+    let mut out = json!({"input_tokens":prompt-cached-write,"cache_read_input_tokens":cached,"output_tokens":number(usage,"completion_tokens")});
+    if usage["prompt_tokens_details"]
+        .get("cache_creation_tokens")
+        .is_some()
+    {
+        out["cache_creation_input_tokens"] = json!(write);
+    }
+    out
 }
 
 pub fn translate_response(dir: Direction, body: &Value) -> Value {

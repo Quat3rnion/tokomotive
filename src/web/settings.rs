@@ -581,6 +581,8 @@ struct ProvidersPage {
     preset: crate::presets::PresetChoice,
 }
 struct ProviderView {
+    aws_region: String,
+    aws_saved: bool,
     key_pager: Pager,
     name: String,
     kind: String,
@@ -761,7 +763,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,bedrock_credentials IS NOT NULL AS aws_saved FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -847,6 +849,10 @@ async fn providers(
             vec![]
         };
         providers.push(ProviderView {
+            aws_region: crate::sigv4::region_from_base(row.get::<&str, _>("base_url"))
+                .unwrap_or("")
+                .into(),
+            aws_saved: row.get("aws_saved"),
             key_pager,
             name,
             auth: auth.as_str().into(),
@@ -863,6 +869,7 @@ async fn providers(
                 ProviderKind::Openai => "openai",
                 ProviderKind::Anthropic => "anthropic",
                 ProviderKind::Gemini => "gemini",
+                ProviderKind::Bedrock => "bedrock",
             }
             .into(),
             base_url: row.get("base_url"),
@@ -896,6 +903,16 @@ async fn providers(
 
 #[derive(Deserialize)]
 struct ProviderForm {
+    #[serde(default)]
+    aws_region: String,
+    #[serde(default)]
+    aws_access_key: String,
+    #[serde(default)]
+    aws_secret_key: String,
+    #[serde(default)]
+    aws_session_token: String,
+    #[serde(default)]
+    aws_clear_token: bool,
     preset: Option<String>,
     name: String,
     /// A Subscription Provider has a fixed API format; the form may omit it.
@@ -971,6 +988,60 @@ async fn save_provider(
     }
     let _guard = st.settings_write.lock().await;
     let added = old.is_none();
+    let aws_credentials = if f.kind == ProviderKind::Bedrock {
+        if f.auth != ProviderAuth::ApiKey || !f.api_key.is_empty() {
+            return form_error("Native Bedrock uses AWS credentials only.");
+        }
+        let host = match crate::sigv4::host(&f.aws_region) {
+            Ok(h) => h,
+            Err(e) => return form_error(e),
+        };
+        f.base_url = format!("https://{host}");
+        let existing = if let Some(name) = &old {
+            store::bedrock_credentials(&st.db, &st.secret_key, name)
+                .await
+                .ok()
+        } else {
+            None
+        };
+        let access = if f.aws_access_key.is_empty() {
+            existing
+                .as_ref()
+                .map(|c| c.access_key.clone())
+                .unwrap_or_default()
+        } else {
+            f.aws_access_key.clone()
+        };
+        let secret = if f.aws_secret_key.is_empty() {
+            existing
+                .as_ref()
+                .map(|c| c.secret_key.clone())
+                .unwrap_or_default()
+        } else {
+            f.aws_secret_key.clone()
+        };
+        let token = if f.aws_clear_token {
+            None
+        } else if f.aws_session_token.is_empty() {
+            existing.and_then(|c| c.session_token)
+        } else {
+            Some(f.aws_session_token.clone())
+        };
+        if access.is_empty()
+            || secret.is_empty()
+            || [Some(&access), Some(&secret), token.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|s| s.len() > 16384 || s.chars().any(char::is_control))
+        {
+            return form_error("Enter valid AWS access and secret keys.");
+        }
+        Some(tryr!(st.secret_key.encrypt(&tryr!(serde_json::to_string(
+            &crate::sigv4::Credentials::new(&access, &secret, token)
+        )))))
+    } else {
+        None
+    };
     let mut cfg = tryr!(runtime(&st).await);
     if let Some(name) = &old {
         cfg.providers.retain(|p| &p.name != name);
@@ -1038,6 +1109,9 @@ async fn save_provider(
             Err(e) => return form_error(e),
         });
     }
+    if f.kind == ProviderKind::Bedrock {
+        keys.clear();
+    }
     let mut tx = tryr!(st.db.begin().await);
     let result = if let Some(name) = old {
         sqlx::query("UPDATE providers SET name=?,kind=?,base_url=?,keys_json=?,auth=?,include_usage=?,key_header=? WHERE name=?")
@@ -1079,6 +1153,13 @@ async fn save_provider(
                 .await
         );
     }
+    tryr!(
+        sqlx::query("UPDATE providers SET bedrock_credentials=? WHERE name=?")
+            .bind(aws_credentials)
+            .bind(&f.name)
+            .execute(&mut *tx)
+            .await
+    );
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
     let verb = if added { "added" } else { "saved" };

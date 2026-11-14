@@ -78,3 +78,6 @@ async fn metrics_endpoint(State(st): State<AppState>, headers: axum::http::Heade
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
+pub mod eventstream;
+pub mod sigv4;
+pub mod translate_bedrock;

@@ -111,7 +111,8 @@ fn roster_has_all_verified_region_and_protocol_variants() {
             "zai-china-messages",
             "minimax-messages",
             "openrouter-messages",
-            "ark-messages"
+            "ark-messages",
+            "bedrock-native"
         ]
     );
     assert!(!find("deepseek").unwrap().include_usage);

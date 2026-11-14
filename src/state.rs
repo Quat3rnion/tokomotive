@@ -161,6 +161,10 @@ impl AppState {
     pub fn http(&self) -> reqwest::Client {
         self.http.read().expect("http lock").clone()
     }
+    #[cfg(test)]
+    pub(crate) fn set_test_http(&self, http: reqwest::Client) {
+        *self.http.write().expect("http lock") = http;
+    }
 
     pub async fn reload_settings(&self) -> Result<()> {
         let (cfg, settings) = crate::settings::load(&self.db, &self.secret_key).await?;

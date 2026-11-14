@@ -8,6 +8,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
+#[cfg(test)]
+#[path = "proxy_bedrock_tests.rs"]
+mod bedrock_tests;
 use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -49,7 +52,7 @@ async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Res
 
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
-    if kind == ProviderKind::Gemini {
+    if matches!(kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
         return matches!(endpoint, Endpoint::ChatCompletions | Endpoint::Messages);
     }
     endpoint.native_kind().is_none_or(|native| native == kind)
@@ -102,6 +105,16 @@ fn prepare_body(
     endpoint: Endpoint,
     body: Option<&Value>,
 ) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    if candidate.provider.kind == ProviderKind::Bedrock {
+        return Ok((
+            Some(crate::translate_bedrock::request(
+                endpoint,
+                body.unwrap_or(&Value::Null),
+            )?),
+            Endpoint::Other,
+            false,
+        ));
+    }
     if candidate.provider.kind == ProviderKind::Gemini {
         return Ok((
             Some(crate::translate_gemini::request(
@@ -759,7 +772,7 @@ pub async fn handle(
             });
             continue;
         }
-        if provider.kind == ProviderKind::Gemini {
+        if matches!(provider.kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
             if method != Method::POST || !subscription_path_allowed(endpoint, path_q) {
                 translation_error = Some(translate::TranslateError {
                     message:
@@ -768,10 +781,12 @@ pub async fn handle(
                 });
                 continue;
             }
-            path = match crate::translate_gemini::path(
-                candidate.model.as_deref().unwrap_or_default(),
-                streamed,
-            ) {
+            path = match (if provider.kind == ProviderKind::Bedrock {
+                crate::translate_bedrock::path
+            } else {
+                crate::translate_gemini::path
+            })(candidate.model.as_deref().unwrap_or_default(), streamed)
+            {
                 Ok(path) => path,
                 Err(error) => {
                     translation_error = Some(error);
@@ -1003,9 +1018,18 @@ pub async fn handle(
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.starts_with("text/event-stream"));
+        .is_some_and(|v| {
+            v.starts_with("text/event-stream")
+                || (ctx.provider.kind == ProviderKind::Bedrock
+                    && status.is_success()
+                    && v.starts_with("application/vnd.amazon.eventstream"))
+        });
 
     if is_sse {
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        );
         let codex = ctx.provider.auth == crate::provider::ProviderAuth::Codex;
         if codex && !streamed && status.is_success() {
             return collect_codex(ctx, upstream, out_headers).await;
@@ -1027,6 +1051,16 @@ pub async fn handle(
         let translator = if ctx.provider.kind == ProviderKind::Gemini {
             Some(ProxyStream::Gemini(
                 crate::translate_gemini::GeminiStream::new(
+                    endpoint,
+                    ctx.upstream_model.as_deref().unwrap_or_default(),
+                    json_body
+                        .as_ref()
+                        .is_some_and(|v| v["stream_options"]["include_usage"] == true),
+                ),
+            ))
+        } else if ctx.provider.kind == ProviderKind::Bedrock {
+            Some(ProxyStream::Bedrock(
+                crate::translate_bedrock::BedrockStream::new(
                     endpoint,
                     ctx.upstream_model.as_deref().unwrap_or_default(),
                     json_body
@@ -1074,6 +1108,19 @@ pub async fn handle(
     };
     let parsed: Option<Value> = serde_json::from_slice(&bytes).ok();
     let kind = ctx.provider.kind;
+    if kind == ProviderKind::Bedrock
+        && status.is_success()
+        && parsed
+            .as_ref()
+            .is_none_or(|v| !v["output"]["message"]["content"].is_array())
+    {
+        ctx.finish(Outcome::failed(502));
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "invalid Bedrock response",
+        );
+    }
     if kind == ProviderKind::Gemini
         && status.is_success()
         && parsed.as_ref().is_none_or(|v| {
@@ -1105,14 +1152,18 @@ pub async fn handle(
         client_aborted: false,
     });
 
-    let bytes = if kind == ProviderKind::Gemini {
+    let bytes = if matches!(kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
         out_headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
         if status.is_success() {
             Bytes::from(
-                crate::translate_gemini::response(
+                (if kind == ProviderKind::Bedrock {
+                    crate::translate_bedrock::response
+                } else {
+                    crate::translate_gemini::response
+                })(
                     endpoint,
                     parsed.as_ref().unwrap_or(&Value::Null),
                     upstream_model.as_deref().unwrap_or_default(),
@@ -1222,6 +1273,27 @@ async fn build_request(
     headers: &HeaderMap,
     hints: RequestHints<'_>,
 ) -> Option<reqwest::RequestBuilder> {
+    if provider.kind == ProviderKind::Bedrock {
+        if method != Method::POST {
+            return None;
+        }
+        let region =
+            crate::sigv4::region_from_base(provider.base_url.trim_end_matches('/')).ok()?;
+        let prefix = format!("https://{}", crate::sigv4::host(region).ok()?);
+        let path = url.strip_prefix(&prefix)?;
+        let creds = crate::settings::bedrock_credentials(&st.db, &st.secret_key, &provider.name)
+            .await
+            .ok()?;
+        return crate::sigv4::request(
+            &st.http(),
+            &creds,
+            region,
+            path,
+            hints.body,
+            &chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string(),
+        )
+        .ok();
+    }
     let mut req = st.http().request(method.clone(), url);
     for (name, value) in headers.iter() {
         if !skip_header(name)

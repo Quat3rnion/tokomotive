@@ -366,7 +366,8 @@ impl Config {
                     bail!("A Subscription Provider needs the base URL {base} and no API keys.");
                 }
             }
-            if (p.kind == ProviderKind::Gemini && p.auth != ProviderAuth::ApiKey)
+            if (matches!(p.kind, ProviderKind::Gemini | ProviderKind::Bedrock)
+                && p.auth != ProviderAuth::ApiKey)
                 || matches!(
                     (p.auth, p.kind),
                     (
@@ -387,6 +388,17 @@ impl Config {
             }
             if !providers.insert(&p.name) {
                 bail!("A Provider named {} already exists.", p.name);
+            }
+            if p.kind == ProviderKind::Bedrock {
+                crate::sigv4::region_from_base(p.base_url.trim_end_matches('/'))
+                    .map_err(anyhow::Error::msg)?;
+                if p.api_key.is_some()
+                    || p.api_key_env.is_some()
+                    || !p.api_keys.is_empty()
+                    || !p.api_keys_env.is_empty()
+                {
+                    bail!("Native Bedrock uses encrypted AWS credentials, not Provider Keys.");
+                }
             }
             let url = reqwest::Url::parse(&p.base_url).with_context(|| {
                 format!(

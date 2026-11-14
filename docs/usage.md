@@ -122,6 +122,30 @@ a body that is not JSON, for example a multipart upload, has no Model name.
 The Proxy then records an Unpriced Entry unless the response body names the
 Model. This applies, for example, to multipart requests to `/v1/images/edits`.
 
+### Native AWS Bedrock
+
+Add the **AWS Bedrock (native, SigV4)** preset in Providers. Enter the region
+and AWS credentials, then add a Model or Route with its Bedrock Model ID or
+inference profile ARN. Use the normal Chat Completions or Messages client path.
+Both JSON responses and streaming responses support text and function tools.
+Images must use base64 data URLs. Model discovery and the connection test are
+not available for native Bedrock. Request options outside the mapped text,
+image, tool and inference fields are not forwarded.
+
+The Proxy records `usage.inputTokens` as Input and `outputTokens` as Output.
+It records `cacheReadInputTokens` as Cache Read and `cacheWriteInputTokens` as
+Cache Write. These input classes are separate; the Proxy does not subtract cache
+tokens from `inputTokens`. The optional `cacheDetails` splits writes by TTL.
+Writes without a TTL breakdown use the 5-minute class. See the
+[AWS cache guide](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html#prompt-caching-converse)
+and [TokenUsage reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_TokenUsage.html).
+Client Chat usage includes all input classes in `prompt_tokens`; Messages
+usage keeps the three input classes separate.
+
+SigV4 regression tests use the AWS-published
+[get-vanilla, post-vanilla and post-x-www-form-urlencoded vectors](https://github.com/awslabs/aws-c-auth/tree/main/tests/aws-signing-test-suite/v4).
+Tests use mock upstreams only. Live AWS account access is not verified.
+
 ### Routing and Translation
 
 An explicit Route selects its Deployments before catalog lookup. The Proxy
