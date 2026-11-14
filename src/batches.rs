@@ -1103,7 +1103,7 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
         });
     }
     let _guard = st.budget_check.lock().await;
-    let mut tx = st.db.begin().await?;
+    let mut tx = db::begin_write(&st.db).await?;
     if sqlx::query("UPDATE batch_jobs SET accounted=1,held_micros=0 WHERE id=? AND accounted=0")
         .bind(&o.id)
         .execute(&mut *tx)
