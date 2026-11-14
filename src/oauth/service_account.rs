@@ -92,6 +92,7 @@ impl OAuthManager {
         let assertion = account.assertion(self.now() / 1000)?;
         let response = self
             .http(name)
+            .await?
             .post(&self.endpoints.google_token)
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),

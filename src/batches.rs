@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
 };
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -62,8 +63,8 @@ impl IntoResponse for ApiError {
     }
 }
 impl From<anyhow::Error> for ApiError {
-    fn from(error: anyhow::Error) -> Self {
-        tracing::error!(%error, "files/batches request failed");
+    fn from(_: anyhow::Error) -> Self {
+        tracing::error!("files/batches request failed");
         error_response(
             StatusCode::BAD_GATEWAY,
             "Upstream or storage operation failed.",
@@ -184,23 +185,30 @@ fn pinned(
         })?;
     Ok((p, key))
 }
-fn request(
+async fn request(
     st: &AppState,
     p: &Provider,
     key: &str,
     method: Method,
     path: &str,
-) -> reqwest::RequestBuilder {
-    p.key_header.apply(
-        st.provider_http(&p.name)
+) -> Result<reqwest::RequestBuilder, ApiError> {
+    Ok(p.key_header.apply(
+        st.snapshot_http(p)
+            .await?
             .request(method, provider::upstream_url(&p.base_url, path)),
         key,
-    )
+    ))
 }
-async fn send_json(request: reqwest::RequestBuilder) -> Result<(StatusCode, Value), ApiError> {
-    let response = request.send().await.map_err(anyhow::Error::from)?;
+async fn send_json(
+    provider: &str,
+    request: reqwest::RequestBuilder,
+) -> Result<(StatusCode, Value), ApiError> {
+    let response = request
+        .send()
+        .await
+        .map_err(|e| crate::egress::request_error(provider, e))?;
     let status = response.status();
-    let body = proxy::read_capped(response, JSON_LIMIT).await?;
+    let body = proxy::read_capped(response, JSON_LIMIT, provider).await?;
     let value = serde_json::from_slice(&body).map_err(|_| {
         error_response(
             StatusCode::BAD_GATEWAY,
@@ -352,8 +360,13 @@ async fn upload(
             "file",
             reqwest::multipart::Part::bytes(data.to_vec()).file_name(name),
         );
-    let (status, value) =
-        send_json(request(st, &p, &p.keys[0], Method::POST, "/v1/files").multipart(form)).await?;
+    let (status, value) = send_json(
+        &p.name,
+        request(st, &p, &p.keys[0], Method::POST, "/v1/files")
+            .await?
+            .multipart(form),
+    )
+    .await?;
     if status.is_success() {
         let id = value["id"]
             .as_str()
@@ -569,8 +582,11 @@ async fn handle_inner(st: AppState, req: Request) -> Result<Response, ApiError> 
                 && segments.get(3) == Some(&"cancel")))
     {
         admit(&st, &auth)?;
-        let (status, value) =
-            send_json(request(&st, &p, &key, parts.method, parts.uri.path())).await?;
+        let (status, value) = send_json(
+            &p.name,
+            request(&st, &p, &key, parts.method, parts.uri.path()).await?,
+        )
+        .await?;
         if status.is_success() {
             observe(&st, &o, &value).await?;
         }
@@ -583,15 +599,19 @@ async fn handle_inner(st: AppState, req: Request) -> Result<Response, ApiError> 
     {
         admit(&st, &auth)?;
         let r = request(&st, &p, &key, Method::GET, parts.uri.path())
+            .await?
             .send()
             .await
-            .map_err(anyhow::Error::from)?;
+            .map_err(|e| crate::egress::request_error(&p.name, e))?;
         let mut response = Response::builder().status(r.status());
         if let Some(content_type) = r.headers().get("content-type") {
             response = response.header("content-type", content_type);
         }
+        let provider = p.name.clone();
         return Ok(response
-            .body(Body::from_stream(r.bytes_stream()))
+            .body(Body::from_stream(r.bytes_stream().map(move |chunk| {
+                chunk.map_err(|e| crate::egress::request_error(&provider, e))
+            })))
             .expect("valid response"));
     }
     if segments.len() != 3
@@ -614,13 +634,10 @@ async fn handle_inner(st: AppState, req: Request) -> Result<Response, ApiError> 
             ));
         }
     }
-    let (status, value) = send_json(request(
-        &st,
-        &p,
-        &key,
-        parts.method.clone(),
-        parts.uri.path(),
-    ))
+    let (status, value) = send_json(
+        &p.name,
+        request(&st, &p, &key, parts.method.clone(), parts.uri.path()).await?,
+    )
     .await?;
     if status.is_success() {
         if parts.method == Method::DELETE {
@@ -821,7 +838,13 @@ async fn create(st: &AppState, auth: &KeyAuth, body: Body) -> Result<Response, A
             .bind(&intent).bind(auth.key_id).bind(auth.user_id).bind(auth.team_id).bind(held).bind(&snapshot).bind(simple).bind(db::now_s()).execute(&st.db).await?;
     }
     // An ambiguous failure keeps the durable hold. Never retry a create automatically.
-    let response = send_json(request(st, &p, &key, Method::POST, "/v1/batches").json(&v)).await;
+    let response = send_json(
+        &p.name,
+        request(st, &p, &key, Method::POST, "/v1/batches")
+            .await?
+            .json(&v),
+    )
+    .await;
     let (status, value) = match response {
         Ok(pair) => pair,
         Err(e) => {
@@ -922,13 +945,10 @@ async fn observe(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
                 }
             } else {
                 let (p, key) = pinned(st, o, None)?;
-                let (status, metadata) = send_json(request(
-                    st,
-                    &p,
-                    &key,
-                    Method::GET,
-                    &format!("/v1/files/{id}"),
-                ))
+                let (status, metadata) = send_json(
+                    &p.name,
+                    request(st, &p, &key, Method::GET, &format!("/v1/files/{id}")).await?,
+                )
                 .await?;
                 if !status.is_success() || metadata["id"].as_str() != Some(id) {
                     return Err(error_response(
@@ -977,16 +997,17 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
                 Method::GET,
                 &format!("/v1/files/{id}/content"),
             )
+            .await?
             .send()
             .await
-            .map_err(anyhow::Error::from)?;
+            .map_err(|e| crate::egress::request_error(&p.name, e))?;
             if !r.status().is_success() {
                 return Err(error_response(
                     StatusCode::BAD_GATEWAY,
                     "Batch output is not available for accounting.",
                 ));
             }
-            let data = proxy::read_capped(r, remaining).await?;
+            let data = proxy::read_capped(r, remaining, &p.name).await?;
             remaining -= data.len();
             for line in data
                 .split(|b| *b == b'\n')
@@ -1150,13 +1171,10 @@ pub async fn poll_once(st: &AppState) -> anyhow::Result<usize> {
             .await?;
         let outcome = async {
             let (p, key) = pinned(st, &o, None)?;
-            let (status, value) = send_json(request(
-                st,
-                &p,
-                &key,
-                Method::GET,
-                &format!("/v1/batches/{}", o.id),
-            ))
+            let (status, value) = send_json(
+                &p.name,
+                request(st, &p, &key, Method::GET, &format!("/v1/batches/{}", o.id)).await?,
+            )
             .await?;
             if !status.is_success() {
                 return Err(error_response(

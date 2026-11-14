@@ -9,6 +9,29 @@ use anyhow::{Result, bail};
 const INVALID: &str =
     "Use http, https, socks5 or socks5h with a host and port, without a path, query or fragment.";
 
+/// Do not retain reqwest errors: their sources can contain endpoint secrets.
+pub fn error_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_status() {
+        "status"
+    } else {
+        "connect"
+    }
+}
+
+pub fn request_error(provider: &str, error: reqwest::Error) -> anyhow::Error {
+    let class = error_class(&error);
+    tracing::warn!(provider, class, "outbound request failed");
+    anyhow::anyhow!("{provider}: {class}")
+}
+
 #[derive(Clone)]
 pub struct ProxyUrl(String);
 
@@ -80,6 +103,7 @@ struct Clients {
 pub struct Policy {
     global: Option<String>,
     providers: HashMap<String, Option<String>>,
+    identities: HashMap<String, String>,
     clients: HashMap<Option<String>, Clients>,
     models: reqwest::Client,
     webhook: reqwest::Client,
@@ -87,7 +111,13 @@ pub struct Policy {
 
 /// A whole generation is built before a reload replaces the active policy.
 #[derive(Clone)]
-pub struct Egress(Arc<RwLock<Policy>>);
+pub struct Egress(Arc<RwLock<Arc<Policy>>>);
+
+impl fmt::Debug for Egress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Egress")
+    }
+}
 
 fn builder(proxy: Option<&str>, timeout: u64, purpose: Purpose) -> Result<reqwest::ClientBuilder> {
     let mut builder = reqwest::Client::builder()
@@ -141,6 +171,7 @@ impl Policy {
         Ok(Self {
             global,
             providers,
+            identities: HashMap::new(),
             clients,
             models,
             webhook,
@@ -170,12 +201,13 @@ impl Policy {
                 .map(|v| key.decrypt(&v))
                 .transpose()?,
         };
-        let rows: Vec<(String, String, Option<String>)> =
-            sqlx::query_as("SELECT name,proxy_mode,proxy_url FROM providers")
+        let rows: Vec<(String, String, Option<String>, String)> =
+            sqlx::query_as("SELECT name,proxy_mode,proxy_url,egress_identity FROM providers")
                 .fetch_all(db)
                 .await?;
         let mut providers = HashMap::new();
-        for (name, mut mode, mut secret) in rows {
+        let mut identities = HashMap::new();
+        for (name, mut mode, mut secret, identity) in rows {
             if let Some((changed, new_mode, new_url)) = &provider_override
                 && *changed == name
             {
@@ -190,36 +222,71 @@ impl Policy {
                 )?),
                 _ => bail!("Invalid egress proxy mode"),
             };
+            identities.insert(name.clone(), identity);
             providers.insert(name, proxy);
         }
-        Self::new(global, providers, timeout)
+        let mut policy = Self::new(global, providers, timeout)?;
+        policy.identities = identities;
+        Ok(policy)
     }
 }
 
 impl Egress {
     pub fn new(policy: Policy) -> Self {
-        Self(Arc::new(RwLock::new(policy)))
+        Self(Arc::new(RwLock::new(Arc::new(policy))))
     }
     pub fn replace(&self, policy: Policy) {
-        *self.0.write().expect("egress policy") = policy;
+        *self.0.write().expect("egress policy") = Arc::new(policy);
     }
-    pub fn client(&self, provider: Option<&str>, purpose: Purpose) -> reqwest::Client {
+    /// Retain one complete client generation, not a live name lookup.
+    pub fn snapshot(&self) -> Self {
+        Self(Arc::new(RwLock::new(
+            self.0.read().expect("egress policy").clone(),
+        )))
+    }
+    /// Check the row identity before a later send. A reused name is not the
+    /// Provider whose credentials the request retained. Database errors close.
+    pub async fn validate(&self, db: &crate::db::Db, provider: &str) -> Result<()> {
+        let expected = self
+            .0
+            .read()
+            .expect("egress policy")
+            .identities
+            .get(provider)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Provider egress policy unavailable"))?;
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT egress_identity FROM providers WHERE name=?")
+                .bind(provider)
+                .fetch_optional(db)
+                .await?;
+        if current.as_deref() != Some(expected.as_str()) {
+            bail!("Provider egress policy unavailable");
+        }
+        Ok(())
+    }
+    pub fn client(&self, provider: Option<&str>, purpose: Purpose) -> Result<reqwest::Client> {
         let policy = self.0.read().expect("egress policy");
-        let proxy = provider
-            .and_then(|n| policy.providers.get(n))
-            .unwrap_or(&policy.global);
-        match purpose {
+        let proxy = match provider {
+            Some(name) => policy
+                .providers
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("Provider egress policy unavailable"))?,
+            None => &policy.global,
+        };
+        Ok(match purpose {
             Purpose::Upstream => policy.clients[proxy].upstream.clone(),
             Purpose::OAuth => policy.clients[proxy].oauth.clone(),
             Purpose::Models => policy.models.clone(),
             Purpose::Webhook => policy.webhook.clone(),
-        }
+        })
     }
     pub fn label(&self, provider: Option<&str>) -> Option<String> {
         let policy = self.0.read().expect("egress policy");
-        let proxy = provider
-            .and_then(|n| policy.providers.get(n))
-            .unwrap_or(&policy.global);
+        let proxy = match provider {
+            Some(name) => policy.providers.get(name)?,
+            None => &policy.global,
+        };
         proxy
             .as_ref()
             .map(|v| ProxyUrl::parse(v).expect("validated proxy").label())
@@ -299,7 +366,8 @@ mod tests {
         let egress = Egress::new(policy);
         for _ in 0..2 {
             let response = egress
-                .client(Some("p"), Purpose::Upstream)
+                .client(None, Purpose::Upstream)
+                .unwrap()
                 .get("https://upstream.invalid/test")
                 .send()
                 .await

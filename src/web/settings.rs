@@ -2136,6 +2136,7 @@ async fn save_global_egress(
         );
     }
     st.egress.replace(policy);
+    st.set_router_table((*st.router_table()).clone());
     saved("/admin/settings#egress", "Global egress proxy saved.")
 }
 
@@ -2193,6 +2194,7 @@ async fn save_provider_egress(
             .await
     );
     st.egress.replace(policy);
+    st.set_router_table((*st.router_table()).clone());
     saved("/admin/providers", "Provider egress proxy saved.")
 }
 
@@ -2217,10 +2219,10 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
             "This Provider has no Provider Key. Add a key, or set its environment variable, and test again.",
         );
     };
-    let req = st
-        .provider_http(&p.name)
-        .get(url)
-        .timeout(std::time::Duration::from_secs(15));
+    let Ok(http) = st.snapshot_http(p).await else {
+        return form_error("Provider egress policy unavailable.");
+    };
+    let req = http.get(url).timeout(std::time::Duration::from_secs(15));
     let req = p.key_header.apply(req, key);
     let req = if p.kind == ProviderKind::Anthropic {
         req.header("anthropic-version", "2023-06-01")

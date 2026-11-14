@@ -42,12 +42,17 @@ const MAX_UPSTREAM_BODY: usize = 64 * 1024 * 1024;
 pub(crate) async fn read_capped(
     mut response: reqwest::Response,
     max: usize,
+    provider: &str,
 ) -> anyhow::Result<Bytes> {
     if response.content_length().is_some_and(|n| n > max as u64) {
         anyhow::bail!("upstream body is larger than {max} bytes");
     }
     let mut out = bytes::BytesMut::new();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| crate::egress::request_error(provider, e))?
+    {
         if out.len() + chunk.len() > max {
             anyhow::bail!("upstream body is larger than {max} bytes");
         }
@@ -1236,6 +1241,10 @@ async fn handle_inner(
             continue;
         };
         let provider = &candidate.provider;
+        let Some(egress) = provider.egress.as_ref() else {
+            continue;
+        };
+        let oauth = st.oauth.clone().with_egress(egress.clone());
         if endpoint == Endpoint::CountTokens && !extra::native_count(provider) {
             permit.record(true);
             ctx.provider = provider.clone();
@@ -1253,7 +1262,7 @@ async fn handle_inner(
                 }
             };
         let prepared = if provider.auth == crate::provider::ProviderAuth::GeminiCli {
-            let Ok(project) = st.oauth.code_assist_project(&provider.name).await else {
+            let Ok(project) = oauth.code_assist_project(&provider.name).await else {
                 ctx.trace.skip(candidate, None, "credentials_invalid");
                 continue;
             };
@@ -1456,7 +1465,7 @@ async fn handle_inner(
             upstream_endpoint = target_endpoint;
             let flow = crate::oauth::Flow::from_auth(provider.auth);
             let oauth_token = if let Some(flow) = flow {
-                match st.oauth.token(&provider.name, flow, None).await {
+                match oauth.token(&provider.name, flow, None).await {
                     Ok(token) => {
                         crate::quota::emit_health_events(&st).await;
                         Some(token)
@@ -1532,7 +1541,7 @@ async fn handle_inner(
                     .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
                 && (ctx.attempts as usize) < table.settings.max_attempts
             {
-                match st.oauth.token(&provider.name, flow, Some(key)).await {
+                match oauth.token(&provider.name, flow, Some(key)).await {
                     Ok(token) => {
                         crate::quota::emit_health_events(&st).await;
                         ctx.attempts += 1;
@@ -1584,7 +1593,7 @@ async fn handle_inner(
                             .as_ref()
                             .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
                         {
-                            let _ = st.oauth.reject(&provider.name, flow, &token).await;
+                            let _ = oauth.reject(&provider.name, flow, &token).await;
                         }
                     }
                     Err(_) => {
@@ -1621,8 +1630,8 @@ async fn handle_inner(
                 }
                 Err(e) => {
                     permit.record(false);
-                    st.egress.connect_error(&provider.name, &e);
-                    tracing::warn!(provider = %provider.name, "upstream request failed");
+                    egress.connect_error(&provider.name, &e);
+                    tracing::warn!(provider = %provider.name, class = crate::egress::error_class(&e), "upstream request failed");
                 }
             }
             if permit.is_probe() {
@@ -1784,10 +1793,10 @@ async fn handle_inner(
         );
     }
 
-    let bytes = match read_capped(upstream, MAX_UPSTREAM_BODY).await {
+    let bytes = match read_capped(upstream, MAX_UPSTREAM_BODY, &ctx.provider.name).await {
         Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "upstream body read failed");
+        Err(_) => {
+            tracing::warn!(provider = %ctx.provider.name, class = "body", "upstream body read failed");
             ctx.finish(Outcome::failed(502));
             return error(
                 StatusCode::BAD_GATEWAY,
@@ -2041,10 +2050,10 @@ async fn build_request(
     headers: &HeaderMap,
     hints: RequestHints<'_>,
 ) -> Option<reqwest::RequestBuilder> {
+    let http = st.snapshot_http(provider).await.ok()?;
     if provider.kind == ProviderKind::Cohere {
         return Some(
-            st.provider_http(&provider.name)
-                .request(method.clone(), url)
+            http.request(method.clone(), url)
                 .bearer_auth(key)
                 .header("content-type", "application/json"),
         );
@@ -2061,7 +2070,7 @@ async fn build_request(
             .await
             .ok()?;
         return crate::sigv4::request(
-            &st.provider_http(&provider.name),
+            &http,
             &creds,
             region,
             path,
@@ -2070,9 +2079,7 @@ async fn build_request(
         )
         .ok();
     }
-    let mut req = st
-        .provider_http(&provider.name)
-        .request(method.clone(), url);
+    let mut req = http.request(method.clone(), url);
     for (name, value) in headers.iter() {
         if !skip_header(name)
             && !(matches!(
@@ -2359,10 +2366,11 @@ fn stream_response(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "upstream stream failed");
+                    let class = crate::egress::error_class(&e);
+                    tracing::warn!(provider = %ctx.provider.name, class, "upstream stream failed");
                     upstream_failed = true;
                     if !client_gone {
-                        let _ = tx.send(Err(std::io::Error::other(e))).await;
+                        let _ = tx.send(Err(std::io::Error::other(class))).await;
                     }
                     break;
                 }

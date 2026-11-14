@@ -245,15 +245,18 @@ struct Tokens {
 }
 type Identity = (String, Flow);
 type FlightLocks = Mutex<HashMap<Identity, Arc<Mutex<()>>>>;
+type UsageCache = Mutex<HashMap<String, (i64, Option<PlanUsage>)>>;
+#[derive(Clone)]
 pub struct OAuthManager {
     db: Db,
     key: SecretKey,
     endpoints: OAuthEndpoints,
     egress: crate::egress::Egress,
-    locks: FlightLocks,
-    pending: Mutex<HashMap<Identity, Attempt>>,
-    devices: Mutex<HashMap<Identity, DeviceAttempt>>,
-    usage_cache: Mutex<HashMap<String, (i64, Option<PlanUsage>)>>,
+    provider_egress: bool,
+    locks: Arc<FlightLocks>,
+    pending: Arc<Mutex<HashMap<Identity, Attempt>>>,
+    devices: Arc<Mutex<HashMap<Identity, DeviceAttempt>>>,
+    usage_cache: Arc<UsageCache>,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     configs: HashMap<Flow, FlowConfig>,
 }
@@ -491,10 +494,11 @@ impl OAuthManager {
                 HashMap::new(),
                 30,
             )?),
-            locks: Mutex::default(),
-            pending: Mutex::default(),
-            devices: Mutex::default(),
-            usage_cache: Mutex::default(),
+            provider_egress: false,
+            locks: Arc::default(),
+            pending: Arc::default(),
+            devices: Arc::default(),
+            usage_cache: Arc::default(),
             clock: Arc::new(db::now_ms),
             configs: HashMap::new(),
         })
@@ -505,11 +509,18 @@ impl OAuthManager {
     }
     pub fn with_egress(mut self, egress: crate::egress::Egress) -> Self {
         self.egress = egress;
+        self.provider_egress = true;
         self
     }
-    fn http(&self, name: &str) -> reqwest::Client {
-        self.egress
-            .client(Some(name), crate::egress::Purpose::OAuth)
+    async fn http(&self, name: &str) -> Result<reqwest::Client> {
+        let egress = self.egress.snapshot();
+        if self.provider_egress {
+            egress.validate(&self.db, name).await?;
+        }
+        egress.client(
+            self.provider_egress.then_some(name),
+            crate::egress::Purpose::OAuth,
+        )
     }
     fn request_error(
         &self,
@@ -908,7 +919,9 @@ impl OAuthManager {
         if flow != Flow::Claude {
             body.as_object_mut().expect("token object").remove("state");
         }
-        let req = self.oauth_request(name, &config, &config.token, body)?;
+        let req = self
+            .oauth_request(name, &config, &config.token, body)
+            .await?;
         let response = req.send().await.map_err(|e| {
             self.request_error(name, e, "OAuth token request failed; sign in again")
         })?;
@@ -933,14 +946,14 @@ impl OAuthManager {
         }
         Ok(())
     }
-    fn oauth_request(
+    async fn oauth_request(
         &self,
         name: &str,
         config: &FlowConfig,
         url: &str,
         mut body: Value,
     ) -> Result<reqwest::RequestBuilder> {
-        let mut req = self.http(name).post(url);
+        let mut req = self.http(name).await?.post(url);
         for (k, v) in &config.headers {
             req = req.header(k, v);
         }
@@ -961,6 +974,7 @@ impl OAuthManager {
     async fn profile(&self, name: &str, token: &str) -> Result<Value> {
         let response = self
             .http(name)
+            .await?
             .get(format!(
                 "{}/api/oauth/profile",
                 self.endpoints.claude_resource
@@ -987,6 +1001,7 @@ impl OAuthManager {
         let kid = header.kid.ok_or_else(fail)?;
         let response = self
             .http(name)
+            .await?
             .get(format!("{}/.well-known/jwks.json", self.endpoints.issuer))
             .send()
             .await
@@ -1030,7 +1045,8 @@ impl OAuthManager {
                     &config,
                     &config.token,
                     json!({"code":code,"code_verifier":a.verifier,"code_challenge_method":"S256"}),
-                )?
+                )
+                .await?
                 .send()
                 .await
                 .map_err(|e| self.request_error(name, e, "OAuth key request failed"))?;
@@ -1176,6 +1192,7 @@ impl OAuthManager {
             } => {
                 let mut request = self
                     .http(name)
+                    .await?
                     .get(url)
                     .bearer_auth(&tokens.access_token)
                     .header("accept", "application/json");
@@ -1216,6 +1233,7 @@ impl OAuthManager {
             InferenceBase::FollowUp { url, field, origin } => {
                 let response = self
                     .http(name)
+                    .await?
                     .get(url)
                     .bearer_auth(&tokens.access_token)
                     .send()
@@ -1290,6 +1308,7 @@ impl OAuthManager {
         }
         let request = if flow == Flow::Codex {
             self.http(name)
+                .await?
                 .post(config.device.as_ref().expect("device checked"))
                 .json(&body)
         } else {
@@ -1298,7 +1317,8 @@ impl OAuthManager {
                 &config,
                 config.device.as_ref().expect("device checked"),
                 body,
-            )?
+            )
+            .await?
         };
         let response = request
             .send()
@@ -1464,6 +1484,7 @@ impl OAuthManager {
         let config = self.config(flow, &self.load(name, flow).await?)?;
         let request = if flow == Flow::Codex {
             self.http(name)
+                .await?
                 .post(format!(
                     "{}/api/accounts/deviceauth/token",
                     self.endpoints.issuer
@@ -1474,7 +1495,8 @@ impl OAuthManager {
             if let Some(v) = device_verifier {
                 body["code_verifier"] = json!(v);
             }
-            self.oauth_request(name, &config, &config.token, body)?
+            self.oauth_request(name, &config, &config.token, body)
+                .await?
         };
         let response = request
             .send()
@@ -1562,6 +1584,7 @@ impl OAuthManager {
             let token = self.token(name, Flow::GithubCopilot, None).await?;
             let mut request = self
                 .http(name)
+                .await?
                 .get(url)
                 .bearer_auth(token)
                 .header("accept", "application/json");
@@ -1589,6 +1612,7 @@ impl OAuthManager {
             .context("Missing usage account")?;
         let response = self
             .http(name)
+            .await?
             .get(&self.endpoints.codex_usage)
             .bearer_auth(token)
             .header("chatgpt-account-id", account)

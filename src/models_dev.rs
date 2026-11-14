@@ -290,7 +290,7 @@ async fn fetch_with_client(
     let mut response = request
         .send()
         .await
-        .map_err(|_| anyhow::anyhow!("Model data connection failed"))?;
+        .map_err(|e| crate::egress::request_error("models.dev", e))?;
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(Fetch::NotModified);
     }
@@ -311,7 +311,11 @@ async fn fetch_with_client(
         .and_then(|s| s.to_str().ok())
         .map(str::to_owned);
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| crate::egress::request_error("models.dev", e))?
+    {
         ensure!(
             bytes.len() + chunk.len() <= MAX_BYTES,
             "Model data exceeds 16 MB"
@@ -323,13 +327,13 @@ async fn fetch_with_client(
 
 pub async fn refresh(st: &crate::state::AppState) -> Result<()> {
     let _guard = st.settings_write.lock().await;
-    let result = async {
+    let result: Result<()> = async {
         let url = settings::value(&st.db, "models_dev_url")
             .await?
             .context("Missing model data URL")?;
         let etag = settings::value(&st.db, "models_dev_etag").await?;
         match fetch_with_client(
-            &st.egress.client(None, crate::egress::Purpose::Models),
+            &st.egress.client(None, crate::egress::Purpose::Models)?,
             &url,
             etag.as_deref(),
         )
@@ -363,7 +367,7 @@ pub async fn refresh(st: &crate::state::AppState) -> Result<()> {
     }
     .await;
     if let Err(e) = &result {
-        settings::put(&st.db, "models_dev_error", &format!("{e:#}")).await?;
+        settings::put(&st.db, "models_dev_error", &e.to_string()).await?;
     }
     result
 }

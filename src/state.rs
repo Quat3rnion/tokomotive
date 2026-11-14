@@ -28,6 +28,8 @@ pub struct Provider {
     /// The Provider Key pool. Empty when no key is configured.
     pub keys: Arc<Vec<String>>,
     next: Arc<AtomicUsize>,
+    /// Client policy from the same runtime snapshot as these credentials.
+    pub(crate) egress: Option<crate::egress::Egress>,
 }
 
 impl Provider {
@@ -44,6 +46,7 @@ impl Provider {
             region: crate::config::default_region(),
             keys: Arc::new(keys),
             next: Arc::new(AtomicUsize::new(0)),
+            egress: None,
         }
     }
 
@@ -133,10 +136,13 @@ impl AppState {
         crate::settings::seed(&db, cfg, &secret_key).await?;
         crate::models_dev::seed(&db).await?;
         let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
-        let router_table = RouterTable::from_config(&runtime);
+        let mut router_table = RouterTable::from_config(&runtime);
         let egress = crate::egress::Egress::new(
             crate::egress::Policy::load(&db, &secret_key, settings.upstream_timeout_secs).await?,
         );
+        for provider in &mut router_table.providers {
+            provider.egress = Some(egress.snapshot());
+        }
         let catalog = db::load_catalog(&db).await?;
         let oauth = crate::oauth::OAuthManager::new(db.clone(), secret_key.clone(), endpoints)?
             .with_egress(egress.clone());
@@ -179,16 +185,30 @@ impl AppState {
     }
 
     pub fn http(&self) -> reqwest::Client {
-        self.egress.client(None, crate::egress::Purpose::Upstream)
+        self.egress
+            .client(None, crate::egress::Purpose::Upstream)
+            .expect("global client")
     }
-    pub fn provider_http(&self, name: &str) -> reqwest::Client {
+    pub fn provider_http(&self, name: &str) -> Result<reqwest::Client> {
         // Preserve the trusted TLS test seam used by Bedrock tests.
         #[cfg(test)]
         if let Some(http) = self.test_http.read().expect("test http").as_ref() {
-            return http.clone();
+            return Ok(http.clone());
         }
         self.egress
             .client(Some(name), crate::egress::Purpose::Upstream)
+    }
+    pub(crate) async fn snapshot_http(&self, provider: &Provider) -> Result<reqwest::Client> {
+        #[cfg(test)]
+        if let Some(http) = self.test_http.read().expect("test http").as_ref() {
+            return Ok(http.clone());
+        }
+        let egress = provider
+            .egress
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Provider egress policy unavailable"))?;
+        egress.validate(&self.db, &provider.name).await?;
+        egress.client(Some(&provider.name), crate::egress::Purpose::Upstream)
     }
     #[cfg(test)]
     pub(crate) fn set_test_http(&self, http: reqwest::Client) {
@@ -219,6 +239,7 @@ impl AppState {
     pub fn set_router_table(&self, mut table: RouterTable) {
         let mut current = self.router_table.write().expect("router table");
         for provider in &mut table.providers {
+            provider.egress = Some(self.egress.snapshot());
             if let Some(old) = current.providers.iter().find(|p| p.name == provider.name) {
                 provider.next = old.next.clone();
             }

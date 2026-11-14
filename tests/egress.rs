@@ -74,6 +74,7 @@ async fn provider_override_none_and_reload_route_requests_without_redirects() {
     st.reload_settings().await.unwrap();
     assert_eq!(
         st.provider_http("global")
+            .unwrap()
             .get("http://upstream.invalid/first")
             .send()
             .await
@@ -90,6 +91,7 @@ async fn provider_override_none_and_reload_route_requests_without_redirects() {
     );
     assert_eq!(
         st.provider_http("custom")
+            .unwrap()
             .get("http://upstream.invalid/second")
             .send()
             .await
@@ -105,6 +107,7 @@ async fn provider_override_none_and_reload_route_requests_without_redirects() {
             .starts_with("GET http://upstream.invalid/second ")
     );
     st.provider_http("direct")
+        .unwrap()
         .get(&direct)
         .send()
         .await
@@ -116,6 +119,7 @@ async fn provider_override_none_and_reload_route_requests_without_redirects() {
         .unwrap();
     st.reload_settings().await.unwrap();
     st.provider_http("custom")
+        .unwrap()
         .get(&direct)
         .send()
         .await
@@ -233,6 +237,16 @@ async fn proxy_forms_encrypt_and_redact_secrets_and_report_fixed_failures() {
             .unwrap();
         assert!(!page.contains("PRIVATE"), "{path}");
         assert!(page.contains("http://127.0.0.1:1"));
+        if path == "/admin/settings" {
+            assert!(page.contains("href=\"#egress-h\""));
+            assert!(page.find("id=\"server\"").unwrap() < page.find("id=\"egress\"").unwrap());
+            assert!(page.find("id=\"egress\"").unwrap() < page.find("id=\"pricing\"").unwrap());
+        } else {
+            let settings = page.find("action=\"/admin/providers/p\"").unwrap();
+            let egress = page.find("action=\"/admin/providers/p/egress\"").unwrap();
+            let health = page.find("id=\"health-p\"").unwrap();
+            assert!(settings < egress && egress < health);
+        }
     }
     let result = c
         .post(format!("{url}/admin/providers/p/test"))
@@ -255,6 +269,46 @@ async fn proxy_forms_encrypt_and_redact_secrets_and_report_fixed_failures() {
         "{output}"
     );
     assert!(!output.contains("PRIVATE"));
+    // A truncated response body used to preserve the reqwest error chain in
+    // models_dev_error. Exercise that boundary through an authenticated proxy.
+    let broken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let secret_proxy = format!(
+        "http://PRIVATEUSER:PRIVATEPASS@{}",
+        broken.local_addr().unwrap()
+    );
+    let broken_task = tokio::spawn(async move {
+        let (mut socket, _) = broken.accept().await.unwrap();
+        let mut header = vec![];
+        while !header.ends_with(b"\r\n\r\n") {
+            header.push(socket.read_u8().await.unwrap());
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{")
+            .await
+            .unwrap();
+    });
+    tokomotive::settings::put(
+        &st.db,
+        "egress_proxy",
+        &st.secret_key.encrypt(&secret_proxy).unwrap(),
+    )
+    .await
+    .unwrap();
+    tokomotive::settings::put(&st.db, "models_dev_url", "http://models.invalid/api.json")
+        .await
+        .unwrap();
+    st.reload_settings().await.unwrap();
+    assert!(tokomotive::models_dev::refresh(&st).await.is_err());
+    broken_task.await.unwrap();
+    let stored = tokomotive::settings::value(&st.db, "models_dev_error")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(stored.as_str(), "models.dev: body" | "models.dev: decode"),
+        "{stored}"
+    );
+    assert!(!stored.contains("PRIVATE"));
     assert!(
         !String::from_utf8_lossy(&logs.0.lock().unwrap()).contains("PRIVATE"),
         "Proxy credentials must not enter trace logs"
@@ -359,7 +413,8 @@ async fn socks5_authentication_remote_dns_and_redirect_policy() {
         .unwrap();
         let egress = tokomotive::egress::Egress::new(policy);
         let r = egress
-            .client(Some("p"), tokomotive::egress::Purpose::Upstream)
+            .client(None, tokomotive::egress::Purpose::Upstream)
+            .unwrap()
             .get(format!("http://{host}/test"))
             .send()
             .await
@@ -406,13 +461,18 @@ async fn http_connect_auth_tunnels_and_tls_verification_stays_enabled() {
     });
     let policy = tokomotive::egress::Policy::new(
         Some(format!("http://PRIVATEUSER:PRIVATEPASS@{address}")),
-        Default::default(),
+        [(
+            "p".into(),
+            Some(format!("http://PRIVATEUSER:PRIVATEPASS@{address}")),
+        )]
+        .into(),
         5,
     )
     .unwrap();
     let egress = tokomotive::egress::Egress::new(policy);
     let error = egress
         .client(Some("p"), tokomotive::egress::Purpose::Upstream)
+        .unwrap()
         .get("https://upstream.invalid/test")
         .send()
         .await
@@ -443,13 +503,21 @@ async fn https_proxy_tls_failure_is_a_proxy_connection_failure() {
     });
     let policy = tokomotive::egress::Policy::new(
         Some(format!("https://PRIVATEUSER:PRIVATEPASS@{address}")),
-        Default::default(),
+        [(
+            "https-proxy-tls-check".into(),
+            Some(format!("https://PRIVATEUSER:PRIVATEPASS@{address}")),
+        )]
+        .into(),
         5,
     )
     .unwrap();
     let egress = tokomotive::egress::Egress::new(policy);
     let error = egress
-        .client(Some("p"), tokomotive::egress::Purpose::Upstream)
+        .client(
+            Some("https-proxy-tls-check"),
+            tokomotive::egress::Purpose::Upstream,
+        )
+        .unwrap()
         .get("https://upstream.invalid/test")
         .send()
         .await
@@ -666,4 +734,201 @@ fn client_cache_bounds_distinct_proxies_not_provider_count() {
         })
         .collect();
     assert!(tokomotive::egress::Policy::new(None, distinct, 30).is_err());
+}
+
+#[test]
+fn unknown_named_provider_never_selects_global_clients() {
+    use tokomotive::egress::{Egress, Policy, Purpose};
+    let egress = Egress::new(Policy::new(None, Default::default(), 5).unwrap());
+    for purpose in [
+        Purpose::Upstream,
+        Purpose::OAuth,
+        Purpose::Models,
+        Purpose::Webhook,
+    ] {
+        assert!(egress.client(Some("missing"), purpose).is_err());
+        assert!(egress.client(None, purpose).is_ok());
+    }
+    assert!(egress.label(Some("missing")).is_none());
+}
+
+// Hold the first real HTTP attempt until the dashboard mutation and reload
+// complete. The global policy is direct, so any route drift reaches `direct`.
+async fn retry_during_provider_change(change: &str, reload: bool) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let direct = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let direct_url = format!("http://{}", direct.local_addr().unwrap());
+    let direct_hits = Arc::new(AtomicUsize::new(0));
+    let hits = direct_hits.clone();
+    let direct_task = tokio::spawn(async move {
+        axum::serve(
+            direct,
+            axum::Router::new().fallback(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+                async { axum::Json(serde_json::json!({"choices":[],"usage":{}})) }
+            }),
+        )
+        .await
+        .unwrap();
+    });
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel(2);
+    let release = Arc::new(tokio::sync::Notify::new());
+    let gate = release.clone();
+    let proxy_hits = Arc::new(AtomicUsize::new(0));
+    let hits = proxy_hits.clone();
+    let proxy_task = tokio::spawn(async move {
+        axum::serve(
+            proxy,
+            axum::Router::new().fallback(move || {
+                let first = hits.fetch_add(1, Ordering::SeqCst) == 0;
+                let entered = entered_tx.clone();
+                let gate = gate.clone();
+                async move {
+                    if first {
+                        entered.send(()).await.unwrap();
+                        gate.notified().await;
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(serde_json::json!({"error":"retry"})),
+                        )
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!({"choices":[],"usage":{}})),
+                        )
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg: tokomotive::config::Config = toml::from_str(&format!(
+        r#"
+[server]
+mode='simple'
+[[providers]]
+name='p'
+kind='openai'
+base_url='{direct_url}'
+api_keys=['first-key','second-key']
+[[users]]
+name='user'
+keys=['vk-test']
+"#
+    ))
+    .unwrap();
+    cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
+    let st = tokomotive::init(&cfg, None).await.unwrap();
+    sqlx::query("UPDATE providers SET proxy_mode='custom',proxy_url=? WHERE name='p'")
+        .bind(st.secret_key.encrypt(&proxy_url).unwrap())
+        .execute(&st.db)
+        .await
+        .unwrap();
+    st.reload_settings().await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let app = tokomotive::router(st.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let request = tokio::spawn(async move {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(url)
+            .bearer_auth("vk-test")
+            .json(&serde_json::json!({"model":"p/m","messages":[{"role":"user","content":"Hi"}]}))
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match change {
+        "rename" => {
+            sqlx::query("UPDATE providers SET name='renamed' WHERE name='p'")
+                .execute(&st.db)
+                .await
+                .unwrap();
+        }
+        "delete" | "reuse" => {
+            sqlx::query("DELETE FROM providers WHERE name='p'")
+                .execute(&st.db)
+                .await
+                .unwrap();
+            if change == "reuse" {
+                sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json) VALUES('p','\"openai\"',?,'[]')")
+                    .bind(&direct_url).execute(&st.db).await.unwrap();
+            }
+        }
+        "policy" => {
+            sqlx::query("UPDATE providers SET proxy_mode='none',proxy_url=NULL WHERE name='p'")
+                .execute(&st.db)
+                .await
+                .unwrap();
+        }
+        _ => unreachable!(),
+    }
+    if reload {
+        st.reload_settings().await.unwrap();
+    }
+    release.notify_one();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        direct_hits.load(Ordering::SeqCst),
+        0,
+        "{change}: retained credentials used the direct global route"
+    );
+    if change == "policy" {
+        assert_eq!(response.status(), 200);
+        assert_eq!(proxy_hits.load(Ordering::SeqCst), 2);
+    } else {
+        assert!(!response.status().is_success());
+        assert_eq!(proxy_hits.load(Ordering::SeqCst), 1);
+    }
+    st.flush().await;
+    server.abort();
+    proxy_task.abort();
+    direct_task.abort();
+}
+
+#[tokio::test]
+async fn retry_after_provider_rename_never_uses_direct_global() {
+    retry_during_provider_change("rename", true).await;
+}
+#[tokio::test]
+async fn retry_after_provider_delete_fails_closed() {
+    retry_during_provider_change("delete", true).await;
+}
+#[tokio::test]
+async fn retry_after_provider_name_reuse_fails_closed() {
+    retry_during_provider_change("reuse", true).await;
+}
+#[tokio::test]
+async fn retry_keeps_original_proxy_after_policy_reload() {
+    retry_during_provider_change("policy", true).await;
+}
+
+#[tokio::test]
+async fn retry_after_delete_before_policy_reload_fails_closed() {
+    retry_during_provider_change("delete", false).await;
+}
+
+#[tokio::test]
+async fn retry_after_name_reuse_before_policy_reload_fails_closed() {
+    retry_during_provider_change("reuse", false).await;
 }

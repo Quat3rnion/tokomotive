@@ -398,7 +398,7 @@ fn parse_list(body: &[u8]) -> Option<Vec<Listed>> {
 }
 
 async fn fetch_list(
-    http: reqwest::Client,
+    state: crate::state::AppState,
     p: crate::state::Provider,
     timeout: Duration,
 ) -> Option<Vec<Listed>> {
@@ -414,6 +414,7 @@ async fn fetch_list(
         urls.push(second);
     }
     for url in urls {
+        let http = state.snapshot_http(&p).await.ok()?;
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return None;
@@ -487,8 +488,7 @@ impl ModelSource for ProviderSource {
         let (ttl, failure_ttl, timeout) = (self.ttl, self.failure_ttl, self.timeout);
         Some(Box::pin(async move {
             let jobs = stale.into_iter().map(|p| {
-                let (http, cache, locks) =
-                    (state.provider_http(&p.name), cache.clone(), locks.clone());
+                let (state, cache, locks) = (state.clone(), cache.clone(), locks.clone());
                 // The fetch runs in its own task, so a search that stops
                 // waiting still fills the cache for the next one.
                 let job = tokio::spawn(async move {
@@ -511,7 +511,7 @@ impl ModelSource for ProviderSource {
                     if !still_stale {
                         return;
                     }
-                    let got = fetch_list(http, p.clone(), timeout).await;
+                    let got = fetch_list(state, p.clone(), timeout).await;
                     if got.is_none() {
                         tracing::debug!(provider = %p.name, "provider model list unavailable");
                     }

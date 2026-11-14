@@ -80,6 +80,12 @@ and the 10-second webhook timeout. Settings reload builds a new cache before
 it replaces the old cache. Requests do not build clients. An invalid edit or
 an edit above the cache limit is rejected before it is stored.
 
+Each request keeps the Provider's client generation for all attempts and key
+retries. A proxy edit affects new requests only. An unknown, renamed or deleted
+Provider cannot use the global policy as a fallback. A reused Provider name
+does not restore access for an old request. Outbound failures record a fixed
+error class, not the request URL or the error chain.
+
 Redirects and response body limits do not change. Provider overrides apply
 to all outbound Provider operations. models.dev Sync and alert webhooks use
 the global default only. Trace export is separate. The clients do not inherit
