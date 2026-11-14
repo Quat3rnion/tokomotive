@@ -1,7 +1,7 @@
 //! Cost Cards, Price Cards, Context Tiers and the money calculation.
 //!
 //! All money is integer micro-dollars (1 USD = 1_000_000). Rates are
-//! micro-dollars per million tokens, so `$3.00 / Mtok` is `3_000_000`.
+//! micro-dollars per million tokens or Service units, so `$3.00 / Mtok` is `3_000_000`.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use crate::usage::Usage;
 
 pub const MICROS_PER_USD: i64 = 1_000_000;
 
-/// Rates per million tokens for each Token Class, in micro-dollars.
+/// Rates per million tokens or Service units, in micro-dollars.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rates {
     #[serde(default)]

@@ -1,4 +1,4 @@
-//! Token usage in exclusive Token Classes.
+//! Token usage in exclusive Token Classes, plus non-token Service units.
 
 use serde::{Deserialize, Serialize};
 

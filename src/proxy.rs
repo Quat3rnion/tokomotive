@@ -100,6 +100,9 @@ fn subscription_path_allowed(endpoint: Endpoint, path_q: &str) -> bool {
         Endpoint::Messages => path == "/v1/messages",
         Endpoint::CountTokens => path == "/v1/messages/count_tokens",
         Endpoint::Rerank => path == "/v1/rerank",
+        Endpoint::AudioTranscription => path == "/v1/audio/transcriptions",
+        Endpoint::AudioTranslation => path == "/v1/audio/translations",
+        Endpoint::AudioSpeech => path == "/v1/audio/speech",
         Endpoint::Embeddings => path == "/v1/embeddings",
         Endpoint::Images => path == "/v1/images/generations" || path == "/v1/images/edits",
         Endpoint::Other => false,
@@ -581,6 +584,24 @@ fn worst_case_price(
             )
             .price_micros;
     }
+    if extra::audio_upload(endpoint) || endpoint == Endpoint::AudioSpeech {
+        let units = if endpoint == Endpoint::AudioSpeech {
+            body.and_then(|v| v["input"].as_str())
+                .map_or(0, |s| s.chars().count())
+        } else {
+            body_len
+        };
+        return catalog
+            .quote(
+                model,
+                team_id,
+                &Usage {
+                    service_units: units as i64,
+                    ..Default::default()
+                },
+            )
+            .price_micros;
+    }
     let max_out = body
         .and_then(|body| {
             translate::output_token_limit(body)
@@ -606,7 +627,7 @@ pub async fn handle(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Response {
     let started = Instant::now();
     let ts_ms = db::now_ms();
@@ -618,6 +639,16 @@ pub async fn handle(
         Ok(a) => a,
         Err(r) => return *r,
     };
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            return error(
+                rejection.status(),
+                "invalid_request_error",
+                "request body exceeds the limit or cannot be read",
+            );
+        }
+    };
     if has_dot_segment(uri.path()) {
         return error(
             StatusCode::BAD_REQUEST,
@@ -626,12 +657,55 @@ pub async fn handle(
         );
     }
 
-    let json_body: Option<Value> = if body.is_empty() {
+    let audio_upload = if extra::audio_upload(endpoint) {
+        if body.len() > st.settings().audio_upload_limit_mib.clamp(1, 63) * 1024 * 1024 {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                "audio upload exceeds the configured size limit",
+            );
+        }
+        match extra::AudioUpload::parse(&headers, body.clone()).await {
+            Ok(upload) => Some(upload),
+            Err(_) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "invalid multipart audio upload; model and one file are required",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let json_body: Option<Value> = if let Some(upload) = &audio_upload {
+        Some(json!({"model":upload.model}))
+    } else if body.is_empty() {
         None
     } else {
         serde_json::from_slice(&body).ok()
     };
     let requested_model = json_body.as_ref().and_then(model_of);
+    if endpoint == Endpoint::AudioSpeech {
+        if body.len() > extra::COUNT_BODY_LIMIT {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                "speech body exceeds 1 MiB",
+            );
+        }
+        if requested_model.is_none()
+            || json_body
+                .as_ref()
+                .is_none_or(|v| v["input"].as_str().is_none_or(str::is_empty))
+        {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "model and non-empty input are required",
+            );
+        }
+    }
     if endpoint == Endpoint::Rerank {
         if body.len() > extra::COUNT_BODY_LIMIT {
             return error(
@@ -776,9 +850,13 @@ pub async fn handle(
             let Ok((prepared, target, _)) = prepare_body(c, endpoint, json_body.as_ref()) else {
                 continue;
             };
-            let len = prepared
-                .as_ref()
-                .map_or(body.len(), |v| v.to_string().len());
+            let len = if extra::audio_upload(endpoint) {
+                body.len()
+            } else {
+                prepared
+                    .as_ref()
+                    .map_or(body.len(), |v| v.to_string().len())
+            };
             let model_id = pricing_model.and_then(|m| catalog.resolve(m)).map(|m| m.id);
             let reserve_output = match crate::models_dev::reservation_output(
                 &st.db,
@@ -827,7 +905,7 @@ pub async fn handle(
         }
     }
 
-    let streamed = json_body.as_ref().is_some_and(is_stream);
+    let streamed = endpoint == Endpoint::AudioSpeech || json_body.as_ref().is_some_and(is_stream);
     let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let mut ctx = Ctx {
         st: st.clone(),
@@ -1106,7 +1184,14 @@ pub async fn handle(
                 break;
             };
             upstream = None;
-            let mut result = req.body(upstream_body.clone()).send().await;
+            let send = |req: reqwest::RequestBuilder| {
+                if let Some(upload) = &audio_upload {
+                    req.multipart(upload.form(candidate.model.as_deref()))
+                } else {
+                    req.body(upstream_body.clone())
+                }
+            };
+            let mut result = send(req).send().await;
             crate::quota::observe(&st.db, provider, idx, &result).await;
             if let Some(flow) = flow
                 && result
@@ -1152,7 +1237,7 @@ pub async fn handle(
                             permit.record(false);
                             break;
                         };
-                        result = req.body(upstream_body.clone()).send().await;
+                        result = send(req).send().await;
                         crate::quota::observe(&st.db, provider, idx, &result).await;
                         if result
                             .as_ref()
@@ -1222,6 +1307,13 @@ pub async fn handle(
             out_headers.append(name.clone(), value.clone());
         }
     }
+    if endpoint == Endpoint::AudioSpeech && status.is_success() {
+        let characters = json_body
+            .as_ref()
+            .and_then(|v| v["input"].as_str())
+            .map_or(0, |s| s.chars().count()) as i64;
+        return extra::speech_response(ctx, upstream, out_headers, characters);
+    }
     let is_sse = upstream
         .headers()
         .get(header::CONTENT_TYPE)
@@ -1233,6 +1325,14 @@ pub async fn handle(
                     && v.starts_with("application/vnd.amazon.eventstream"))
         });
 
+    if is_sse && (extra::audio_upload(endpoint) || endpoint == Endpoint::Rerank) {
+        ctx.finish(Outcome::failed(502));
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "this endpoint requires a non-streaming upstream response",
+        );
+    }
     if is_sse {
         out_headers.insert(
             header::CONTENT_TYPE,
@@ -1384,6 +1484,13 @@ pub async fn handle(
         && status.is_success()
         && endpoint.is_accounted()
         && endpoint != Endpoint::CountTokens;
+    let (usage, estimated) = if extra::audio_upload(endpoint) && status.is_success() {
+        let (audio, estimate) =
+            extra::audio_usage(parsed.as_ref(), audio_upload.as_ref().unwrap().file_bytes);
+        (Some(audio), estimate)
+    } else {
+        (usage, estimated)
+    };
     let upstream_model = ctx.upstream_model.clone();
     ctx.finish(Outcome {
         status: status.as_u16(),
@@ -1406,11 +1513,26 @@ pub async fn handle(
         client_aborted: false,
     });
 
-    let bytes = if endpoint != Endpoint::Rerank
+    let bytes = if !status.is_success()
+        && (endpoint == Endpoint::Rerank
+            || extra::audio_upload(endpoint)
+            || endpoint == Endpoint::AudioSpeech)
+    {
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        Bytes::from(translate::translate_provider_error(
+            Direction::ChatToMessages,
+            status.as_u16(),
+            &bytes,
+        ))
+    } else if endpoint != Endpoint::Rerank
         && matches!(
             kind,
             ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
-        ) {
+        )
+    {
         out_headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),

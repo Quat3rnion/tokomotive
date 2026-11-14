@@ -21,10 +21,10 @@
 <table class="cards-sm models">
   <thead>
   {% if !base.simple %}
-  <tr><td colspan="3"></td><th scope="colgroup" colspan="8" class="group">Cost Card ($ per million tokens)</th><td colspan="2"></td></tr>
+  <tr><td colspan="3"></td><th scope="colgroup" colspan="9" class="group">Cost Card ($ per million tokens or Service units)</th><td colspan="2"></td></tr>
   {% endif %}
   <tr><th scope="col">Model</th><th scope="col">Provider</th><th scope="col">Aliases</th>{% if !base.simple %}<th scope="col" class="n">Input</th><th scope="col" class="n">Output</th><th scope="col" class="n">Cache read</th>
-      <th scope="col" class="n">Cache write 5m</th><th scope="col" class="n">Cache write 1h</th><th scope="col" class="n">Image input</th><th scope="col" class="n">Image output</th><th scope="col" class="n">Context Tiers</th><th scope="col">Price</th><th scope="col" class="n">Team overrides</th>{% endif %}</tr>
+      <th scope="col" class="n">Cache write 5m</th><th scope="col" class="n">Cache write 1h</th><th scope="col" class="n">Image input</th><th scope="col" class="n">Image output</th><th scope="col" class="n">Service units</th><th scope="col" class="n">Context Tiers</th><th scope="col">Price</th><th scope="col" class="n">Team overrides</th>{% endif %}</tr>
   </thead>
   <tbody>
   {% for m in models %}
@@ -35,10 +35,10 @@
     {% if !base.simple %}{% if let Some(c) = m.cost %}
     <td class="n rate">{{ c.input }}</td><td class="n rate">{{ c.output }}</td><td class="n rate">{{ c.cache_read }}</td>
     <td class="n rate">{{ c.cache_write_5m }}</td><td class="n rate">{{ c.cache_write_1h }}</td>
-    <td class="n rate">{{ c.image_input }}</td><td class="n rate">{{ c.image_output }}</td><td class="n rate">{{ c.tier_count }}</td>
+    <td class="n rate">{{ c.image_input }}</td><td class="n rate">{{ c.image_output }}</td><td class="n rate">{{ c.service_units }}</td><td class="n rate">{{ c.tier_count }}</td>
     <td class="rates-sm" data-label="Cost Card ($/M)"><dl class="kv">{% for (label, value) in c.pairs() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl></td>
     {% else %}
-    <td colspan="8" data-label="Cost Card"><span class="tag warn">Unpriced: no Cost Card</span> <a href="/admin/models/{{ m.id }}#cost">Add a Cost Card<span class="vh"> for {{ m.name }}</span></a></td>
+    <td colspan="9" data-label="Cost Card"><span class="tag warn">Unpriced: no Cost Card</span> <a href="/admin/models/{{ m.id }}#cost">Add a Cost Card<span class="vh"> for {{ m.name }}</span></a></td>
     {% endif %}
     <td data-label="Price"><span class="tag{% if m.price_tag == "Explicit rates" %} info{% endif %}" title="{{ m.price_title }}">{{ m.price_tag }}</span></td>
     <td class="n" data-label="Team overrides">{{ m.overrides }}</td>

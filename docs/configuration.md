@@ -101,7 +101,7 @@ The Proxy does not check the spelling of rate keys. This applies to the keys in
 
 ## Units
 
-- All rates are USD per million tokens.
+- Rates are USD per million tokens or endpoint-defined Service units.
 - All `*_percent` values are percentages. The Proxy keeps a percentage with a
   resolution of 0.01 percent.
 - The Proxy stores money as integer micro-dollars (1 USD is 1,000,000).
@@ -140,6 +140,7 @@ first start. Edit them in **Settings** afterward.
 | `metrics_token`          | string | none                            | The bearer token for `/metrics`, in the file. It seeds once. Later changes belong in **Settings**. |
 | `metrics_token_env`      | string | `"TOKOMOTIVE_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
 | `reserve_output_tokens`  | integer | `4096` | Fallback output tokens for a Reservation when the request sets no maximum and the Model has no mapped output limit. Must be non-negative. Does not cap a models.dev output limit. |
+| `audio_upload_limit_mib` | integer | `25` | Total multipart audio request limit in MiB, from 1 to 63. Also available in Settings. |
 | `session_days`           | integer | `7` | Duration of new dashboard sessions, from 1 to 3650 days. |
 | `mode`                   | string | `"full"` | `full` enables pricing and usage limits. `simple` enables routing and token metrics without Budget checks, Reservations or Rate Limits. See "Simple mode". |
 
@@ -462,7 +463,7 @@ You can write `cost` and `price` as inline tables or as `[models.cost]` tables.
 ### Rates
 
 A `cost` table, a `price` table and a Context Tier use these keys. Each key is a
-rate in USD per million tokens. Each key is optional and its default is `0`.
+rate in USD per million tokens or Service units. Each key is optional and its default is `0`.
 
 | Key              | Token Class         |
 | ---------------- | ------------------- |
@@ -473,6 +474,7 @@ rate in USD per million tokens. Each key is optional and its default is `0`.
 | `cache_write_1h` | Cache write, 1 hour |
 | `image_input`    | Image input         |
 | `image_output`   | Image output        |
+| `service_units`  | Non-token Service units: search units, audio seconds or speech input characters, as defined by the endpoint |
 
 ### Context Tiers
 

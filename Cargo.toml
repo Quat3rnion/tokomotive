@@ -21,9 +21,10 @@ hmac = "0.12"
 crc32fast = "1"
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto", "use_pem"] }
 metrics = "0.24"
+multer = "3"
 metrics-exporter-prometheus = { version = "0.17", default-features = false }
 rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"

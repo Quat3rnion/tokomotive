@@ -145,6 +145,9 @@ pub enum Endpoint {
     Messages,
     CountTokens,
     Rerank,
+    AudioTranscription,
+    AudioTranslation,
+    AudioSpeech,
     Embeddings,
     /// `/v1/images/generations` and `/v1/images/edits`.
     Images,
@@ -159,6 +162,12 @@ impl Endpoint {
             Endpoint::CountTokens
         } else if p == "/v1/rerank" {
             Endpoint::Rerank
+        } else if p == "/v1/audio/transcriptions" {
+            Endpoint::AudioTranscription
+        } else if p == "/v1/audio/translations" {
+            Endpoint::AudioTranslation
+        } else if p == "/v1/audio/speech" {
+            Endpoint::AudioSpeech
         } else if p.ends_with("/chat/completions") {
             Endpoint::ChatCompletions
         } else if p.ends_with("/responses") {
@@ -180,6 +189,9 @@ impl Endpoint {
             Endpoint::ChatCompletions
             | Endpoint::Responses
             | Endpoint::Embeddings
+            | Endpoint::AudioTranscription
+            | Endpoint::AudioTranslation
+            | Endpoint::AudioSpeech
             | Endpoint::Images => Some(ProviderKind::Openai),
             Endpoint::Messages | Endpoint::CountTokens => Some(ProviderKind::Anthropic),
             Endpoint::Rerank => Some(ProviderKind::Cohere),
@@ -198,6 +210,9 @@ impl Endpoint {
             Endpoint::Messages => "messages",
             Endpoint::CountTokens => "count_tokens",
             Endpoint::Rerank => "rerank",
+            Endpoint::AudioTranscription => "audio_transcription",
+            Endpoint::AudioTranslation => "audio_translation",
+            Endpoint::AudioSpeech => "audio_speech",
             Endpoint::Embeddings => "embeddings",
             Endpoint::Images => "images",
             Endpoint::Other => "other",

@@ -36,7 +36,7 @@
 
 **Token Class** - One billable category of tokens: input, output, cache read, cache write (5 minute), cache write (1 hour), image input, image output.
 
-**Service unit** - A non-token count defined by an endpoint, for example a search unit for rerank. It does not consume the token Rate Limit.
+**Service unit** - A non-token count defined by an endpoint: a search unit for rerank, one audio second for transcription or translation, or one input character for speech. It does not consume the token Rate Limit.
 
 **Cost Card** - The rates per million tokens or Service units that the Provider charges the Operator for a Model.
 
@@ -78,7 +78,7 @@
 
 **Unpriced Entry** - A Ledger Entry for a Model that has no card. Its Cost and Price are zero until an Operator acts.
 
-**Estimated Entry** - A Ledger Entry whose token counts are partly estimated, because the Provider did not report full usage.
+**Estimated Entry** - A Ledger Entry whose token counts or Service units are partly estimated, because the Provider did not report full usage.
 
 **Budget** - A limit on the total Price for a User, Team or Virtual Key. It is for a lifetime, day, week (Monday) or month in UTC. Every applicable Budget must permit a request.
 

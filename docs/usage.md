@@ -146,6 +146,36 @@ Proxy records an Estimated Entry with one search unit per request byte. This is
 a conservative estimate, not a Provider bill. Budget Reservations allow one
 search unit and one input token per request byte across all candidate Models.
 
+`POST /v1/audio/transcriptions` and `/v1/audio/translations` accept multipart
+uploads for OpenAI-compatible Providers. The multipart `model` field uses normal
+Model routing, including Model rewrite. Each request needs one non-empty `file`.
+The total multipart limit is 25 MiB by default. Set **Audio upload limit (MiB)**
+in Settings to a value from 1 to 63. The seed setting is
+`server.audio_upload_limit_mib`. Text fields have a 64 KiB limit, and each request
+can have at most 32 fields. Streaming transcription is not supported.
+
+One Service unit is one audio second, rounded up per request. The Proxy uses
+`usage.seconds` first, then the `duration` in a JSON response. Select the upstream
+`verbose_json` response format to get duration where supported. If neither value
+is present (for example a text or SRT response), the Proxy estimates one second
+per 16,000 file bytes, rounded up, and marks the Ledger Entry as Estimated.
+This assumes 128 kbit/s compressed audio; it is not exact for all formats.
+Set `service_units` on the Model's Cost/Price card in dollars per million audio
+seconds. For example, $0.006 per minute is `service_units=100`.
+Budget Reservations allow one audio second per multipart request byte. This is
+deliberately conservative and can reject a large upload before the actual Budget
+is exhausted. Requests consume RPM, but audio seconds do not consume TPM.
+
+`POST /v1/audio/speech` accepts a JSON body up to 1 MiB. It streams the binary
+upstream body without conversion, up to 64 MiB. One Service unit is one Unicode
+input character. Set `service_units` on the Model card in dollars per million
+characters. Reservations use the input character count. The Proxy records the
+full input count even if the client disconnects or the stream fails after the
+upstream accepts the request. Errors before a successful stream have no character
+charge. Use a separate Model for each unit type; one Model card has one Service
+unit rate. Audio requests use the same Model permissions, Provider Access,
+Rate Limits, Budgets, Ledger and metrics as other accounted endpoints.
+
 | Path ends with                             | Native Provider kind | Usage that the Proxy records                  |
 | ------------------------------------------ | ------------- | --------------------------------------------- |
 | `/chat/completions`                        | `openai`      | Input, output, cache read                     |
@@ -154,14 +184,16 @@ search unit and one input token per request byte across all candidate Models.
 | `/images/generations`, `/images/edits`     | `openai`      | Input, cache read, image input, image output  |
 | `/messages`                                | `anthropic`   | Input, output, cache read, cache write 5 minutes, cache write 1 hour |
 | `/v1/rerank` (exact path)                   | `cohere` or `openai` | Search units or input tokens |
+| `/v1/audio/transcriptions`, `/v1/audio/translations` (exact paths) | `openai` | Audio seconds |
+| `/v1/audio/speech` (exact path)             | `openai` | Input characters |
 
 The Proxy forwards every path under `/v1/` to the Provider, for all HTTP
 methods. The Proxy does not read usage for other paths. It records them as
 Ledger Entries with the endpoint `other`. If the Proxy cannot find a Model for
 the request, the Ledger Entry is an Unpriced Entry.
 
-The Proxy reads the Model name from the JSON body of the request. A request with
-a body that is not JSON, for example a multipart upload, has no Model name.
+The Proxy reads the Model name from the JSON body of the request, or from the
+`model` field of a multipart audio request. Other non-JSON requests have no Model name.
 The Proxy then records an Unpriced Entry unless the response body names the
 Model. This applies, for example, to multipart requests to `/v1/images/edits`.
 

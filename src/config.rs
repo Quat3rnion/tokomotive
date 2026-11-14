@@ -100,6 +100,7 @@ pub struct Server {
     /// Output tokens assumed for a Budget reservation when the request does
     /// not set a maximum.
     pub reserve_output_tokens: i64,
+    pub audio_upload_limit_mib: usize,
     pub session_days: i64,
     pub mode: String,
 }
@@ -116,6 +117,7 @@ impl Default for Server {
             metrics_token: None,
             metrics_token_env: Some("TOKOMOTIVE_METRICS_TOKEN".into()),
             reserve_output_tokens: 4096,
+            audio_upload_limit_mib: default_audio_upload_limit_mib(),
             session_days: 7,
             mode: "full".into(),
         }
@@ -268,6 +270,10 @@ impl UserCfg {
     }
 }
 
+pub fn default_audio_upload_limit_mib() -> usize {
+    25
+}
+
 pub fn usd_to_micros(v: f64) -> i64 {
     (v * 1_000_000.0).round() as i64
 }
@@ -339,6 +345,9 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !(1..=63).contains(&self.server.audio_upload_limit_mib) {
+            bail!("The audio upload limit must be whole MiB from 1 to 63.");
+        }
         if !matches!(self.server.mode.as_str(), "full" | "simple") {
             bail!("The mode must be full or simple.");
         }

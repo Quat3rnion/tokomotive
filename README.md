@@ -37,6 +37,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   deployments return a marked estimate without an inference charge.
 - Routes `POST /v1/rerank` to Cohere or compatible Providers, with search-unit
   or input-token accounting.
+- Supports multipart `POST /v1/audio/transcriptions` and `/v1/audio/translations`,
+  plus binary streaming at `/v1/audio/speech`, with Model-level audio rates.
 - Translates between Chat Completions and Messages, with streaming and tools.
   A Chat Completions client can use an Anthropic Provider. A Messages client
   can use an OpenAI Provider. See [Translation](docs/usage.md#routing-and-translation)
