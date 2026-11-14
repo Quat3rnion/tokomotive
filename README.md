@@ -112,6 +112,8 @@ The screenshots show demo data from a local test server. The keys are not real.
 | [Keys](docs/images/keys.png) | The form to add a Virtual Key with Provider Access and Rate Limits, the active keys and the pager. |
 | [Usage](docs/images/usage.png) | The "Show all" view of the Overview: usage by User, sorted by requests, one page at a time. |
 | [Overview in Simple Mode](docs/images/overview-simple.png) | The Overview without money data: requests, tokens, latency, errors and attempts. |
+| [Teams](docs/images/teams.png) | Teams with their Budgets, spend and member counts. |
+| [Settings](docs/images/settings.png) | The operating mode, routing settings, metrics and alert controls. |
 
 ## Quick start
 

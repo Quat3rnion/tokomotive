@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Seed demo data through the real dashboard forms, never a live instance."""
+import json
+import re
+
+import requests
+from env import BASE as B, MOCK, PASSWORD as PW, KEYS, WORKDIR
+
+s = requests.Session()
+s.headers["Origin"] = B
+
+
+def post(path, data, ok=(200, 303)):
+    r = s.post(B + path, data=data, allow_redirects=False, timeout=30)
+    if r.status_code not in ok or re.search(r'class="(?:form-error|error)"[^>]*>\s*[^<\s]', r.text):
+        raise RuntimeError(f"Seed failed: {path} HTTP {r.status_code}: {r.text[:500]}")
+    return r
+
+
+post("/setup", {"mode": "full", "password": PW, "password_confirm": PW})
+post("/admin/login", {"password": PW})
+assert "tokomotive_session" in s.cookies.get_dict(), "no session"
+
+post("/admin/providers", {"name": "openai", "auth": "api_key", "kind": "openai", "base_url": MOCK, "api_key": "sk-demo-openai-primary-7f3a"})
+post("/admin/providers/openai/keys", {"api_key": "sk-demo-openai-backup-91c2"})
+post("/admin/providers", {"name": "anthropic", "auth": "api_key", "kind": "anthropic", "base_url": MOCK, "api_key": "sk-demo-ant-main-4b8e"})
+post("/admin/providers/anthropic/keys", {"api_key": "env:ANTHROPIC_API_KEY_2"})
+post("/admin/providers", {"name": "chatgpt-plus", "auth": "chatgpt", "kind": "openai", "base_url": "https://api.openai.com", "api_key": ""})
+post("/admin/providers", {"name": "claude-max", "auth": "claude", "kind": "anthropic", "base_url": "https://api.anthropic.com", "api_key": ""})
+post("/admin/providers", {"name": "codex-cli", "auth": "codex", "kind": "openai", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": ""})
+post("/admin/providers", {"name": "copilot", "auth": "github_copilot", "kind": "openai", "base_url": "https://api.githubcopilot.com", "api_key": ""})
+post("/admin/settings/markup", {"default_markup_percent": "20"})
+
+Z = dict(input="", output="", cache_read="", cache_write_5m="", cache_write_1h="", image_input="", image_output="", tiers="")
+MODELS = [
+    ("gpt-6.1-sol", "openai", "", dict(input="2.00", output="10.00", cache_read="0.10")),
+    ("gpt-6-luna", "openai", "luna", dict(input="0.10", output="0.50", cache_read="0.01")),
+    ("gpt-4o-mini", "openai", "", dict(input="0.15", output="0.60", cache_read="0.075")),
+    ("text-embedding-3-small", "openai", "", dict(input="0.02", output="0")),
+    ("claude-opus-5-5", "anthropic", "opus", dict(input="4.00", output="20.00", cache_read="0.20", cache_write_5m="5.00", cache_write_1h="8.00")),
+    ("claude-sonnet-5-5", "anthropic", "sonnet", dict(input="2.00", output="10.00", cache_read="0.10", cache_write_5m="2.50", cache_write_1h="4.00")),
+    ("claude-haiku-5-5", "anthropic", "haiku", dict(input="0.10", output="0.50", cache_read="0.01", cache_write_5m="0.125", cache_write_1h="0.20", tiers="100000 0.50 2.50 0.05 0.625 1.00")),
+]
+for name, provider, aliases, rates in MODELS:
+    post("/admin/models", dict(Z, name=name, provider=provider, aliases=aliases, **rates))
+html = s.get(B + "/admin/models", timeout=30).text
+ids = {m.group(2): m.group(1) for m in re.finditer(r'href="/admin/models/(\d+)"[^>]*>([^<]+)<', html)}
+post("/admin/teams", {"name": "Research"})
+post("/admin/teams", {"name": "Product"})
+post(f"/admin/models/{ids['claude-sonnet-5-5']}/price", dict(Z, mode="markup", markup_percent="25"))
+post(f"/admin/models/{ids['gpt-6.1-sol']}/team-price", dict(Z, team_name="Research", mode="markup", markup_percent="10"))
+post(f"/admin/models/{ids['claude-sonnet-5-5']}/team-price", dict(Z, team_name="Product", mode="markup", markup_percent="15"))
+post(f"/admin/models/{ids['gpt-6-luna']}/price", dict(Z, mode="rates", input="0.20", output="1.00", cache_read="0.02"))
+post("/admin/routes", {"name": "smart", "strategy": "weighted", "fallbacks": "claude-haiku-5-5, gpt-4o-mini", "deployment_provider": ["openai", "anthropic", "anthropic"], "deployment_model": ["gpt-6.1-sol", "claude-sonnet-5-5", "claude-opus-5-5"], "deployment_weight": ["5", "3", "1"]})
+post("/admin/routes", {"name": "fast", "strategy": "priority", "fallbacks": "gpt-4o-mini", "deployment_provider": ["openai", "anthropic"], "deployment_model": ["gpt-6-luna", "claude-haiku-5-5"], "deployment_weight": ["1", "1"]})
+
+USERS = [
+    ("maria.keller", "Research", "250", "600", "4000000", True),
+    ("jonas.berg", "Research", "100", "300", "", True),
+    ("priya.nair", "Product", "150", "", "", True),
+    ("lena.fischer", "Product", "80", "120", "1000000", True),
+    ("ci-pipeline", "", "40", "600", "", False),
+    ("a-very-long-service-account-name-for-the-nightly-data-pipeline@example.com", "Product", "5", "", "", False),
+]
+for name, team, budget, rpm, tpm, monthly in USERS:
+    data = dict(name=name, team_name=team, budget_usd=budget, rpm_limit=rpm, tpm_limit=tpm)
+    if monthly:
+        data["monthly"] = "on"
+    post("/admin/users", data)
+
+keys = {}
+
+
+def mkkey(user, label, allowed="", rpm="", providers=()):
+    data = [("user_name", user), ("label", label), ("allowed_models", allowed), ("rpm_limit", rpm), ("tpm_limit", "")]
+    data += [("allowed_providers", p) for p in providers]
+    response = post("/admin/keys", data)
+    match = re.search(r"(sk-toko-[0-9a-f]{32,})", response.text)
+    assert match, response.text[:800]
+    keys.setdefault(user, []).append(match.group(1))
+
+
+mkkey("maria.keller", "notebook", "", "240")
+mkkey("maria.keller", "eval-harness", "smart, claude-opus-5-5", "", ["anthropic", "openai"])
+mkkey("jonas.berg", "laptop", "", "", ["openai", "anthropic"])
+mkkey("priya.nair", "support-bot", "smart, fast, text-embedding-3-small", "400")
+mkkey("lena.fischer", "prototype", "fast, sonnet, claude-sonnet-5-5", "", ["anthropic"])
+mkkey("ci-pipeline", "nightly-evals", "fast, gpt-6-luna", "", ["openai"])
+for i in range(1, 61):
+    user = f"eval-worker-{i:02d}"
+    post("/admin/users", {"name": user, "team_name": "Research" if i % 2 else "Product", "budget_usd": "10", "rpm_limit": "60", "tpm_limit": ""})
+    mkkey(user, "batch", "fast")
+WORKDIR.mkdir(parents=True, exist_ok=True)
+KEYS.write_text(json.dumps(keys))
+KEYS.chmod(0o600)
+print("keys", sum(map(len, keys.values())))

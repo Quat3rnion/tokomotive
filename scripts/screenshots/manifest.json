@@ -1,0 +1,29 @@
+{
+  "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],
+  "captures": [
+    {"image":"overview.png", "page":"/admin", "route":"/admin", "recipe":"overview", "caption":"Overview", "alt":"The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table.", "kind":"hero"},
+    {"image":"routes.png", "page":"/admin/routes", "route":"/admin/routes", "recipe":"routes", "caption":"Routes", "alt":"The Routes page. The Route \"smart\" uses the weighted strategy with three Deployments on two Providers and two Fallbacks.", "kind":"hero"},
+    {"image":"ledger.png", "page":"/admin/ledger", "route":"/admin/ledger", "recipe":"ledger", "caption":"Ledger", "alt":"The newest Ledger Entries with the filters. Each row shows the User, the Model and Provider, the status, the flags, the tokens, the amounts and the latency.", "kind":"table"},
+    {"image":"add-provider.png", "page":"/admin/providers", "route":"/admin/providers", "recipe":"add-provider", "caption":"Add a Provider", "alt":"The searchable Provider picker. The search \"kimi\" finds verified presets, the Kimi Code sign-in and entries from models.dev.", "kind":"table"},
+    {"image":"add-provider-form.png", "page":"/admin/providers?add=deepseek", "route":"/admin/providers", "recipe":"add-provider-form", "caption":"Add a Provider form", "alt":"The guided form for DeepSeek. It shows only the fields that this Provider needs and a summary of the result.", "kind":"table"},
+    {"image":"providers.png", "page":"/admin/providers", "route":"/admin/providers", "recipe":"providers", "caption":"Providers", "alt":"Two API-key Providers and four Subscription Providers. The page shows only the last 4 characters of each key, or the name of its environment variable.", "kind":"table"},
+    {"image":"signin.png", "page":"/admin/providers", "route":"/admin/providers", "recipe":"signin", "caption":"Sign-in", "alt":"The sign-in panel of a Codex Provider. Paste the redirect URL here when device sign-in is not available.", "kind":"table"},
+    {"image":"models.png", "page":"/admin/models", "route":"/admin/models", "recipe":"models", "caption":"Models", "alt":"The Models with their Cost Card rates, Price Cards, Team overrides and the Default Markup.", "kind":"table"},
+    {"image":"model.png", "page":"/admin/models/6", "route":"/admin/models/{id}", "recipe":"full", "caption":"Model page", "alt":"The cards of one Model, a Team override and the Card history.", "kind":"table"},
+    {"image":"users.png", "page":"/admin/users?limit=10", "route":"/admin/users", "recipe":"pager", "caption":"Users", "alt":"The name search, the Users with their Teams, Budgets, Rate Limits and spend, and the pager.", "kind":"table"},
+    {"image":"keys.png", "page":"/admin/keys?limit=10", "route":"/admin/keys", "recipe":"pager", "caption":"Keys", "alt":"The form to add a Virtual Key with Provider Access and Rate Limits, the active keys and the pager.", "kind":"table"},
+    {"image":"usage.png", "page":"/admin/usage?group=user&range=24h&limit=10", "route":"/admin/usage", "recipe":"pager", "caption":"Usage", "alt":"The \"Show all\" view of the Overview: usage by User, sorted by requests, one page at a time.", "kind":"table"},
+    {"image":"overview-simple.png", "page":"/admin", "route":"/admin", "recipe":"overview-simple", "caption":"Overview in Simple Mode", "alt":"The Overview without money data: requests, tokens, latency, errors and attempts.", "kind":"table"},
+    {"image":"teams.png", "page":"/admin/teams", "route":"/admin/teams", "recipe":"full", "caption":"Teams", "alt":"Teams with their Budgets, spend and member counts.", "kind":"table"},
+    {"image":"settings.png", "page":"/admin/settings", "route":"/admin/settings", "recipe":"full", "caption":"Settings", "alt":"The operating mode, routing settings, metrics and alert controls.", "kind":"table"}
+  ],
+  "exclusions": [
+    {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page."},
+    {"route":"/admin/assets/htmx.min.js", "reason":"JavaScript asset, not an HTML page."},
+    {"route":"/admin/assets/favicon.svg", "reason":"SVG asset, not an HTML page."},
+    {"route":"/admin/search/models", "reason":"Search result fragment, shown within the dashboard picker."},
+    {"route":"/admin/search/{kind}", "reason":"Search result fragment, shown within dashboard pickers."},
+    {"route":"/admin/search/provider-types", "reason":"Search result fragment, captured in Add a Provider."},
+    {"route":"/admin/provider-form", "reason":"Form fragment, captured in Add a Provider form."}
+  ]
+}

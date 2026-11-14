@@ -29,6 +29,67 @@ can do the work without a browser.
    that file.
 6. Do not change `GLOSSARY.md` or the files in `docs/adr/`.
 
+## Screenshots
+
+Every push to any remote must include current screenshots when the web surface
+changes. This includes new pages and new states on existing pages. The README
+images must show the latest application state, not an earlier commit.
+
+Install Python 3 with `Pillow` and `requests`, Node.js with `playwright-core`, and
+Chromium. Use the Rust toolchain from the build instructions. Install the Node
+package outside this repository, or set `NODE_PATH` to an existing installation.
+Set `CHROMIUM_PATH` to the Chromium executable. For example:
+
+```sh
+export CHROMIUM_PATH="$HOME/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome"
+export NODE_PATH=/path/to/node_modules
+scripts/screenshots/run.sh
+```
+
+The command builds the Proxy, makes a fresh demo database, starts a local mock
+Provider, adds demo data through the dashboard, sends traffic and captures each
+entry in `scripts/screenshots/manifest.json`. It stops both servers on exit.
+It fails on a browser console error or a missing capture. The PNG files use a
+256-color palette. The command writes them to `docs/images`. Review the images,
+then commit them with the web changes, or in a later commit before the push.
+
+Use `--out DIRECTORY` to test the command without changing the tracked images.
+Run data and logs stay in a new directory under `SHOTS_WORKDIR` (default:
+`/arboretum/tokomotive-screenshots`). Set this variable to a writable scratch
+directory. The default ports are 18831 for the Proxy and 18832 for the mock.
+Use `SHOTS_PORT` and `SHOTS_MOCK_PORT` to change them. Do not use 3000 or 4095.
+The command refuses ports that are in use. It does not use a production database
+or the inherited Proxy configuration. All keys in the images are demo values.
+
+On a shared build host, set `SHOTS_BUILD_GATE` to the `build-gate.sh` executable.
+The command then runs `build-gate.sh build cargo build --locked -j 4`. Exit 75
+means the build is in the queue; run the command again. `CARGO_TARGET_DIR` works
+with both build methods.
+
+Enable the versioned hook once in each clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The pre-push hook checks the history for each pushed ref. It blocks a push when
+a web-surface commit has no later image commit in that history. An image update
+in the same commit also passes. It checks new branches and force pushes, and
+allows ref deletions. It uses commit ancestry, not commit dates. The mandatory
+paths are `templates/`, `src/web/`, `assets/` and `src/provider_types.rs`.
+The manifest can add surface globs; it also includes the screenshot scripts.
+Use `SKIP_SCREENSHOTS=1 git push` only for an explicit exception. The hook prints
+a warning for this bypass. Hooks run locally; install the hook in each clone
+that pushes changes.
+
+When you add an admin GET route, add a manifest capture and a recipe in
+`shoot.js`, or an exclusion with a specific reason for a non-page endpoint.
+Add the image to the README. `cargo test --test screenshots_manifest` checks
+route coverage, README links, image files and the hook's block/allow cases.
+The static wordmark is not a screenshot. Run the standalone hook regression
+with `bash scripts/screenshots/test-hook.sh`; set `TMPDIR` or
+`SHOTS_TEST_TMPDIR` to select its scratch directory.
+
 ## 1. Prerequisites
 
 Use one of these two ways.
