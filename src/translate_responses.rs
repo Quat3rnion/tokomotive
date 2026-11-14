@@ -387,6 +387,7 @@ pub enum ProxyStream {
     Responses(ResponseStream),
     Gemini(crate::translate_gemini::GeminiStream),
     Bedrock(crate::translate_bedrock::BedrockStream),
+    Cohere(crate::translate_cohere::CohereStream),
 }
 impl ProxyStream {
     pub fn failed(&self) -> bool {
@@ -395,6 +396,7 @@ impl ProxyStream {
             Self::Responses(s) => s.failed,
             Self::Gemini(s) => s.failed,
             Self::Bedrock(s) => s.failed,
+            Self::Cohere(s) => s.failed,
         }
     }
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
@@ -403,6 +405,7 @@ impl ProxyStream {
             Self::Responses(s) => s.feed(chunk),
             Self::Gemini(s) => s.feed(chunk),
             Self::Bedrock(s) => s.feed(chunk),
+            Self::Cohere(s) => s.feed(chunk),
         }
     }
     pub fn finish(&mut self) -> Vec<u8> {
@@ -411,6 +414,7 @@ impl ProxyStream {
             Self::Responses(s) => s.finish(),
             Self::Gemini(s) => s.finish(),
             Self::Bedrock(s) => s.finish(),
+            Self::Cohere(s) => s.finish(),
         }
     }
 }

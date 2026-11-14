@@ -148,6 +148,22 @@ Tests use mock upstreams only. Live AWS account access is not verified.
 
 ### Routing and Translation
 
+For **Cohere (v2 Chat)**, add the preset and a Provider Key, then add a Model
+or Route with a Cohere Model ID. Both Chat Completions and Messages clients
+can use JSON and streaming responses, including function tools. The Proxy
+maps `content-delta`, `tool-call-*` and `message-end` events to client SSE.
+An incomplete stream or an upstream ERROR/TIMEOUT returns an error, not a
+successful completion.
+
+For accounting, a complete `usage.billed_units` input/output report has
+priority. Cohere defines these as the billed tokens. `usage.tokens` reports
+raw model tokens and can be larger. The Proxy uses it only if the billed
+report is absent or incomplete. It never adds both reports or subtracts
+`cached_tokens` from the billed units. The same selected values are returned
+in client usage. See [Chat usage](https://docs.cohere.com/v2/reference/chat#types)
+and [stream usage](https://docs.cohere.com/v2/reference/chat-stream).
+Live Cohere account access is not verified; tests use a local mock.
+
 An explicit Route selects its Deployments before catalog lookup. The Proxy
 replaces the requested Model with the upstream model name of the Deployment
 (Model rewrite). The strategy of the Route sets the order of the Deployments. See

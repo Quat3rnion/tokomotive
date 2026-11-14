@@ -19,6 +19,7 @@ impl Preset {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::Gemini => "gemini",
             ProviderKind::Bedrock => "bedrock",
+            ProviderKind::Cohere => "cohere",
         }
     }
 }
@@ -302,6 +303,16 @@ pub static PRESETS: &[Preset] = &[
         "https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html",
         "Set the AWS region and encrypted AWS credentials below. No bearer key is used."
     ),
+    preset!(
+        "cohere",
+        "Cohere (v2 Chat)",
+        Cohere,
+        "https://api.cohere.com",
+        Bearer,
+        false,
+        "https://docs.cohere.com/v2/reference/chat",
+        "Use a Cohere API key. Chat Completions and Messages are translated to v2 Chat."
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Preset> {
@@ -327,6 +338,7 @@ impl PresetChoice {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::Gemini => "gemini",
             ProviderKind::Bedrock => "bedrock",
+            ProviderKind::Cohere => "cohere",
         }
     }
 }

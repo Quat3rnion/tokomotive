@@ -81,3 +81,4 @@ async fn metrics_endpoint(State(st): State<AppState>, headers: axum::http::Heade
 pub mod eventstream;
 pub mod sigv4;
 pub mod translate_bedrock;
+pub mod translate_cohere;

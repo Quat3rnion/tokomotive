@@ -52,7 +52,10 @@ async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Res
 
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
-    if matches!(kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
+    if matches!(
+        kind,
+        ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
+    ) {
         return matches!(endpoint, Endpoint::ChatCompletions | Endpoint::Messages);
     }
     endpoint.native_kind().is_none_or(|native| native == kind)
@@ -105,6 +108,14 @@ fn prepare_body(
     endpoint: Endpoint,
     body: Option<&Value>,
 ) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    if candidate.provider.kind == ProviderKind::Cohere {
+        let mut prepared =
+            crate::translate_cohere::request(endpoint, body.unwrap_or(&Value::Null))?;
+        if let Some(model) = &candidate.model {
+            prepared["model"] = json!(model);
+        }
+        return Ok((Some(prepared), Endpoint::Other, false));
+    }
     if candidate.provider.kind == ProviderKind::Bedrock {
         return Ok((
             Some(crate::translate_bedrock::request(
@@ -794,6 +805,17 @@ pub async fn handle(
                 }
             };
         }
+        if provider.kind == ProviderKind::Cohere {
+            if method != Method::POST || !subscription_path_allowed(endpoint, path_q) {
+                translation_error = Some(translate::TranslateError {
+                    message:
+                        "Cohere accepts only canonical Chat Completions and Messages POST paths"
+                            .into(),
+                });
+                continue;
+            }
+            path = "/v2/chat".into();
+        }
         if codex && (method != Method::POST || !subscription_path_allowed(endpoint, path_q)) {
             translation_error = Some(translate::TranslateError {
                 message: "Codex accepts only canonical model request paths".into(),
@@ -1068,6 +1090,16 @@ pub async fn handle(
                         .is_some_and(|v| v["stream_options"]["include_usage"] == true),
                 ),
             ))
+        } else if ctx.provider.kind == ProviderKind::Cohere {
+            Some(ProxyStream::Cohere(
+                crate::translate_cohere::CohereStream::new(
+                    endpoint,
+                    ctx.upstream_model.as_deref().unwrap_or_default(),
+                    json_body
+                        .as_ref()
+                        .is_some_and(|v| v["stream_options"]["include_usage"] == true),
+                ),
+            ))
         } else if codex && endpoint != Endpoint::Responses {
             Some(ProxyStream::Responses(
                 ResponseStream::new(
@@ -1108,6 +1140,23 @@ pub async fn handle(
     };
     let parsed: Option<Value> = serde_json::from_slice(&bytes).ok();
     let kind = ctx.provider.kind;
+    if kind == ProviderKind::Cohere
+        && status.is_success()
+        && parsed.as_ref().is_none_or(|v| {
+            !v["message"].is_object()
+                || v["finish_reason"]
+                    .as_str()
+                    .and_then(crate::translate_cohere::stop)
+                    .is_none()
+        })
+    {
+        ctx.finish(Outcome::failed(502));
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "invalid or failed Cohere response",
+        );
+    }
     if kind == ProviderKind::Bedrock
         && status.is_success()
         && parsed
@@ -1152,7 +1201,10 @@ pub async fn handle(
         client_aborted: false,
     });
 
-    let bytes = if matches!(kind, ProviderKind::Gemini | ProviderKind::Bedrock) {
+    let bytes = if matches!(
+        kind,
+        ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
+    ) {
         out_headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
@@ -1161,6 +1213,8 @@ pub async fn handle(
             Bytes::from(
                 (if kind == ProviderKind::Bedrock {
                     crate::translate_bedrock::response
+                } else if kind == ProviderKind::Cohere {
+                    crate::translate_cohere::response
                 } else {
                     crate::translate_gemini::response
                 })(
@@ -1273,6 +1327,14 @@ async fn build_request(
     headers: &HeaderMap,
     hints: RequestHints<'_>,
 ) -> Option<reqwest::RequestBuilder> {
+    if provider.kind == ProviderKind::Cohere {
+        return Some(
+            st.http()
+                .request(method.clone(), url)
+                .bearer_auth(key)
+                .header("content-type", "application/json"),
+        );
+    }
     if provider.kind == ProviderKind::Bedrock {
         if method != Method::POST {
             return None;

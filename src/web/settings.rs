@@ -861,7 +861,11 @@ async fn providers(
                     row.get::<&str, _>("base_url").trim_end_matches('/'),
                     "https://openrouter.ai/api" | "https://openrouter.ai/api/v1"
                 ),
-            auth_label: auth_label(auth),
+            auth_label: if kind == ProviderKind::Bedrock {
+                "AWS SigV4"
+            } else {
+                auth_label(auth)
+            },
             status,
             usage_status,
             usage,
@@ -870,6 +874,7 @@ async fn providers(
                 ProviderKind::Anthropic => "anthropic",
                 ProviderKind::Gemini => "gemini",
                 ProviderKind::Bedrock => "bedrock",
+                ProviderKind::Cohere => "cohere",
             }
             .into(),
             base_url: row.get("base_url"),
@@ -1274,6 +1279,11 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
     let Some(p) = table.providers.iter().find(|p| p.name == name) else {
         return form_error("Provider not found.");
     };
+    if matches!(p.kind, ProviderKind::Bedrock | ProviderKind::Cohere) {
+        return form_error(
+            "This API format has no model-list connection test. Send a model request instead.",
+        );
+    }
     let url = crate::provider::upstream_url(&p.base_url, p.kind.models_path());
     if p.auth != crate::provider::ProviderAuth::ApiKey {
         return form_error(

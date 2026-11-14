@@ -63,6 +63,7 @@ pub enum ProviderKind {
     /// Google native `generateContent` API.
     Gemini,
     Bedrock,
+    Cohere,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +83,7 @@ impl KeyHeader {
             ProviderKind::Anthropic => Self::XApiKey,
             ProviderKind::Gemini => Self::XGoogApiKey,
             ProviderKind::Bedrock => Self::Bearer,
+            ProviderKind::Cohere => Self::Bearer,
         }
     }
 
@@ -113,6 +115,11 @@ pub fn default_include_usage() -> bool {
 pub fn upstream_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let base = base.strip_suffix("/messages").unwrap_or(base);
+    if base.ends_with("/v2")
+        && let Some(suffix) = path.strip_prefix("/v2/")
+    {
+        return format!("{base}/{suffix}");
+    }
     if base.ends_with("/v1beta")
         && let Some(suffix) = path.strip_prefix("/v1beta/")
     {
@@ -226,6 +233,7 @@ impl ProviderKind {
             (ProviderKind::Anthropic, _) => anthropic_usage(v.get("usage")?, None),
             (ProviderKind::Gemini, _) => gemini_usage(v.get("usageMetadata")?),
             (ProviderKind::Bedrock, _) => crate::translate_bedrock::usage(v.get("usage")?),
+            (ProviderKind::Cohere, _) => crate::translate_cohere::usage(v.get("usage")?),
         }
     }
 
@@ -539,6 +547,23 @@ impl StreamTracker {
                 true
             }
             ProviderKind::Bedrock => true,
+            ProviderKind::Cohere => {
+                self.saw_content |= matches!(
+                    v["type"].as_str(),
+                    Some("content-delta" | "tool-call-start" | "tool-call-delta")
+                );
+                if v["type"] == "message-end" {
+                    self.usage = v["delta"]
+                        .get("usage")
+                        .and_then(crate::translate_cohere::usage);
+                    self.usage_final = self.usage.is_some()
+                        && !matches!(
+                            v["delta"]["finish_reason"].as_str(),
+                            Some("ERROR" | "TIMEOUT")
+                        );
+                }
+                true
+            }
         }
     }
 

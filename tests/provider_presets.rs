@@ -112,7 +112,8 @@ fn roster_has_all_verified_region_and_protocol_variants() {
             "minimax-messages",
             "openrouter-messages",
             "ark-messages",
-            "bedrock-native"
+            "bedrock-native",
+            "cohere"
         ]
     );
     assert!(!find("deepseek").unwrap().include_usage);

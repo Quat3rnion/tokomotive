@@ -175,6 +175,24 @@ The binary stream reader checks both IEEE CRC32 values. A frame is at most
 client error event and a failed Ledger Entry. HTTP 401 and 403 are not retried.
 HTTP 429 and 5xx keep the normal retry rules.
 
+## Cohere v2 Chat
+
+Select **Cohere (v2 Chat)** in Providers and add a Cohere API key. The API
+format is `cohere`. The preset base is `https://api.cohere.com`; the upstream
+path is `/v2/chat`. A base that ends with `/v2` is also accepted. This adapter
+always uses `Authorization: Bearer`. Keys use the existing encrypted Key Pool.
+Only canonical Chat Completions and Messages POST requests are supported.
+The upstream Model can be set by a Model or Route as with other Providers.
+
+The adapter maps text, images, function tool calls and tool results. It maps
+token limits, temperature, `top_p` to `p`, `top_k` to `k`, stop sequences and
+JSON response formats. Tool choice supports auto, required and none; a named
+tool choice is refused. Documents, citations and thinking content are not
+mapped. Other unsupported request options are not forwarded. Model discovery
+and the connection test are not available for this format. See the
+[Chat reference](https://docs.cohere.com/v2/reference/chat) and
+[streaming reference](https://docs.cohere.com/v2/reference/chat-stream).
+
 ## Master Key and backups
 
 The Master Key protects the stored Provider Keys, subscription credentials and
@@ -228,7 +246,7 @@ they are not a seed-file key. See [Provider presets](usage.md#provider-presets).
 | Key            | Type             | Default | Meaning                                                                                                          |
 | -------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | string           | none    | Required. The name that `models.provider` uses.                                                                  |
-| `kind`         | string           | none    | Required. `"openai"`, `"anthropic"` or `"gemini"`. The kind selects the wire format and usage parser. |
+| `kind`         | string           | none    | Required. `"openai"`, `"anthropic"`, `"gemini"`, `"bedrock"` or `"cohere"`. The kind selects the wire format and usage parser. |
 | `auth`         | string           | `"api_key"` | `"api_key"`, `"chatgpt"`, `"codex"` or `"claude"`. Subscription auth needs sign-in on Providers. |
 | `base_url`     | string           | none    | Required. The API origin or versioned base URL. The Proxy does not repeat `/v1`, Z.ai `/v4`, or the version in DeepInfra `/v1/openai`. A full Messages endpoint is also accepted. Custom prefixes and client query parameters stay. |
 | `key_header`   | string           | by kind | `"bearer"`, `"x-api-key"`, `"api-key"` or `"x-goog-api-key"`. Applies to API keys only. If omitted, OpenAI uses Bearer, Anthropic uses `x-api-key` and Gemini uses `x-goog-api-key`. |

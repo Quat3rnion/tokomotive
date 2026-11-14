@@ -402,6 +402,9 @@ async fn fetch_list(
     p: crate::state::Provider,
     timeout: Duration,
 ) -> Option<Vec<Listed>> {
+    if matches!(p.kind, ProviderKind::Bedrock | ProviderKind::Cohere) {
+        return None;
+    }
     let key = p.keys.first()?.clone();
     let deadline = Instant::now() + timeout;
     let first = crate::provider::upstream_url(&p.base_url, p.kind.models_path());

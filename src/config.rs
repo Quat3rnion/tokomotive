@@ -366,8 +366,10 @@ impl Config {
                     bail!("A Subscription Provider needs the base URL {base} and no API keys.");
                 }
             }
-            if (matches!(p.kind, ProviderKind::Gemini | ProviderKind::Bedrock)
-                && p.auth != ProviderAuth::ApiKey)
+            if (matches!(
+                p.kind,
+                ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
+            ) && p.auth != ProviderAuth::ApiKey)
                 || matches!(
                     (p.auth, p.kind),
                     (
