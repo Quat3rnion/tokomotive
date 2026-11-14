@@ -883,7 +883,13 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
         .await
     );
     page.model_price_alerts = tryr!(models_dev::alerts(&st).await);
-    page.quota = tryr!(quota::views(&st, None, 10).await);
+    // Overview: only accounts that report quota or need attention. The
+    // Providers page keeps the full list.
+    page.quota = tryr!(quota::views(&st, None, 200).await)
+        .into_iter()
+        .filter(|a| !a.windows.is_empty() || a.skipped || a.state != "ok")
+        .take(10)
+        .collect();
     for (label, value) in &mut page.more {
         if *label == "Attempts" {
             *value = int(attempts);

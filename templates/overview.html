@@ -76,11 +76,11 @@
 </section>
 
 <div id="live" hx-get="/admin?range={{ range }}" hx-trigger="every 30s [tokoAutoRefresh(this)]" hx-select="#live" hx-swap="outerHTML">
-<section class="panel" aria-label="Subscription quota">
+{% if !quota.is_empty() %}<section class="panel" aria-label="Subscription quota">
   <h2>Subscription quota</h2>
-  <p class="hint">First 10 observed accounts. <a href="/admin/providers">Show Providers</a> to update plan usage.</p>
+  <p class="hint">Accounts with quota data or a problem, at most 10. <a href="/admin/providers">Show Providers</a> for all accounts and to update plan usage.</p>
   {% include "quota.html" %}
-</section>
+</section>{% endif %}
 <p class="muted">Usage in {{ range_words }}. Times are UTC.</p>
 {% if !base.simple && (unpriced > 0 || estimated > 0) %}
 <div class="panel">

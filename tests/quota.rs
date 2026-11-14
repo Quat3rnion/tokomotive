@@ -503,3 +503,66 @@ fn openai_windows_include_counts_and_duration_resets() {
     assert_eq!(windows[0].limit, Some(100.0));
     assert_eq!(windows[0].reset_at, Some(1_700_000_090));
 }
+
+/// The Overview shows only accounts that need attention or report quota. A
+/// healthy API-key account without quota headers is noise there.
+#[tokio::test]
+async fn overview_hides_healthy_accounts_without_quota() {
+    let cfg = toml::from_str(
+        r#"
+[server]
+database="sqlite::memory:"
+admin_password="pw"
+admin_password_env="TOKOMOTIVE_QUOTA_TEST_UNSET"
+[[providers]]
+name="plain"
+kind="openai"
+base_url="http://127.0.0.1:9"
+api_key="k1"
+"#,
+    )
+    .unwrap();
+    let st = tokomotive::init(&cfg, None).await.unwrap();
+    tokomotive::db::create_session(&st.db, "s", 1)
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let quiet = axum::http::HeaderMap::new();
+    tokomotive::quota::record(&st.db, "plain", "healthy-account", 200, &quiet, now)
+        .await
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let app = tokomotive::router(st.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let page = |path: &'static str| {
+        let base = base.clone();
+        async move {
+            reqwest::Client::new()
+                .get(format!("{base}{path}"))
+                .header("cookie", "tokomotive_session=s")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        }
+    };
+    let html = page("/admin").await;
+    assert!(
+        !html.contains("healthy-account"),
+        "healthy account shown on Overview"
+    );
+    assert!(!html.contains("No quota headers observed"));
+    // An account that needs attention still appears.
+    tokomotive::quota::record(&st.db, "plain", "limited-account", 429, &quiet, now)
+        .await
+        .unwrap();
+    let html = page("/admin").await;
+    assert!(html.contains("limited-account"));
+    assert!(!html.contains("healthy-account"));
+    // The Providers page keeps the full list.
+    assert!(page("/admin/providers").await.contains("healthy-account"));
+    server.abort();
+}
