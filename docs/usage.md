@@ -2181,7 +2181,10 @@ on **Teams**. Renaming a server does not rename existing access rules.
 Clients connect to `https://router.example.com/mcp` and send a Virtual Key in
 `Authorization: Bearer` or `x-api-key`. The aggregate endpoint prefixes names,
 for example `research__search_docs`. To use the original names, connect to
-`https://router.example.com/mcp/research`. Server names must have 1 to 32 ASCII
+`https://router.example.com/mcp/research`. Only native MCP clients are supported.
+Requests with any `Origin` header get HTTP 403 and a JSON-RPC error, even when
+Origin matches Host. There is no browser origin or CORS opt-in setting.
+Server names must have 1 to 32 ASCII
 letters, digits, dots, hyphens or underscores, with no `__` or dot-only name.
 Tool names have the MCP name characters and at most 128 characters. An aggregate
 name longer than 128 characters is not listed; use the single-server endpoint.

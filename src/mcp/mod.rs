@@ -5,7 +5,7 @@ use crate::{db::KeyAuth, state::AppState};
 use axum::{
     Json, Router,
     extract::{Path, Request, State},
-    http::{HeaderMap, Method, StatusCode},
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
 };
@@ -119,32 +119,19 @@ fn error(id: &Value, code: i64, message: &str) -> Response {
 fn reply(id: &Value, result: Value) -> Response {
     Json(json!({"jsonrpc":"2.0","id":id,"result":result})).into_response()
 }
-fn valid_origin(h: &HeaderMap) -> bool {
-    let Some(origin) = h.get("origin") else {
-        return true;
-    };
-    let Ok(origin) = origin.to_str() else {
-        return false;
-    };
-    let Ok(url) = reqwest::Url::parse(origin) else {
-        return false;
-    };
-    let Some(host) = h.get("host").and_then(|h| h.to_str().ok()) else {
-        return false;
-    };
-    matches!(url.scheme(), "http" | "https")
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.path() == "/"
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && reqwest::Url::parse(&format!("{}://{host}", url.scheme()))
-            .is_ok_and(|expected| expected.origin() == url.origin())
-}
 async fn handle(st: AppState, endpoint: String, req: Request) -> Response {
     let (parts, body) = req.into_parts();
-    if !valid_origin(&parts.headers) {
-        return StatusCode::FORBIDDEN.into_response();
+    // Native clients only. Comparing Origin with an untrusted Host header
+    // does not provide a trusted-host allowlist against DNS rebinding.
+    // Browser support needs a separate, explicit Operator opt-in policy.
+    if parts.headers.contains_key("origin") {
+        let mut response = error(
+            &Value::Null,
+            -32000,
+            "Browser MCP clients are not supported",
+        );
+        *response.status_mut() = StatusCode::FORBIDDEN;
+        return response;
     }
     let auth: KeyAuth = match crate::proxy::authenticate(&st, &parts.headers, false).await {
         Ok(a) => a,

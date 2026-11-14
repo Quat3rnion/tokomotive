@@ -651,3 +651,22 @@ async fn a_call_is_not_dispatched_without_a_durable_log_entry() {
         "a side effect must not run without a call log"
     );
 }
+
+#[tokio::test]
+async fn browser_origins_are_rejected_even_when_origin_matches_host() {
+    let f = Fixture::new().await;
+    let session = f.initialize().await;
+    for origin in [f.base.as_str(), "null", "https://untrusted.example"] {
+        let response = f
+            .post("ping", 2)
+            .header("mcp-session-id", &session)
+            .header("origin", origin)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403, "{origin}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["jsonrpc"], "2.0");
+        assert_eq!(body["error"]["code"], -32000);
+    }
+}
