@@ -434,7 +434,9 @@ impl Outcome {
 }
 
 impl Ctx {
-    fn finish(self, o: Outcome) {
+    fn finish(self, mut o: Outcome) {
+        // Upstream counts are untrusted: clamp them before any sum or price.
+        o.usage = o.usage.bounded();
         self.st
             .limiter
             .record_tokens(&self.rate_scopes, o.usage.total(), db::now_ms());
@@ -1225,15 +1227,19 @@ pub async fn handle(
                 .to_string(),
             )
         } else {
-            Bytes::from(translate::translate_error(
-                if endpoint == Endpoint::Messages {
-                    Direction::MessagesToChat
-                } else {
-                    Direction::ChatToMessages
-                },
-                status.as_u16(),
-                &bytes,
-            ))
+            let dir = if endpoint == Endpoint::Messages {
+                Direction::MessagesToChat
+            } else {
+                Direction::ChatToMessages
+            };
+            // Bedrock and Cohere errors are not reflected verbatim: AWS
+            // signature errors can echo the signed session token. Gemini
+            // keeps its message, which carries no request data.
+            Bytes::from(if kind == ProviderKind::Gemini {
+                translate::translate_error(dir, status.as_u16(), &bytes)
+            } else {
+                translate::translate_provider_error(dir, status.as_u16(), &bytes)
+            })
         }
     } else if let Some(dir) = direction {
         out_headers.insert(

@@ -200,3 +200,20 @@ fn bedrock_signed_request_uses_encoded_model_and_session_token() {
         assert!(tokomotive::sigv4::region_from_base(base).is_err());
     }
 }
+
+/// AWS signature errors can echo the canonical request, including the
+/// session token. The client must never receive the upstream text.
+#[test]
+fn bedrock_error_bodies_are_not_reflected_to_clients() {
+    use tokomotive::translate::Direction;
+    let body = br#"{"message":"The request signature we calculated does not match. The Canonical String for this request should have been 'POST /model/x/converse x-amz-security-token:PRIVATESESSIONTOKEN'"}"#;
+    for dir in [Direction::ChatToMessages, Direction::MessagesToChat] {
+        let out = String::from_utf8(tokomotive::translate::translate_provider_error(
+            dir, 403, body,
+        ))
+        .unwrap();
+        assert!(!out.contains("PRIVATESESSIONTOKEN"), "{out}");
+        assert!(!out.contains("Canonical"), "{out}");
+        assert!(out.contains("permission_error"), "{out}");
+    }
+}

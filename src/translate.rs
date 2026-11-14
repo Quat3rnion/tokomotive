@@ -489,11 +489,32 @@ pub fn translate_response(dir: Direction, body: &Value) -> Value {
 }
 
 pub fn translate_error(dir: Direction, status: u16, body: &[u8]) -> Vec<u8> {
+    error_body(dir, status, body, true)
+}
+
+/// For Providers whose error text can echo signed request data (AWS
+/// signature errors repeat the canonical request, which includes the
+/// session token). Keeps the error type and status, and replaces the
+/// upstream message with a fixed text.
+pub fn translate_provider_error(dir: Direction, status: u16, body: &[u8]) -> Vec<u8> {
+    error_body(dir, status, body, false)
+}
+
+fn error_body(dir: Direction, status: u16, body: &[u8], keep_message: bool) -> Vec<u8> {
     let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-    let message = body["error"]["message"]
-        .as_str()
-        .or_else(|| body["message"].as_str())
-        .unwrap_or("upstream request failed");
+    let generic = match status {
+        401 | 403 => "the provider refused the credentials or the request signature",
+        429 => "the provider rate limit was exceeded",
+        _ => "upstream request failed",
+    };
+    let message = if keep_message {
+        body["error"]["message"]
+            .as_str()
+            .or_else(|| body["message"].as_str())
+            .unwrap_or("upstream request failed")
+    } else {
+        generic
+    };
     let kind = match text(&body["error"], "type") {
         known @ ("invalid_request_error"
         | "authentication_error"
