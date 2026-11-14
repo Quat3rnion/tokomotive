@@ -438,6 +438,8 @@ fn skip_header(name: &HeaderName) -> bool {
 
 /// Request context that is needed to write the Ledger Entry.
 struct Ctx {
+    cache_plan: Option<crate::cache::Plan>,
+    cache_hit_price: Option<i64>,
     st: AppState,
     auth: KeyAuth,
     provider: Provider,
@@ -489,9 +491,11 @@ impl Ctx {
         }
         // Upstream counts are untrusted: clamp them before any sum or price.
         o.usage = o.usage.bounded();
-        self.st
-            .limiter
-            .record_tokens(&self.rate_scopes, o.usage.total(), db::now_ms());
+        if self.cache_hit_price.is_none() {
+            self.st
+                .limiter
+                .record_tokens(&self.rate_scopes, o.usage.total(), db::now_ms());
+        }
         let catalog = self.st.catalog();
         let mut model = o.model.or_else(|| self.upstream_model.clone());
         if self.provider.auth == crate::provider::ProviderAuth::GoogleVertex
@@ -509,9 +513,17 @@ impl Ctx {
             quote.cost_micros = 0;
             quote.cost_card_id = None;
         }
+        if let Some(price) = self.cache_hit_price {
+            quote.cost_micros = 0;
+            quote.price_micros = price;
+            quote.cost_card_id = None;
+            quote.price_card_id = None;
+            quote.unpriced = false;
+        }
         // Failed requests with no usage are errors, not Unpriced Entries.
         quote.unpriced = quote.unpriced && o.status < 400;
         let entry = NewEntry {
+            cache_hit: self.cache_hit_price.is_some(),
             ts_ms: self.ts_ms,
             user_id: self.auth.user_id,
             key_id: self.auth.key_id,
@@ -570,6 +582,27 @@ impl Ctx {
             }
         };
         self.st.spawn_tracked(fut);
+    }
+
+    fn cache_write(
+        &self,
+        usage: Usage,
+        model: Option<String>,
+        estimated: bool,
+    ) -> Option<crate::cache::Write> {
+        Some(crate::cache::Write {
+            st: self.st.clone(),
+            plan: self.cache_plan.clone()?,
+            entry: crate::cache::Entry {
+                body: String::new(),
+                content_type: String::new(),
+                provider: self.provider.name.clone(),
+                upstream_model: self.upstream_model.clone(),
+                model: model.or_else(|| self.upstream_model.clone()),
+                usage,
+                estimated,
+            },
+        })
     }
 }
 
@@ -877,10 +910,76 @@ pub async fn handle(
         );
     };
 
+    let cache_plan = table
+        .routes
+        .iter()
+        .find(|r| Some(r.name.as_str()) == requested_model.as_deref())
+        .and_then(|r| {
+            if !r.cache.enabled {
+                return None;
+            }
+            if !matches!(
+                endpoint,
+                Endpoint::ChatCompletions
+                    | Endpoint::Messages
+                    | Endpoint::Responses
+                    | Endpoint::Embeddings
+            ) {
+                return None;
+            }
+            let identity = serde_json::json!([
+                r.name,
+                r.strategy,
+                r.cache,
+                r.deployments
+                    .iter()
+                    .map(|d| (&d.provider, &d.model, d.weight))
+                    .collect::<Vec<_>>(),
+                r.fallbacks,
+                table
+                    .reachable_providers(&catalog, &r.name)
+                    .iter()
+                    .map(|p| (
+                        &p.name,
+                        &p.base_url,
+                        p.kind,
+                        p.auth.as_str(),
+                        p.include_usage
+                    ))
+                    .collect::<Vec<_>>()
+            ])
+            .to_string();
+            crate::cache::Plan::new(
+                &r.cache,
+                &identity,
+                uri.path_and_query()
+                    .map(|p| p.as_str())
+                    .unwrap_or(uri.path()),
+                json_body.as_ref()?,
+                &headers,
+                auth.key_id,
+                auth.team_id,
+            )
+        });
+    let cached = if let Some(plan) = &cache_plan {
+        match crate::cache::lookup(&st.db, &st.secret_key, plan, &settings.cache).await {
+            Ok(entry) => entry.filter(|entry| {
+                candidates
+                    .iter()
+                    .any(|c| c.provider.name == entry.provider && c.model == entry.upstream_model)
+            }),
+            Err(e) => {
+                tracing::warn!(error=%e,"cache lookup failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut reservation = None;
     if !simple {
         let mut worst = 0;
-        for c in &candidates {
+        for c in candidates.iter().filter(|_| cached.is_none()) {
             let pricing_model = if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex {
                 c.model
                     .as_deref()
@@ -927,6 +1026,9 @@ pub async fn handle(
                 reserve_output,
             ));
         }
+        if cached.is_some() {
+            worst = settings.cache.hit_price_micros.max(0);
+        }
         match crate::budgets::reserve(&st, &auth, worst, ts_ms / 1000).await {
             Ok(Some(r)) => reservation = Some(r),
             Ok(None) => {
@@ -958,6 +1060,8 @@ pub async fn handle(
     )
     .await;
     let mut ctx = Ctx {
+        cache_plan,
+        cache_hit_price: None,
         st: st.clone(),
         auth,
         provider: first.provider.clone(),
@@ -973,6 +1077,45 @@ pub async fn handle(
         session_affinity: None,
         rate_scopes: scopes.into_iter().map(|(scope, _)| scope).collect(),
         reservation,
+    };
+    if let Some(entry) = cached
+        && let Ok(bytes) = entry.bytes()
+    {
+        ctx.cache_hit_price = Some(settings.cache.hit_price_micros.max(0));
+        ctx.provider = candidates
+            .iter()
+            .find(|c| c.provider.name == entry.provider && c.model == entry.upstream_model)
+            .expect("checked cached provider")
+            .provider
+            .clone();
+        ctx.upstream_model = entry.upstream_model;
+        ctx.finish(Outcome {
+            status: 200,
+            model: entry.model,
+            usage: entry.usage,
+            reported_cost_micros: None,
+            estimated: entry.estimated,
+            ttft_ms: streamed.then_some(0),
+            client_aborted: false,
+        });
+        metrics::counter!("llm_cache_hits_total").increment(1);
+        metrics::counter!("llm_cache_hit_bytes_total").increment(bytes.len() as u64);
+        let mut response = Response::new(Body::from(bytes));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(&entry.content_type)
+                .unwrap_or(HeaderValue::from_static("application/json")),
+        );
+        response
+            .headers_mut()
+            .insert("x-tokomotive-cache", HeaderValue::from_static("hit"));
+        return response;
+    }
+    let cache_status = if ctx.cache_plan.as_ref().is_some_and(|p| p.lookup) {
+        metrics::counter!("llm_cache_misses_total").increment(1);
+        "miss"
+    } else {
+        "bypass"
     };
 
     // Try each deployment's keys before the next deployment. Nothing has
@@ -1438,6 +1581,7 @@ pub async fn handle(
             out_headers.append(name.clone(), value.clone());
         }
     }
+    out_headers.insert("x-tokomotive-cache", HeaderValue::from_static(cache_status));
     if endpoint == Endpoint::AudioSpeech && status.is_success() {
         let characters = json_body
             .as_ref()
@@ -1624,7 +1768,7 @@ pub async fn handle(
         (usage, estimated)
     };
     let upstream_model = ctx.upstream_model.clone();
-    ctx.finish(Outcome {
+    let outcome = Outcome {
         status: status.as_u16(),
         model,
         usage: usage.unwrap_or_else(|| {
@@ -1643,7 +1787,7 @@ pub async fn handle(
         estimated,
         ttft_ms: None,
         client_aborted: false,
-    });
+    };
 
     let bytes = if !status.is_success()
         && (endpoint == Endpoint::Rerank
@@ -1718,6 +1862,15 @@ pub async fn handle(
     } else {
         bytes
     };
+    let write = ctx.cache_write(outcome.usage, outcome.model.clone(), outcome.estimated);
+    // Record upstream usage before any cancellable cache I/O.
+    ctx.finish(outcome);
+    if let Some(write) = write
+        && status == StatusCode::OK
+        && crate::cache::complete_json(endpoint.name(), &bytes)
+    {
+        write.store(&bytes, "application/json").await;
+    }
     let mut resp = Response::new(Body::from(bytes));
     *resp.status_mut() = status;
     *resp.headers_mut() = out_headers;
@@ -1986,7 +2139,7 @@ async fn collect_codex(
         } else {
             StatusCode::OK
         };
-        let make_response = || {
+        let make_response = async {
             let Some(value) = response.filter(|_| !failed) else {
                 return formatted_error(
                     StatusCode::BAD_GATEWAY,
@@ -2007,11 +2160,22 @@ async fn collect_codex(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
             );
-            let mut response = Response::new(Body::from(value.to_string()));
+            let bytes = value.to_string();
+            if let Some(write) = ctx.cache_write(
+                tracker.usage.unwrap_or_default(),
+                tracker.model.clone(),
+                !tracker.usage_final,
+            ) && !tx.is_closed()
+                && crate::cache::complete_json(endpoint.name(), bytes.as_bytes())
+            {
+                write.store(bytes.as_bytes(), "application/json").await;
+            }
+            let mut response = Response::new(Body::from(bytes));
             *response.headers_mut() = headers;
             response
         };
-        let client_aborted = tx.send(make_response()).is_err();
+        let response = make_response.await;
+        let client_aborted = tx.send(response).is_err();
         ctx.finish(Outcome {
             status: status.as_u16(),
             model: tracker.model.take(),
@@ -2055,9 +2219,27 @@ fn stream_response(
         let mut ttft = None;
         let mut client_gone = false;
         let mut upstream_failed = false;
+        let mut cached_body = crate::cache::StreamBody::new(if ctx.cache_plan.is_some() {
+            ctx.st.settings().cache.max_entry_bytes
+        } else {
+            0
+        });
+        // Chat/Messages translation can synthesize a stop event at EOF. Check
+        // the source too, so a truncated upstream cannot become a cached hit.
+        let source_check = matches!(
+            ctx.provider.kind,
+            ProviderKind::Openai | ProviderKind::Anthropic
+        );
+        let mut source_body =
+            crate::cache::StreamBody::new(if source_check && ctx.cache_plan.is_some() {
+                ctx.st.settings().cache.max_entry_bytes
+            } else {
+                0
+            });
         while let Some(item) = stream.next().await {
             match item {
                 Ok(chunk) => {
+                    source_body.feed(&chunk);
                     let out = tracker.feed(&chunk);
                     let out = if let Some(t) = translator.as_mut() {
                         t.feed(&out)
@@ -2068,6 +2250,7 @@ fn stream_response(
                         ttft = Some(started.elapsed().as_millis() as i64);
                     }
                     ctx.trace.response(&out);
+                    cached_body.feed(&out);
                     if !client_gone
                         && !out.is_empty()
                         && tx.send(Ok(Bytes::from(out))).await.is_err()
@@ -2095,10 +2278,11 @@ fn stream_response(
             rest
         };
         ctx.trace.response(&rest);
+        cached_body.feed(&rest);
         if !client_gone && !rest.is_empty() {
-            let _ = tx.send(Ok(Bytes::from(rest))).await;
+            client_gone = tx.send(Ok(Bytes::from(rest))).await.is_err();
         }
-        drop(tx);
+        client_gone |= tx.is_closed();
         let estimated = status.is_success() && !tracker.usage_final;
         let code = if translator.as_ref().is_some_and(ProxyStream::failed)
             || (upstream_failed && !tracker.usage_final)
@@ -2107,6 +2291,22 @@ fn stream_response(
         } else {
             status.as_u16()
         };
+        let source_complete =
+            !source_check || source_body.complete(upstream_endpoint.name()).is_some();
+        if ctx.streamed
+            && code == 200
+            && !client_gone
+            && !upstream_failed
+            && source_complete
+            && let Some(bytes) = cached_body.complete(ctx.endpoint.name())
+            && let Some(write) = ctx.cache_write(
+                tracker.usage.unwrap_or_default(),
+                tracker.model.clone(),
+                estimated,
+            )
+        {
+            write.store(&bytes, "text/event-stream").await;
+        }
         ctx.finish(Outcome {
             status: code,
             model: tracker.model.take(),
@@ -2116,6 +2316,7 @@ fn stream_response(
             ttft_ms: ttft,
             client_aborted: client_gone,
         });
+        drop(tx);
     };
     // Not tied to the client connection: the task continues after a disconnect.
     st.spawn_tracked(task);

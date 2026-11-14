@@ -27,6 +27,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   Proxy removes the Provider prefix before the upstream request.
 - Rewrites the Model name of the request to the upstream model name of the
   Deployment.
+- Offers an encrypted [exact response cache](docs/usage.md#exact-response-cache)
+  for JSON and SSE. Each Route sets its lifetime and Virtual Key, Team or global scope.
+  Hits have zero Cost and a configurable Price. The cache is off by default.
 
 ### Compatibility
 
@@ -105,6 +108,8 @@ controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 ## Screenshots
 
 The screenshots show demo data from a local test server. The keys are not real.
+The current images do not show the new exact-cache controls, hit flag or hit rate.
+The capture manifest records these changes for the next image refresh.
 
 ![The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table.](docs/images/overview.png)
 

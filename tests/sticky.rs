@@ -503,6 +503,7 @@ async fn successful_fallback_is_pinned_for_the_next_turn() {
     let mut table = (*e.st.router_table()).clone();
     table.routes[0].fallbacks.push("backup".into());
     table.routes.push(tokomotive::routing::Route {
+        cache: Default::default(),
         name: "backup".into(),
         strategy: tokomotive::config::Strategy::Priority,
         session_affinity: false,

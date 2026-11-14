@@ -27,6 +27,7 @@ pub fn record(user: &str, e: &NewEntry) {
         ("provider", e.provider.clone()),
         ("model", model),
         ("user", user.to_owned()),
+        ("cache_hit", e.cache_hit.to_string()),
     ];
     let mut with_status = base.to_vec();
     with_status.push(("status", e.status.to_string()));

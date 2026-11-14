@@ -114,6 +114,61 @@ the Model is unmapped or has no output limit. It does not cap a larger model lim
 The bundled data is from [models.dev](https://models.dev), fetched on 2026-11-13.
 See [ADR 0005](adr/0005-models-dev-pricing.md) for the pricing decision and risks.
 
+## Exact response cache
+
+On **Routes**, set **Cache** to **On** and select its lifetime in seconds.
+The default is Off. Select the scope with care:
+
+- **Virtual Key** keeps each Virtual Key separate, including keys of the same User.
+- **Team** shares responses only with keys whose Users belong to the same Team.
+  A User with no Team bypasses this scope.
+- **Global** shares responses with all permitted clients of this Route.
+
+The cache supports Chat Completions, Messages, Responses and Embeddings.
+Tool requests can use it. A request with `n > 1` bypasses it.
+Only identical normalized bodies on the same endpoint and resolved Route can match.
+The SHA-256 key includes the Route's Models, source settings and scope.
+JSON object keys are sorted at every level. Array order stays unchanged.
+The Proxy removes only these top-level fields before hashing:
+`stream`, `stream_options`, `user`, `metadata`. Nested fields stay unchanged.
+The endpoint includes its query string. The stream flag and
+`stream_options.include_usage` select a separate response
+format. API version and beta headers also separate entries.
+
+A complete streamed miss can populate the cache. The Proxy stores the final
+translated SSE bytes, not a JSON reconstruction. A hit replays those bytes in
+the client's format, including a usage event when requested. JSON and SSE
+do not share entries. A JSON request cannot hit an entry made by a stream.
+Different SSE usage options do not share entries either.
+
+Use `Cache-Control: no-cache` to skip lookup but permit a new stored response.
+Use `Cache-Control: no-store` or `x-tokomotive-cache: bypass` to skip lookup and
+storage. Successful responses have `x-tokomotive-cache: hit`, `miss` or `bypass`.
+Errors, incomplete Responses, aborted or partial streams, and oversized entries
+are not stored. Expired entries cannot produce a hit.
+
+On **Settings**, set the entry limit, total byte limit and entry byte limit.
+The default entry limit is 10,000. The default total is 100 MiB. The default
+entry size is 1 MiB. Byte limits include encryption and metadata overhead.
+The SQLite bodies use AES-256-GCM with the Master Key. Back up this key with
+the database. Oldest entries are removed first when a limit is exceeded.
+An expiry and limit check runs once a minute and after each store.
+Saved limit changes also remove entries that exceed the new limits.
+
+Each hit writes its own Ledger Entry with `cache_hit=true`, zero Cost and the
+configured fixed **Hit Price**. The default Price is zero microdollars.
+The Ledger retains the stored token counts and marks them as a cache hit.
+These tokens did not run upstream. Hits count toward RPM, but do not add TPM
+tokens. Existing TPM limits still apply at admission. In Full Mode, all
+Budgets must cover the hit Price. Model and Provider permissions still apply.
+Simple Mode keeps its usual exemption from Budgets and Rate Limits.
+
+The Overview shows **Exact cache hit rate**: hits divided by all recorded requests in
+the selected range. The `/metrics` endpoint exports `llm_cache_hits_total`,
+`llm_cache_misses_total`, `llm_cache_hit_bytes_total` and
+`llm_cache_stored_bytes_total`. Bypasses are not misses. Ledger-based metrics
+have a `cache_hit` label so that you can separate stored usage from upstream usage.
+
 ## Connect a client
 
 Set the base URL of the client to the Proxy. Use a Virtual Key as the API key.

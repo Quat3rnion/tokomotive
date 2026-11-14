@@ -74,6 +74,8 @@ pub enum KeyStrategy {
 pub struct RouteCfg {
     pub name: String,
     #[serde(default)]
+    pub cache: crate::cache::Policy,
+    #[serde(default)]
     pub strategy: Strategy,
     #[serde(default)]
     pub session_affinity: bool,

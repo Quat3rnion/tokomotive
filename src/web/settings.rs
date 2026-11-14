@@ -203,6 +203,10 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct ServerForm {
+    cache_max_entries: Option<u64>,
+    cache_max_bytes: Option<u64>,
+    cache_max_entry_bytes: Option<u64>,
+    cache_hit_price_micros: Option<i64>,
     quota_exhausted_percent: Option<String>,
     default_markup_percent: Option<String>,
     upstream_timeout_secs: String,
@@ -286,6 +290,7 @@ impl ServerForm {
         }
         cfg.validate()?;
         let settings = store::Settings {
+            cache: Default::default(),
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             audio_upload_limit_mib: cfg.server.audio_upload_limit_mib,
@@ -313,6 +318,22 @@ async fn save_settings(
         Ok(v) => v,
         Err(e) => return form_error(e),
     };
+    settings.cache = st.settings().cache.clone();
+    if let Some(n) = f.cache_max_entries {
+        settings.cache.max_entries = n;
+    }
+    if let Some(n) = f.cache_max_bytes {
+        settings.cache.max_bytes = n;
+    }
+    if let Some(n) = f.cache_max_entry_bytes {
+        settings.cache.max_entry_bytes = n;
+    }
+    if let Some(n) = f.cache_hit_price_micros {
+        if n < 0 {
+            return form_error("Cache hit Price must be 0 or more microdollars.");
+        }
+        settings.cache.hit_price_micros = n;
+    }
     let token = if f.clear_metrics_token.is_some() {
         None
     } else if !f.metrics_token.is_empty() {
@@ -336,6 +357,7 @@ async fn save_settings(
     );
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
+    tryr!(crate::cache::maintain(&st.db, &settings.cache).await);
     saved("/admin/settings", "Settings saved.")
 }
 
@@ -418,6 +440,7 @@ impl RoutesPage {
 }
 struct RouteView {
     capture_bodies: bool,
+    cache: crate::cache::Policy,
     skips: Vec<String>,
     session_affinity: bool,
     active_sessions: usize,
@@ -512,6 +535,7 @@ async fn routes(
         );
         routes.push(RouteView {
             capture_bodies: tryr!(sqlx::query_scalar("SELECT capture_bodies FROM routes WHERE name=?").bind(&r.name).fetch_one(&st.db).await),
+            cache: r.cache.clone(),
             skips: deployments
                 .iter()
                 .flat_map(|d| {
@@ -591,6 +615,9 @@ async fn routes(
 /// `deployment_provider`, `deployment_model` and `deployment_weight` fields.
 #[derive(Default)]
 struct RouteForm {
+    cache_enabled: Option<String>,
+    cache_ttl_secs: Option<String>,
+    cache_scope: Option<String>,
     session_affinity: Option<String>,
     deployment_offset: String,
     deployment_count: String,
@@ -606,6 +633,9 @@ impl RouteForm {
         let mut f = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
+                "cache_enabled" => f.cache_enabled = Some(value),
+                "cache_ttl_secs" => f.cache_ttl_secs = Some(value),
+                "cache_scope" => f.cache_scope = Some(value),
                 "session_affinity" => f.session_affinity = Some(value),
                 "deployment_offset" => f.deployment_offset = value,
                 "deployment_count" => f.deployment_count = value,
@@ -690,6 +720,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         _ => return form_error("Choose Session affinity On or Off."),
     };
     let mut route = RouteCfg {
+        cache: Default::default(),
         name: f.name,
         strategy,
         session_affinity,
@@ -701,6 +732,7 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         let Some(original) = cfg.routes.iter().find(|r| &r.name == name) else {
             return form_error("Route not found.");
         };
+        route.cache = original.cache.clone();
         if f.session_affinity.is_none() {
             route.session_affinity = original.session_affinity;
         }
@@ -729,6 +761,25 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
             );
         }
         cfg.routes.retain(|r| &r.name != name);
+    }
+    if let Some(v) = f.cache_enabled.as_deref() {
+        route.cache.enabled = match v {
+            "on" => true,
+            "off" => false,
+            _ => return form_error("Choose Cache On or Off."),
+        };
+    }
+    if let Some(v) = f.cache_ttl_secs.as_deref() {
+        route.cache.ttl_secs = match v.parse::<u64>() {
+            Ok(n) if n > 0 => n,
+            _ => return form_error("Cache lifetime must be a whole number of seconds, 1 or more."),
+        };
+    }
+    if let Some(v) = f.cache_scope {
+        route.cache.scope = match serde_json::from_value(serde_json::Value::String(v)) {
+            Ok(v) => v,
+            Err(_) => return form_error("Choose cache scope Key, Team or Global."),
+        };
     }
     cfg.routes.push(route.clone());
     if let Err(e) = cfg.validate() {

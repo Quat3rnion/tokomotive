@@ -18,6 +18,7 @@ async fn main() -> Result<()> {
     let sync = tokomotive::models_dev::start_background(state.clone());
     let batches = tokomotive::batches::start_background(state.clone());
     let retention = tokomotive::observability::start_retention(state.clone());
+    let cache_purge = tokomotive::cache::start_purge(state.clone());
     let app = tokomotive::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.listen)
@@ -30,6 +31,7 @@ async fn main() -> Result<()> {
     // Write the Ledger Entries that are still pending.
     batches.abort();
     retention.abort();
+    cache_purge.abort();
     state.flush().await;
     sync.abort();
     Ok(())

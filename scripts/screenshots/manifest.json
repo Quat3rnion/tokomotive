@@ -1,4 +1,10 @@
 {
+  "pending_refresh": [
+    {"page":"/admin", "reason":"Exact cache hit rate added. Keep the current image until the next requested capture."},
+    {"page":"/admin/routes", "reason":"Exact response cache enable, lifetime and scope controls added. Keep the current image until the next requested capture."},
+    {"page":"/admin/settings", "reason":"Exact response cache limits and hit Price added. Keep the current image until the next requested capture."},
+    {"page":"/admin/ledger", "reason":"Cache hit flag added. Keep the current image until the next requested capture."}
+  ],
   "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],
   "captures": [
     {"image":"overview.png", "page":"/admin", "route":"/admin", "recipe":"overview", "caption":"Overview", "alt":"The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table.", "kind":"hero"},

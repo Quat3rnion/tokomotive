@@ -461,6 +461,7 @@ pub struct OverviewPage {
 }
 
 pub struct OverviewData<'a> {
+    pub cache_hits: i64,
     pub totals: &'a Totals,
     pub series: &'a [Bucket],
     pub by_model: &'a [Group],
@@ -516,6 +517,18 @@ impl OverviewPage {
             ),
         });
         let mut more = vec![
+            (
+                "Exact cache hit rate",
+                if t.requests == 0 {
+                    "0.0%".into()
+                } else {
+                    format!(
+                        "{:.1}% ({} hits)",
+                        100.0 * d.cache_hits as f64 / t.requests as f64,
+                        d.cache_hits
+                    )
+                },
+            ),
             (
                 "Requests per hour",
                 format!("{:.1}", t.requests as f64 / hours),
@@ -1293,6 +1306,7 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 
 pub struct LedgerView {
     pub captured: bool,
+    pub cache_hit: bool,
     pub service_units: String,
     pub id: i64,
     pub time: Stamp,
@@ -1423,6 +1437,7 @@ impl LedgerView {
             image_output: int(r.image_output),
             attempts: r.attempts,
             session_affinity: r.session_affinity.clone(),
+            cache_hit: r.cache_hit,
             key: r
                 .provider_key
                 .map(|k| key_label(&r.provider, k).unwrap_or_else(|| format!("Key {}", k + 1)))

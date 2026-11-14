@@ -32,6 +32,15 @@
 {% macro affinity_select(pre, name, enabled) %}
 <div class="field"><label for="{{ pre }}{{ name }}-affinity">Session affinity</label><select id="{{ pre }}{{ name }}-affinity" name="session_affinity" data-affinity aria-describedby="{{ pre }}{{ name }}-affinity-help"><option value="off"{% if !enabled %} selected{% endif %}>Off</option><option value="on"{% if enabled %} selected{% endif %}>On</option></select><p class="hint" id="{{ pre }}{{ name }}-affinity-help">Keep a conversation on one Deployment to reuse its KV cache. Uses weights instead of the strategy. One Deployment ignores this setting.</p></div>
 {% endmacro %}
+{% macro cache_fields(enabled, ttl, scope) %}
+<fieldset><legend>Exact response cache</legend>
+<p class="hint">Off by default. Key keeps each Virtual Key separate. Team shares only within one Team. Global shares with all permitted clients. Requests with no Team bypass Team scope.</p>
+<div class="row">
+<label>Cache <select name="cache_enabled"><option value="off"{% if !enabled %} selected{% endif %}>Off</option><option value="on"{% if enabled %} selected{% endif %}>On</option></select></label>
+<label>Cache lifetime (seconds) <input name="cache_ttl_secs" type="number" min="1" value="{{ ttl }}" required></label>
+<label>Cache scope <select name="cache_scope"><option value="key"{% if scope == "key" %} selected{% endif %}>Virtual Key</option><option value="team"{% if scope == "team" %} selected{% endif %}>Team</option><option value="global"{% if scope == "global" %} selected{% endif %}>Global</option></select></label>
+</div></fieldset>
+{% endmacro %}
 {% block content %}
 <h1>Routes</h1>
 <p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
@@ -60,6 +69,7 @@
   <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label>{% let fb_id = format!("r-{}-fb", r.name) %}{% let fb_help = format!("r-{}-fb-help", r.name) %}{% call picker::model(fb_id, "fallbacks", r.fallbacks, "ordered", "route,model", "", "", fb_help, "", false) %}<p class="hint" id="r-{{ r.name }}-fb-help">Other Routes or Models, in the order to try. Without JavaScript, enter comma-separated names.</p></div>
   </div>
   {% call deployments_editor(provider_choices, r.deployments, false) %}
+  {% call cache_fields(r.cache.enabled, r.cache.ttl_secs, r.cache.scope.as_str()) %}
   {% let pager = r.deployment_pager %}{% include "pager.html" %}
   <div class="form-error" role="alert" tabindex="-1"></div>
   <button aria-label="Save Route {{ r.name }}">Save</button>
@@ -77,6 +87,7 @@
   <div class="field grow"><label for="nr-fb">Fallbacks</label>{% call picker::model("nr-fb", "fallbacks", "", "ordered", "route,model", "", "", "nr-fb-help", "", false) %}<p class="hint" id="nr-fb-help">Optional. Other Routes or Models, in the order to try. Without JavaScript, enter comma-separated names.</p></div>
   </div>
   {% call deployments_editor(provider_choices, self.no_deployments(), true) %}
+  {% call cache_fields(false, 300, "key") %}
   <div class="form-error" role="alert" tabindex="-1"></div>
   <button>Add route</button>
 </form>

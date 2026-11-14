@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub cache: crate::cache::Limits,
     pub upstream_timeout_secs: u64,
     pub reserve_output_tokens: i64,
     #[serde(default = "crate::config::default_audio_upload_limit_mib")]
@@ -76,6 +78,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
     if value(db, "runtime_settings").await?.is_none() {
         let settings = Settings {
+            cache: Default::default(),
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             audio_upload_limit_mib: cfg.server.audio_upload_limit_mib,

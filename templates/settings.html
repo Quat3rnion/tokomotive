@@ -121,6 +121,16 @@
     </div>
   </fieldset>
   <fieldset aria-describedby="s-token-help">
+    <legend>Exact response cache</legend>
+    <p class="hint">Enable the cache on each Route. Stored responses use the Master Key. Limits include encryption and metadata. Zero entries or bytes disables storage.</p>
+    <div class="row">
+      <label>Maximum entries <input name="cache_max_entries" type="number" min="0" value="{{ settings.cache.max_entries }}" required></label>
+      <label>Maximum total bytes <input name="cache_max_bytes" type="number" min="0" value="{{ settings.cache.max_bytes }}" required></label>
+      <label>Maximum entry bytes <input name="cache_max_entry_bytes" type="number" min="0" value="{{ settings.cache.max_entry_bytes }}" required></label>
+      {% if !base.simple %}<label>Hit Price (microdollars per request) <input name="cache_hit_price_micros" type="number" min="0" value="{{ settings.cache.hit_price_micros }}" required></label>{% endif %}
+    </div>
+  </fieldset>
+  <fieldset aria-describedby="s-token-help">
     <legend>Metrics token</legend>
     <p class="hint" id="s-token-help">{% if metrics_set %}A token is set. /metrics needs it as a bearer token. Leave the field blank to keep it.{% else %}No token is set, so /metrics is public. Enter a token to protect it.{% endif %}</p>
     <div class="row">

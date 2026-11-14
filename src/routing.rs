@@ -28,6 +28,7 @@ pub struct RouterSettings {
 #[derive(Clone)]
 pub struct Route {
     pub name: String,
+    pub cache: crate::cache::Policy,
     pub strategy: Strategy,
     pub session_affinity: bool,
     pub deployments: Vec<Deployment>,
@@ -115,6 +116,7 @@ impl RouterTable {
                 .iter()
                 .map(|r| Route {
                     name: r.name.clone(),
+                    cache: r.cache.clone(),
                     strategy: r.strategy,
                     session_affinity: r.session_affinity,
                     deployments: r

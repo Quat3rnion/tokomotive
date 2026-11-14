@@ -751,6 +751,41 @@ Operator controls, session behavior, webhook events and skip metrics.
 All Provider, Route and router changes apply without a restart. The TOML loader
 and the dashboard share the same validation.
 
+## Exact response cache settings
+
+Each Route has an optional `cache` object. The same fields appear on **Routes**:
+
+```toml
+[[routes]]
+name = "cached-chat"
+deployments = [{ provider = "openai", model = "gpt-4o" }]
+cache = { enabled = true, ttl_secs = 300, scope = "key" }
+```
+
+| Route field | Default | Meaning |
+| --- | --- | --- |
+| `cache.enabled` | `false` | Enable exact response caching on this Route. |
+| `cache.ttl_secs` | `300` | Lifetime in seconds. Zero disables caching. The UI requires 1 or more. |
+| `cache.scope` | `"key"` | `key`, `team` or `global`. Team scope requires a Team. Scopes never share entries. |
+
+Global limits are live **Settings**, not `[server]` seed fields. They are stored
+in the runtime settings object's `cache` field:
+
+| Runtime field | Default | Meaning |
+| --- | --- | --- |
+| `cache.max_entries` | `10000` | Maximum stored entries. Zero disables storage and hits. |
+| `cache.max_bytes` | `104857600` | Maximum total encrypted body bytes. Zero disables storage and hits. |
+| `cache.max_entry_bytes` | `1048576` | Maximum encrypted entry bytes, including metadata. |
+| `cache.hit_price_micros` | `0` | Fixed Price per hit, in microdollars. Must be non-negative. Cost is always zero. |
+
+The cache table is `response_cache`. Bodies use the existing Master Key.
+Expiry checks apply at lookup. A tracked maintenance task removes expired
+entries and enforces limits every 60 seconds. Stores and saved limit changes
+also enforce the limits. Eviction removes the oldest entry first, not the least
+recently used entry. These limits apply to stored bodies, not to SQLite file overhead.
+See [cache use and accounting](usage.md#exact-response-cache) for normalization,
+client bypass headers, SSE variants and Rate Limits.
+
 ## Docker
 
 The `Dockerfile` makes an image that holds the binary and a copy of

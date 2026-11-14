@@ -4,6 +4,7 @@ mod affinity;
 pub mod alerts;
 pub mod batches;
 pub mod budgets;
+pub mod cache;
 pub mod catalog;
 pub mod config;
 pub mod db;

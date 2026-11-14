@@ -192,6 +192,7 @@ async fn entry(
     tokomotive::db::insert_entry(
         &st.db,
         &tokomotive::db::NewEntry {
+            cache_hit: false,
             ts_ms: ts * 1000,
             user_id: auth.user_id,
             key_id: auth.key_id,
