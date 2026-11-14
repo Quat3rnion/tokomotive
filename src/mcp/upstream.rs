@@ -59,7 +59,7 @@ pub fn valid_url(raw: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-async fn client(server: &Server) -> Result<(reqwest::Client, reqwest::Url)> {
+async fn client(st: &AppState, server: &Server) -> Result<(reqwest::Client, reqwest::Url)> {
     let url = valid_url(&server.url)?;
     let host = url
         .host_str()
@@ -87,14 +87,19 @@ async fn client(server: &Server) -> Result<(reqwest::Client, reqwest::Url)> {
     {
         return Err(Failure("address_denied"));
     }
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
-        .resolve_to_addrs(host, &addresses)
-        .build()
-        .map_err(|_| Failure("client"))?;
+        .resolve_to_addrs(host, &addresses);
+    // Follow the global egress proxy, like models.dev sync and webhooks. The
+    // address check above still runs; an HTTP or socks5h proxy resolves the
+    // name again, so rebinding protection then depends on that proxy.
+    if let Some(proxy) = st.egress.global_proxy() {
+        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| Failure("client"))?);
+    }
+    let client = builder.build().map_err(|_| Failure("client"))?;
     Ok((client, url))
 }
 #[derive(Default)]
@@ -112,7 +117,7 @@ impl Connection {
         params: Value,
         notification: bool,
     ) -> Result<Value> {
-        let (client, url) = client(server).await?;
+        let (client, url) = client(st, server).await?;
         self.sequence += 1;
         let id = self.sequence;
         let mut body = json!({"jsonrpc":"2.0","method":method,"params":params});

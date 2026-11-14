@@ -281,6 +281,12 @@ impl Egress {
             Purpose::Webhook => policy.webhook.clone(),
         })
     }
+    /// The global proxy URL for callers that build their own client (the MCP
+    /// gateway pins resolved addresses per server). Includes credentials:
+    /// never log or render it.
+    pub(crate) fn global_proxy(&self) -> Option<String> {
+        self.0.read().expect("egress policy").global.clone()
+    }
     pub fn label(&self, provider: Option<&str>) -> Option<String> {
         let policy = self.0.read().expect("egress policy");
         let proxy = match provider {

@@ -1119,3 +1119,64 @@ async fn mcp_log_retention_form_shows_defaults_and_validates_saved_limits() {
         .unwrap();
     assert_eq!((retention.days, retention.max_rows), (7, 250));
 }
+
+/// MCP upstream calls follow the global egress proxy, like models.dev sync
+/// and webhooks. The gateway still checks the resolved addresses first.
+#[tokio::test]
+async fn upstream_calls_use_the_global_egress_proxy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let f = Fixture::new().await;
+    f.register("alpha").await;
+    sqlx::query("UPDATE virtual_keys SET mcp_allow='[\"alpha/*\"]' WHERE id=?")
+        .bind(f.key_id)
+        .execute(&f.st.db)
+        .await
+        .unwrap();
+    // A forward proxy that records the request line and refuses it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut data = vec![];
+                while !data.ends_with(b"\r\n\r\n") {
+                    match socket.read_u8().await {
+                        Ok(b) => data.push(b),
+                        Err(_) => return,
+                    }
+                }
+                let _ = tx.send(String::from_utf8_lossy(&data).into_owned()).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    tokomotive::settings::put(
+        &f.st.db,
+        "egress_proxy",
+        &f.st.secret_key.encrypt(&proxy).unwrap(),
+    )
+    .await
+    .unwrap();
+    f.st.reload_settings().await.unwrap();
+    let session = f.initialize().await;
+    let _ = f.rpc(&session, "tools/list", json!({})).await;
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the MCP upstream request must reach the egress proxy")
+        .unwrap();
+    assert!(seen.contains(&f.upstream), "{seen}");
+    assert!(
+        !f.mock
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, v)| v["method"] == "tools/list"),
+        "the upstream was reached directly"
+    );
+}

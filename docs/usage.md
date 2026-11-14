@@ -70,8 +70,11 @@ shows only `scheme://host:port`, without the user name or password.
 The Provider setting applies to inference, retries, model discovery, file and
 batch requests, sign-in, device sign-in, token refresh and plan usage checks.
 It also applies to Vertex service-account grants and Code Assist discovery.
-models.dev Sync and alert webhooks use only the global default. Trace export
-has its own client and does not use these proxy settings.
+models.dev Sync, alert webhooks and MCP upstream servers use only the global
+default. The MCP gateway still checks the resolved addresses of the server.
+An HTTP or `socks5h` proxy resolves the name again, so the proxy then
+controls protection against DNS rebinding. Trace export has its own client
+and does not use these proxy settings.
 
 Select **Test connection** on an API-key Provider card. The result identifies
 the connection as `via proxy host:port` or a direct connection. Proxy connection
