@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "picker.html" as picker %}
 {% block title %}Usage - Tokomotive{% endblock %}
 {% block nav_overview %}aria-current="page"{% endblock %}
 {% block content %}
@@ -9,6 +10,7 @@
   <label>Time range <select name="range"><option value="24h"{% if range=="24h" %} selected{% endif %}>24 hours</option><option value="7d"{% if range=="7d" %} selected{% endif %}>7 days</option><option value="30d"{% if range=="30d" %} selected{% endif %}>30 days</option></select></label>
   <label>Sort by <select name="sort">{% for (label,value) in sort_options %}<option value="{{ value }}"{% if sort==*value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
   <label>Order <select name="direction"><option value="desc"{% if direction=="desc" %} selected{% endif %}>Descending</option><option value="asc"{% if direction=="asc" %} selected{% endif %}>Ascending</option></select></label>
+  <label>Model {% call picker::model("", "model", model, "single", "model,route", "", "Any Model", "", "wide", false) %}</label>
   <input type="hidden" name="limit" value="{{ limit }}">
   <button>Apply</button>
 </form>

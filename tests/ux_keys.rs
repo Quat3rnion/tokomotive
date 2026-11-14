@@ -119,7 +119,7 @@ async fn add_form_marks_subscription_providers_and_suggests_models() {
     assert!(html.contains("A Subscription Provider needs a check."));
     assert!(html.contains("type=\"checkbox\" name=\"allowed_providers\" value=\"claude-max\""));
     assert!(html.contains("claude-max <span class=\"tag info\">subscription</span>"));
-    assert!(html.contains("name=\"allowed_models\" data-search=\"models\" data-csv"));
+    assert!(html.contains("<input id=\"key-models\" name=\"allowed_models\" value=\"\""));
     assert!(html.contains("<button>Add key</button>"));
 }
 

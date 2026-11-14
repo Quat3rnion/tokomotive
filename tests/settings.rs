@@ -830,7 +830,7 @@ async fn route_row_editor_creates_validates_and_prefills_deployments() {
         edit.find("upstream-one") < edit.find("upstream-two"),
         "order kept"
     );
-    assert!(page.contains("name=\"fallbacks\" value=\"\" data-search=\"models\" data-csv"));
+    assert!(page.contains("data-picker=\"multi\" data-ordered data-src=\"route,model\"><input id=\"nr-fb\" name=\"fallbacks\" value=\"\""));
     task.abort();
     upstream_task.abort();
 }

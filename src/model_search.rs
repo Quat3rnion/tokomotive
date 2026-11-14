@@ -245,7 +245,8 @@ impl ModelSource for RouteSource {
     }
 }
 
-/// Catalog Model names and aliases. Scoped: only Models of that Provider.
+/// Catalog Model names and aliases. Scoped: only the names of the Models
+/// of that Provider, without aliases.
 pub struct CatalogSource;
 
 impl ModelSource for CatalogSource {
@@ -277,6 +278,11 @@ impl ModelSource for CatalogSource {
             };
             if matches(q, &m.name) {
                 hits.push(hit(&m.name, m.name.clone()));
+            }
+            // A Provider scope asks for upstream model IDs; aliases are
+            // client-side names only.
+            if ctx.provider.is_some() {
+                continue;
             }
             for a in m.aliases.iter().filter(|a| matches(q, a)) {
                 hits.push(hit(a, format!("Alias of {}", m.name)));

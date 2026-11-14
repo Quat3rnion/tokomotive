@@ -66,11 +66,30 @@ COPY SHEET (GLOSSARY.md)
   "ChatGPT subscription", "Claude Pro/Max".
 - Times are UTC and say so.
 12. Paging: include pager.html with a `pager` from pagination::Pager. Include
-    search.html for name search. Inputs with data-search="users|teams|models|
-    routes|providers" get at most 20 suggestions; without JS, exact names work.
+    search.html for name search. Inputs with data-search="users|teams|routes|
+    providers" get at most 20 suggestions; without JS, exact names work.
     Add data-csv for comma-separated names.
     Use db::small_choices for Teams and Providers: at most 30 choices use
     selects or Provider Access checkboxes from control_options.html.
+13. Model picker: every model field uses `picker::model(...)` from
+    picker.html (`{% import "picker.html" as picker %}`; the arguments are
+    in that file). Do not use data-search="models".
+    - Without JS it is the plain text input (comma-separated for multi). The
+      server joins repeated `fallbacks`, `allowed_models` and `aliases`
+      fields with ", " (web::MULTI_FIELDS), so chips and text both work.
+    - The JS below makes a WAI-ARIA 1.2 combobox: role=combobox with
+      aria-expanded, aria-controls and aria-activedescendant on the input, a
+      listbox popup, Up/Down/Home/End/Enter/Escape, a 200 ms debounce and
+      lazy results from GET /admin/search/models?q=&provider=&src=&limit=
+      (HTML `<li role="option" data-value>`; JSON for Accept:
+      application/json). A typed text is always allowed: the first option is
+      "Use '<text>'" (last; End reaches it).
+    - Multi: chips with a Remove button, plus Up/Down buttons for ordered
+      lists (data-ordered). Each chip is a hidden field with the same name.
+    - data-scope="field" reads the Provider from that field in the same
+      `.deployment` row or form; a change of that field updates the results.
+    - Content added later (cloned rows): call `toko.pickers(root)`. htmx
+      content is set up automatically.
 #}<!doctype html>
 <html lang="en">
 <head>
@@ -346,6 +365,34 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 .list-filter .field input[type=search] { width:100%; }
 nav.pager { margin-top:var(--sp-2); }
 .hint.warn-note { margin-bottom:var(--sp-2); }
+/* 13. Model picker (combobox). */
+.cb { position:relative; display:block; max-width:100%; min-width:0; }
+.field.grow .cb > input, .cb[data-picker=multi] > input { width:100%; }
+.cb-pop { position:absolute; z-index:20; top:calc(100% + 2px); left:0; min-width:100%; width:max-content; max-width:min(36em, calc(100vw - 16px)); background:var(--panel); border:1px solid var(--line-input); border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,.45); }
+.cb-pop ul { list-style:none; margin:0; padding:var(--sp-1); max-height:min(20em, 50vh); overflow-y:auto; }
+.cb-pop ul:empty { display:none; }
+.cb-opt { display:flex; flex-direction:column; justify-content:center; gap:2px; min-height:32px; padding:var(--sp-1) var(--sp-2); border-radius:4px; cursor:pointer; color:var(--text); font-size:14px; }
+.cb-opt:hover { background:var(--hover); }
+.cb-opt[aria-selected=true] { background:var(--info-bg); box-shadow:inset 3px 0 0 var(--link); }
+.cb-main { display:flex; align-items:baseline; justify-content:space-between; gap:var(--sp-3); }
+.cb-id { font:13px/1.4 ui-monospace, monospace; overflow-wrap:anywhere; min-width:0; }
+.cb-main .tag { flex:none; }
+.cb-meta { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.cb-custom .cb-id { color:var(--link); }
+.cb-note { margin:0; padding:var(--sp-1) var(--sp-3) var(--sp-2); color:var(--muted); font-size:12px; }
+.cb-note:empty { display:none; }
+.cb-pop ul:not(:empty) + .cb-note { border-top:1px solid var(--line); padding-top:var(--sp-1); }
+.cb-chips { display:flex; flex-wrap:wrap; gap:var(--sp-1); list-style:none; margin:0 0 var(--sp-1); padding:0; counter-reset:chip; }
+.cb-chips:empty { display:none; }
+.chip { display:inline-flex; align-items:center; gap:2px; max-width:100%; min-height:28px; padding:0 2px 0 var(--sp-2); border:1px solid var(--line-input); border-radius:14px; background:var(--hover); color:var(--text); }
+ol.cb-chips .chip { counter-increment:chip; }
+ol.cb-chips .chip::before { content:counter(chip) "."; color:var(--muted); font-size:12px; margin-right:2px; }
+.chip-text { font:13px/1.4 ui-monospace, monospace; overflow-wrap:anywhere; min-width:0; padding-right:var(--sp-1); }
+.chip button { display:inline-grid; place-items:center; min-height:24px; min-width:24px; padding:0; border:0; border-radius:12px; background:transparent; color:var(--muted); }
+.chip button:hover { background:var(--line); color:var(--text); }
+.chip button.chip-x:hover { color:var(--bad); }
+.chip svg { display:block; }
+.chip button:focus-visible { outline-offset:-2px; }
 </style>
 </head>
 <body>
@@ -540,6 +587,326 @@ nav.pager { margin-top:var(--sp-2); }
   // 2. Move focus to a new flash message, but keep a #fragment position.
   const flash = document.querySelector('.flash');
   if (flash) { flash.focus({ preventScroll: !!location.hash }); }
+})();
+</script>
+<script>
+(() => {
+  // 13. Model picker: a WAI-ARIA 1.2 combobox over a plain text input.
+  if (!window.toko || window.toko.pickers) { return; }
+  const toko = window.toko;
+  let serial = 0;
+  const svg = d => `<svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const ICON = { up: svg('M4 10l4-4 4 4'), down: svg('M4 6l4 4 4-4'), x: svg('M4.5 4.5l7 7M11.5 4.5l-7 7') };
+  const helpFor = multi => {
+    const id = multi ? 'cb-help-multi' : 'cb-help';
+    if (!document.getElementById(id)) {
+      const h = document.createElement('span');
+      h.id = id;
+      h.className = 'vh';
+      h.textContent = multi
+        ? 'Type to search. Down and Up move through the results, Enter adds one. Enter or a comma adds the typed name.'
+        : 'Type to search. Down and Up move through the results, Enter selects one. You can also type a name.';
+      document.body.append(h);
+    }
+    return id;
+  };
+  const labelOf = input => {
+    if (input.id) {
+      const l = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+      if (l) { return l.textContent.trim(); }
+    }
+    const l = input.closest('label');
+    if (l) { return [...l.childNodes].filter(x => x.nodeType === 3).map(x => x.textContent).join(' ').trim(); }
+    return input.name;
+  };
+  const split = text => text.split(',').map(x => x.trim()).filter(Boolean);
+
+  const setup = cb => {
+    const input = cb.querySelector(':scope > input');
+    if (!input || cb.dataset.ready) { return; }
+    cb.dataset.ready = 'true';
+    const multi = cb.dataset.picker === 'multi';
+    const ordered = cb.hasAttribute('data-ordered');
+    const src = cb.dataset.src || '';
+    const free = src === '-';
+    const name = labelOf(input) || 'Model';
+    const n = ++serial;
+    if (!input.id && input.closest('label')) { input.setAttribute('aria-label', name); }
+
+    const pop = document.createElement('div');
+    pop.className = 'cb-pop';
+    pop.hidden = true;
+    const list = document.createElement('ul');
+    list.id = `cb${n}-list`;
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', `${name} suggestions`);
+    const note = document.createElement('p');
+    note.className = 'cb-note';
+    pop.append(list, note);
+    cb.append(pop);
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-controls', list.id);
+    input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), helpFor(multi)].filter(Boolean).join(' '));
+
+    // Multi: one chip (hidden field + buttons) per value.
+    let chips = null;
+    const values = () => chips ? [...chips.querySelectorAll('input[type=hidden]')].map(x => x.value) : [];
+    const renumber = () => {
+      const all = [...chips.children];
+      all.forEach((chip, i) => {
+        const v = chip.querySelector('input').value;
+        const pos = ordered ? ` (${i + 1} of ${all.length})` : '';
+        chip.querySelectorAll('button').forEach(b => {
+          const verb = b.dataset.act === 'x' ? 'Remove' : 'Move';
+          const dir = b.dataset.act === 'x' ? '' : ` ${b.dataset.act}`;
+          b.setAttribute('aria-label', `${verb} ${v}${dir}${pos}`);
+        });
+      });
+    };
+    const addChip = v => {
+      if (values().includes(v)) { toko.say(`${v} is already in the list.`); return false; }
+      const chip = document.createElement('li');
+      chip.className = 'chip';
+      const t = document.createElement('span');
+      t.className = 'chip-text';
+      t.textContent = v;
+      const h = document.createElement('input');
+      h.type = 'hidden';
+      h.name = input.name;
+      h.value = v;
+      chip.append(t, h);
+      const button = (act, html) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.dataset.act = act;
+        b.className = act === 'x' ? 'chip-x' : 'chip-move';
+        b.innerHTML = html;
+        chip.append(b);
+      };
+      if (ordered) { button('up', ICON.up); button('down', ICON.down); }
+      button('x', ICON.x);
+      chips.append(chip);
+      renumber();
+      return true;
+    };
+    if (multi) {
+      chips = document.createElement(ordered ? 'ol' : 'ul');
+      chips.className = 'cb-chips';
+      chips.setAttribute('aria-label', ordered ? `${name}, in order` : `${name}, selected`);
+      cb.insertBefore(chips, input);
+      split(input.value).forEach(addChip);
+      input.value = '';
+      chips.addEventListener('click', e => {
+        const b = e.target.closest('button[data-act]');
+        if (!b) { return; }
+        const chip = b.closest('.chip');
+        const v = chip.querySelector('input').value;
+        if (b.dataset.act === 'x') {
+          const next = chip.nextElementSibling || chip.previousElementSibling;
+          chip.remove();
+          renumber();
+          const f = next && next.querySelector('.chip-x');
+          (f || input).focus();
+          toko.say(`Removed ${v}.`);
+          return;
+        }
+        const up = b.dataset.act === 'up';
+        const other = up ? chip.previousElementSibling : chip.nextElementSibling;
+        if (!other) { toko.say(up ? `${v} is already first.` : `${v} is already last.`); return; }
+        if (up) { other.before(chip); } else { other.after(chip); }
+        renumber();
+        b.focus();
+        toko.say(`Moved ${v} ${up ? 'up' : 'down'}. Position ${[...chips.children].indexOf(chip) + 1} of ${chips.children.length}.`);
+      });
+    }
+
+    let items = [];
+    let active = -1;
+    let timer = null;
+    let ctrl = null;
+    let want = 0;
+    const scopeField = () => {
+      const s = cb.dataset.scope;
+      if (!s) { return null; }
+      const host = cb.closest('.deployment') || cb.closest('form') || document;
+      return host.querySelector(`[name="${s}"]`);
+    };
+    const setActive = i => {
+      items.forEach((o, j) => o.setAttribute('aria-selected', String(j === i)));
+      active = i;
+      if (i >= 0 && items[i]) {
+        input.setAttribute('aria-activedescendant', items[i].id);
+        items[i].scrollIntoView({ block: 'nearest' });
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+    };
+    const place = () => {
+      pop.style.left = '0px';
+      const r = pop.getBoundingClientRect();
+      const room = document.documentElement.clientWidth - 8;
+      if (r.right > room) { pop.style.left = `${-Math.min(r.right - room, Math.max(0, r.left - 8))}px`; }
+    };
+    const open = () => {
+      pop.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      place();
+    };
+    const close = () => {
+      pop.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      setActive(-1);
+      want = 0;
+    };
+    const option = (value, html) => {
+      const li = document.createElement('li');
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.className = 'cb-opt cb-custom';
+      li.dataset.value = value;
+      li.innerHTML = html;
+      return li;
+    };
+    const show = (found, q, scope, failed) => {
+      const taken = values();
+      const opts = found.filter(o => !taken.includes(o.dataset.value));
+      const custom = q && !opts.some(o => o.dataset.value === q) && !taken.includes(q);
+      // The typed text is the last option, so Down reaches the best match first.
+      const rows = [...opts];
+      if (custom) {
+        const li = option(q, '<span class="cb-main"><span>Use \'<span class="cb-id"></span>\'</span><span class="tag">custom ID</span></span>');
+        li.querySelector('.cb-id').textContent = q;
+        rows.push(li);
+      }
+      list.replaceChildren(...rows);
+      items = rows;
+      items.forEach((o, i) => { o.id = `cb${n}-o${i}`; });
+      let text = '';
+      if (failed) {
+        text = 'Suggestions are not available now. You can type the exact name.';
+      } else if (!free) {
+        const where = scope ? ` for Provider ${scope}` : '';
+        text = opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}${where}.` : (q ? `No matches${where}. You can use the typed name.` : `No suggestions${where}. Type a name.`);
+      }
+      note.textContent = text;
+      if (!rows.length && !text) { close(); return; }
+      open();
+      setActive(want > 0 ? 0 : want < 0 ? items.length - 1 : -1);
+      want = 0;
+      if (text) { toko.say(text); }
+    };
+    const load = () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (free) { show([], q, '', false); return; }
+      const sf = scopeField();
+      const scope = sf ? sf.value.trim() : '';
+      let s = src.split(',').filter(Boolean);
+      // A scoped field with no Provider yet: no provider/model ids.
+      if (sf && !scope) { s = s.filter(x => x !== 'provider'); }
+      const url = `/admin/search/models?q=${encodeURIComponent(q)}&provider=${encodeURIComponent(scope)}&src=${encodeURIComponent(s.join(','))}&limit=20`;
+      if (ctrl) { ctrl.abort(); }
+      ctrl = new AbortController();
+      note.textContent = 'Loading...';
+      if (!items.length) { open(); }
+      fetch(url, { headers: { Accept: 'text/html' }, signal: ctrl.signal, credentials: 'same-origin' })
+        .then(r => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+        .then(html => {
+          if (input.value.trim() !== q || document.activeElement !== input) { return; }
+          const t = document.createElement('template');
+          t.innerHTML = html;
+          show([...t.content.querySelectorAll('li[role=option]')], q, scope, false);
+        })
+        .catch(e => { if (e.name !== 'AbortError' && document.activeElement === input) { show([], q, scope, true); } });
+    };
+    const commitText = () => {
+      const parts = split(input.value);
+      input.value = '';
+      const added = parts.filter(addChip);
+      if (added.length) { toko.say(`Added ${added.join(', ')}.`); }
+      close();
+    };
+    const choose = o => {
+      const v = o.dataset.value;
+      if (multi) {
+        if (addChip(v)) { toko.say(`Added ${v}.`); }
+        input.value = '';
+        close();
+      } else {
+        input.value = v;
+        close();
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        toko.say(`${v} selected.`);
+      }
+      input.focus();
+    };
+
+    input.addEventListener('input', () => {
+      if (multi && input.value.includes(',')) {
+        const parts = input.value.split(',');
+        const rest = parts.pop();
+        parts.map(x => x.trim()).filter(Boolean).forEach(addChip);
+        input.value = rest.trimStart();
+      }
+      clearTimeout(timer);
+      timer = setTimeout(load, free ? 0 : 200);
+    });
+    input.addEventListener('keydown', e => {
+      const shown = !pop.hidden && items.length > 0;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const down = e.key === 'ArrowDown';
+        if (!shown) {
+          if (e.altKey && !down) { return; }
+          want = e.altKey ? 0 : (down ? 1 : -1);
+          load();
+          return;
+        }
+        if (e.altKey) { if (!down) { close(); } return; }
+        const next = active < 0 ? (down ? 0 : items.length - 1) : (active + (down ? 1 : -1) + items.length) % items.length;
+        setActive(next);
+      } else if ((e.key === 'Home' || e.key === 'End') && shown && active >= 0) {
+        e.preventDefault();
+        setActive(e.key === 'Home' ? 0 : items.length - 1);
+      } else if (e.key === 'Enter') {
+        if (shown && active >= 0) { e.preventDefault(); choose(items[active]); }
+        else if (multi && input.value.trim()) { e.preventDefault(); commitText(); }
+        else { close(); }
+      } else if (e.key === 'Escape') {
+        if (!pop.hidden) { e.preventDefault(); e.stopPropagation(); close(); }
+      } else if (e.key === 'Tab') {
+        close();
+      }
+    });
+    input.addEventListener('click', () => { if (pop.hidden) { load(); } });
+    cb.addEventListener('focusout', e => { if (!cb.contains(e.relatedTarget)) { close(); } });
+    // Keep focus in the input; a click on an option selects it.
+    list.addEventListener('mousedown', e => e.preventDefault());
+    list.addEventListener('click', e => {
+      e.preventDefault();
+      const o = e.target.closest('li[role=option]');
+      if (o) { choose(o); }
+    });
+    cb.toko = { rescope: () => { if (!pop.hidden) { load(); } } };
+  };
+
+  const scan = root => {
+    const all = root.matches && root.matches('.cb[data-picker]') ? [root] : root.querySelectorAll('.cb[data-picker]');
+    all.forEach(setup);
+  };
+  toko.pickers = scan;
+  htmx.onLoad(scan);
+  scan(document);
+  // A new Provider changes the results of the pickers that it scopes.
+  document.addEventListener('change', e => {
+    const f = e.target;
+    if (!f.name) { return; }
+    const host = f.closest('.deployment') || f.closest('form');
+    if (!host) { return; }
+    host.querySelectorAll(`.cb[data-scope="${f.name}"]`).forEach(cb => cb.toko && cb.toko.rescope());
+  });
 })();
 </script>
 {% block scripts %}{% endblock %}

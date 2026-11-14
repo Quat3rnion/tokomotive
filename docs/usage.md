@@ -251,8 +251,9 @@ Routes in your dashboard, or a `provider/model` name.
 | `/v1/models`, `/v1/models/{id}`         | GET      | Lists the permitted Models and Routes. Needs a Virtual Key.       |
 | `/v1/*`                                 | any      | The Proxy. Needs a Virtual Key.                                   |
 | `/admin`                                | GET      | Overview page.                                                    |
-| `/admin/usage`                          | GET      | Paged usage groups with column sorting.                           |
+| `/admin/usage`                          | GET      | Paged usage groups with column sorting. `model` filters by name.  |
 | `/admin/search/{kind}`                  | GET      | At most 20 name suggestions. See "Pages and name search".          |
+| `/admin/search/models`                  | GET      | Model picker results. See "Model fields".                         |
 | `/admin/login`                          | GET, POST | Login page and login form (field `password`).                    |
 | `/admin/logout`                         | POST     | Ends the session.                                                 |
 | `/admin/users`                          | GET, POST | Users page. POST adds a User.                                    |
@@ -318,15 +319,77 @@ small configuration lists; an edit can change their name order.
 Team and Provider controls use selects when there are 30 or fewer choices.
 Provider Access uses checkboxes, with a **subscription** tag for Subscription
 Providers, when there are 30 or fewer Providers. With larger sets, these
-controls use text inputs. User, Team, Model, Route and Provider text inputs
+controls use text inputs. User, Team, Route and Provider text inputs
 get at most 20 name suggestions.
 Enter the exact name. Suggestions need JavaScript, but exact-name input does
 not. A User or Team name that does not match shows an error; it does not
 silently select another item. The search endpoints are
-`/admin/search/users?q=`, `/admin/search/teams?q=`, `/admin/search/models?q=`,
+`/admin/search/users?q=`, `/admin/search/teams?q=`,
 `/admin/search/routes?q=` and `/admin/search/providers?q=`. They require an
-Operator login and return JSON with `id` and `name`. Model suggestions include
-Route names. Comma-separated inputs search the name after the last comma.
+Operator login and return JSON with `id` and `name`. Comma-separated inputs
+search the name after the last comma. Model fields use the model picker. See
+"Model fields".
+
+### Model fields
+
+All model fields use a searchable list (a combobox). Type a part of a name.
+After a short pause, the list shows at most 20 results. Each result shows its
+source, and if known, the context window and the Cost Card input and output
+rates. The sources are:
+
+- **route**: a Route name.
+- **model**: a Model name or alias from the Models page.
+- **provider**: a model from the live model list of the Provider
+  (`GET {base}/v1/models`, or `{base}/models` when that path is not found).
+- **models.dev**: a model from the models.dev catalog, if that source is
+  installed.
+
+You can always use a name that is not in the list. Type the name, then
+select **Use 'name'** (the last result), or press Enter in a multi-value
+field. The server checks the name as before.
+
+Keyboard: Down and Up move through the results. Home and End go to the first
+and last result. Enter selects the result. Escape closes the list. Tab leaves
+the field.
+
+| Field                               | Values   | Results from                                  |
+| ----------------------------------- | -------- | --------------------------------------------- |
+| Routes: Deployment **Upstream model** | one    | The Provider of the row: its Models and its live list. |
+| Routes: **Fallbacks**               | ordered  | Routes and Models.                            |
+| Keys: **Allowed models**            | several  | Models, Routes and `provider/model`.          |
+| Ledger and Usage: **Model** filter  | one      | Models and Routes.                            |
+| Models: **Name** of a new Model     | one      | The chosen Provider: its live list.           |
+| Models: **Aliases**                 | several  | Typed names only.                             |
+
+A field for several values shows each value as a chip. Select the X button
+on a chip to remove the value. Fallbacks are in order: the Proxy tries them
+from first to last. Use the Up and Down buttons on a chip to move it. When you
+change the Provider of a Deployment row, the list shows the models of the new
+Provider. A new Deployment row from **Add a Deployment** has the same list.
+
+Without JavaScript, each model field is a plain text input. In a field for
+several values, enter comma-separated names. The server accepts both forms:
+one field per chip and comma-separated text.
+
+The live model list is fetched only for API-key Providers, with the first
+Provider Key. Subscription Providers are never queried. The Proxy keeps a
+list for 10 minutes. It waits at most 3 seconds for a Provider. If a Provider
+does not answer or refuses the key, its live results are not shown and the
+other results stay. The Proxy then waits 1 minute before it asks that
+Provider again.
+
+`GET /admin/search/models` needs an Operator login. Parameters:
+
+| Parameter  | Meaning                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| `q`        | The search text. Exact names come first, then names that start with it. |
+| `provider` | Only results for this Provider. Routes and aliases are not included.    |
+| `src`      | Comma-separated sources, for example `route,model`. Empty means all.    |
+| `limit`    | The number of results. The default is 20 and the maximum is 50.        |
+
+The response is HTML `<li role="option">` items. With
+`Accept: application/json`, it is a JSON array of objects with `id`,
+`label`, `provider`, `source`, `context` and `price`.
 
 Revoked keys stay collapsed by default and have a separate pager. A link to
 another revoked-key page opens that section. Their

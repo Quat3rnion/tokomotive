@@ -1,0 +1,15 @@
+{#
+Model picker (base.html header, item 13). Arguments:
+- id: input id ("" when a <label> wraps the picker; single only).
+- name, value: the form field. For multi, value is comma-separated.
+- mode: "single", "multi" (unordered chips) or "ordered" (chips with Up/Down).
+- src: comma-separated source names for /admin/search/models ("" = all).
+- scope: the name of the Provider field in the same row or form ("" = none).
+- placeholder, help (aria-describedby id), class: optional ("" = none).
+- required: true adds `required`.
+- src "-" means free text: no search, typed names only (aliases).
+Without JavaScript this is the plain text input (comma-separated for multi).
+#}
+{% macro model(id, name, value, mode, src, scope, placeholder, help, class, required) %}
+<span class="cb" data-picker="{% if mode == "single" %}single{% else %}multi{% endif %}"{% if mode == "ordered" %} data-ordered{% endif %} data-src="{{ src }}"{% if !scope.is_empty() %} data-scope="{{ scope }}"{% endif %}><input{% if !id.is_empty() %} id="{{ id }}"{% endif %} name="{{ name }}" value="{{ value }}"{% if !class.is_empty() %} class="{{ class }}"{% endif %}{% if required %} required{% endif %} autocomplete="off" autocapitalize="off" spellcheck="false"{% if !placeholder.is_empty() %} placeholder="{{ placeholder }}"{% endif %}{% if !help.is_empty() %} aria-describedby="{{ help }}"{% endif %}></span>
+{%- endmacro %}

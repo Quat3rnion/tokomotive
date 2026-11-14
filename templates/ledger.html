@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "control_options.html" as controls %}
+{% import "picker.html" as picker %}
 {% block title %}Ledger - Tokomotive{% endblock %}
 {% block nav_ledger %}aria-current="page"{% endblock %}
 {% block content %}
@@ -30,7 +31,7 @@
   <div class="row">
     <div class="field"><label for="lf-user">User</label><input id="lf-user" name="user" value="{{ filters.user }}" data-search="users" autocomplete="off" placeholder="Exact User name"></div>
     <div class="field"><label for="lf-provider">Provider</label>{% if let Some(options) = filters.provider_choices %}<select id="lf-provider" name="provider">{% call controls::options(options, filters.provider.as_str(), "All Providers") %}</select>{% else %}<input id="lf-provider" name="provider" value="{{ filters.provider }}" data-search="providers" autocomplete="off" placeholder="Any Provider">{% endif %}</div>
-    <div class="field"><label for="lf-model">Model</label><input id="lf-model" name="model" value="{{ filters.model }}" data-search="models" autocomplete="off" spellcheck="false" placeholder="Any Model"></div>
+    <div class="field"><label for="lf-model">Model</label>{% call picker::model("lf-model", "model", filters.model, "single", "model,route", "", "Any Model", "", "", false) %}</div>
     <div class="field"><label for="lf-from">From (UTC)</label><input id="lf-from" name="from" type="date" value="{{ filters.from }}"></div>
     <div class="field"><label for="lf-to">To (UTC)</label><input id="lf-to" name="to" type="date" value="{{ filters.to }}"></div>
     <div class="row"><button>Apply filters</button>{% if filters.active %}<a class="pad" href="{% if filter == "all" %}/admin/ledger{% else %}/admin/ledger?filter={{ filter }}{% endif %}">Clear filters</a>{% endif %}</div>

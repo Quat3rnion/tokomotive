@@ -2,6 +2,7 @@
 {% block title %}Virtual Keys - Tokomotive{% endblock %}
 {% block nav_keys %}aria-current="page"{% endblock %}
 {% import "control_options.html" as controls %}
+{% import "picker.html" as picker %}
 
 {% block content %}
 <h1>Virtual Keys</h1>
@@ -31,7 +32,7 @@
     <div class="row">
       <div class="field"><label for="key-user">User</label><input id="key-user" name="user_name"{% if let Some(u) = filter_user %} value="{{ u }}"{% endif %} data-search="users" required placeholder="Exact User name" autocomplete="off"></div>
       <div class="field"><label for="key-label">Label</label><input id="key-label" name="label" placeholder="laptop" aria-describedby="key-label-help"><p class="hint" id="key-label-help">Where the key is used.</p></div>
-      <div class="field grow"><label for="key-models">Allowed models</label><input id="key-models" name="allowed_models" data-search="models" data-csv placeholder="gpt-4o, claude-sonnet-5-5" autocomplete="off" spellcheck="false" aria-describedby="key-models-help"><p class="hint" id="key-models-help">Comma-separated Model or Route names, or provider/model. Empty allows all.</p></div>
+      <div class="field grow"><label for="key-models">Allowed models</label>{% call picker::model("key-models", "allowed_models", "", "multi", "model,route,provider", "", "gpt-4o, claude-sonnet-5-5", "key-models-help", "", false) %}<p class="hint" id="key-models-help">Model or Route names, or provider/model. Empty allows all. Without JavaScript, enter comma-separated names.</p></div>
     </div>
     <fieldset aria-describedby="key-access-help">
       <legend>Provider Access</legend>

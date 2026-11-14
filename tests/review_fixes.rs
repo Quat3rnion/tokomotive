@@ -9,8 +9,8 @@ fn examples_describe_simple_mode_and_current_sonnet() {
         "example still says Simple Mode has no effect"
     );
     assert!(
-        include_str!("../templates/keys.html")
-            .contains("placeholder=\"gpt-4o, claude-sonnet-5-5\""),
+        // The placeholder is an argument of the model picker macro.
+        include_str!("../templates/keys.html").contains("\"gpt-4o, claude-sonnet-5-5\""),
         "Keys placeholder does not match the documented Sonnet model"
     );
 }

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% import "control_options.html" as controls %}
+{% import "picker.html" as picker %}
 {% block title %}Routes - Tokomotive{% endblock %}
 {% block nav_routes %}aria-current="page"{% endblock %}
 {% macro deployment_row(providers, provider, model, weight) %}
 <div class="row deployment">
   <label>Provider {% if let Some(options) = providers %}<select name="deployment_provider">{% call controls::options(options, provider, "Choose a Provider") %}</select>{% else %}<input name="deployment_provider" value="{{ provider }}" data-search="providers" placeholder="Exact Provider name" autocomplete="off">{% endif %}</label>
-  <label>Upstream model <input name="deployment_model" value="{{ model }}" class="wide" data-search="models" autocomplete="off" spellcheck="false"></label>
+  <label>Upstream model {% call picker::model("", "deployment_model", model, "single", "provider,model,models.dev", "deployment_provider", "", "", "wide", false) %}</label>
   <label data-weight>Weight <input name="deployment_weight" type="number" min="1" step="1" value="{{ weight }}" inputmode="numeric"></label>
   <span class="row-tools" data-tools hidden>
     <button type="button" class="ghost" data-move="-1" aria-label="Move Deployment up">Up</button>
@@ -49,7 +50,7 @@
   <div class="row">
   <div class="field"><label for="r-{{ r.name }}-name">Name</label><input id="r-{{ r.name }}-name" name="name" value="{{ r.name }}" required autocomplete="off" spellcheck="false"></div>
   {% call strategy_select("r-", r.name.as_str(), r.strategy.as_str()) %}
-  <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label><input id="r-{{ r.name }}-fb" name="fallbacks" value="{{ r.fallbacks }}" data-search="models" data-csv autocomplete="off" spellcheck="false" aria-describedby="r-{{ r.name }}-fb-help"><p class="hint" id="r-{{ r.name }}-fb-help">Comma-separated names of other Routes or Models.</p></div>
+  <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label>{% let fb_id = format!("r-{}-fb", r.name) %}{% let fb_help = format!("r-{}-fb-help", r.name) %}{% call picker::model(fb_id, "fallbacks", r.fallbacks, "ordered", "route,model", "", "", fb_help, "", false) %}<p class="hint" id="r-{{ r.name }}-fb-help">Other Routes or Models, in the order to try. Without JavaScript, enter comma-separated names.</p></div>
   </div>
   {% call deployments_editor(provider_choices, r.deployments, false) %}
   {% let pager = r.deployment_pager %}{% include "pager.html" %}
@@ -65,7 +66,7 @@
   <div class="row">
   <div class="field"><label for="nr-name">Name</label><input id="nr-name" name="name" required autocomplete="off" spellcheck="false" placeholder="fast"></div>
   {% call strategy_select("nr", "", "priority") %}
-  <div class="field grow"><label for="nr-fb">Fallbacks</label><input id="nr-fb" name="fallbacks" data-search="models" data-csv autocomplete="off" spellcheck="false" aria-describedby="nr-fb-help"><p class="hint" id="nr-fb-help">Comma-separated names of other Routes or Models. Optional.</p></div>
+  <div class="field grow"><label for="nr-fb">Fallbacks</label>{% call picker::model("nr-fb", "fallbacks", "", "ordered", "route,model", "", "", "nr-fb-help", "", false) %}<p class="hint" id="nr-fb-help">Optional. Other Routes or Models, in the order to try. Without JavaScript, enter comma-separated names.</p></div>
   </div>
   {% call deployments_editor(provider_choices, self.no_deployments(), true) %}
   <div class="form-error" role="alert" tabindex="-1"></div>
@@ -114,6 +115,7 @@
     add.addEventListener('click', () => {
       const row = blank.content.firstElementChild.cloneNode(true);
       rows.append(row);
+      toko.pickers(row);
       wire(row);
       number();
       weights();

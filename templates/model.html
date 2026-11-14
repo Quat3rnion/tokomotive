@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "control_options.html" as controls %}
+{% import "picker.html" as picker %}
 {% import "rates_fields.html" as f %}
 {% block title %}{{ name }} - Models - Tokomotive{% endblock %}
 {% block nav_models %}aria-current="page"{% endblock %}
@@ -18,10 +19,10 @@
   <form method="post" action="/admin/models/{{ id }}" class="stack">
     <div class="row fill">
       <div class="field"><label for="m-provider">Provider</label>{% if let Some(options) = provider_choices %}<select id="m-provider" name="provider" required>{% call controls::options(options, provider_name.as_str(), "") %}</select>{% else %}<input id="m-provider" name="provider" value="{{ provider_name }}" data-search="providers" required autocomplete="off">{% endif %}</div>
-      <div class="field grow"><label for="m-aliases">Aliases</label><input id="m-aliases" name="aliases" value="{{ aliases }}" autocomplete="off" spellcheck="false" aria-describedby="m-aliases-help"></div>
+      <div class="field grow"><label for="m-aliases">Aliases</label>{% call picker::model("m-aliases", "aliases", aliases, "multi", "-", "", "", "m-aliases-help", "", false) %}</div>
       <button>Save Model</button>
     </div>
-    <p class="hint" id="m-aliases-help">Comma-separated other names for this Model, for example 4o, gpt-4o-latest.</p>
+    <p class="hint" id="m-aliases-help">Other names for this Model, for example 4o or gpt-4o-latest. Type a name and press Enter. Without JavaScript, enter comma-separated names.</p>
     <div class="form-error" role="alert" tabindex="-1"></div>
   </form>
 </section>

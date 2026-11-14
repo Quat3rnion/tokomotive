@@ -891,7 +891,7 @@ pub async fn by_provider(db: &Db, since_s: i64) -> Result<Vec<Group>> {
 // Only callers above supply the grouping expression. The Ledger holds Provider
 // and attempt data that the hourly rollup does not retain.
 async fn grouped_ledger(db: &Db, since_s: i64, key: &str, group: &str) -> Result<Vec<Group>> {
-    grouped_page(db, since_s, key, group, "requests", "DESC", 10, 0).await
+    grouped_page(db, since_s, key, group, "requests", "DESC", 10, 0, None).await
 }
 
 pub async fn usage_page(
@@ -901,6 +901,7 @@ pub async fn usage_page(
     sort: &str,
     ascending: bool,
     q: &PageQuery,
+    model: Option<&str>,
 ) -> Result<Vec<Group>> {
     let (key, group) = match group {
         "user" => ("u.name", "u.id"),
@@ -927,6 +928,7 @@ pub async fn usage_page(
         if ascending { "ASC" } else { "DESC" },
         q.limit() + 1,
         q.offset(),
+        model,
     )
     .await
 }
@@ -941,6 +943,7 @@ async fn grouped_page(
     direction: &str,
     limit: i64,
     offset: i64,
+    model: Option<&str>,
 ) -> Result<Vec<Group>> {
     Ok(sqlx::query_as(&format!(
         "SELECT {key} AS key, COUNT(*) AS requests, SUM(l.status >= 400) AS errors,
@@ -952,9 +955,13 @@ async fn grouped_page(
             COUNT(l.ttft_ms) AS ttft_count, SUM(l.attempts) AS attempts, SUM(l.attempts > 1) AS retried
          FROM ledger l INDEXED BY ledger_ts JOIN users u ON u.id = l.user_id LEFT JOIN teams t ON t.id = u.team_id
          LEFT JOIN models m ON m.id = l.model_id
-           WHERE l.ts_ms >= ? * 1000 GROUP BY {group} ORDER BY {sort} {direction}, key ASC, {group} ASC LIMIT ? OFFSET ?"
+           WHERE l.ts_ms >= ? * 1000 AND (? IS NULL OR l.model = ? OR l.requested_model = ?)
+           GROUP BY {group} ORDER BY {sort} {direction}, key ASC, {group} ASC LIMIT ? OFFSET ?"
     ))
     .bind(since_s)
+    .bind(model)
+    .bind(model)
+    .bind(model)
     .bind(limit)
     .bind(offset)
     .fetch_all(db)

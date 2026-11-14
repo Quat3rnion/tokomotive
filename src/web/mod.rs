@@ -67,6 +67,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/settings/markup", post(set_settings))
         .route("/admin/ledger", get(ledger))
         .route("/admin/usage", get(usage))
+        .route("/admin/search/models", get(search_models))
         .route("/admin/search/{kind}", get(search))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
@@ -237,24 +238,83 @@ pub(crate) fn saved(path: &str, message: &str) -> Response {
 
 /// `axum::Form` with a plain-language rejection. Every dashboard handler
 /// uses it; the internal parser message goes to the log only.
+///
+/// The model picker sends one field per chip plus the text field, so the
+/// repeated values of [`MULTI_FIELDS`] are joined with ", " into one value
+/// before parsing. A form with one comma-separated value is unchanged.
 pub(crate) struct Form<T>(pub T);
+
+/// Comma-separated list fields that also arrive as repeated fields.
+pub(crate) const MULTI_FIELDS: &[&str] = &["aliases", "allowed_models", "fallbacks"];
+
+/// Join the repeated values of [`MULTI_FIELDS`] into the first one, in order.
+pub(crate) fn join_multi(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        if MULTI_FIELDS.contains(&k.as_str())
+            && let Some((_, first)) = out.iter_mut().find(|(n, _)| *n == k)
+        {
+            let v = v.trim();
+            if !v.is_empty() {
+                if !first.trim().is_empty() {
+                    first.push_str(", ");
+                }
+                first.push_str(v);
+            }
+            continue;
+        }
+        out.push((k, v));
+    }
+    out
+}
 
 impl<T, S> FromRequest<S> for Form<T>
 where
+    T: serde::de::DeserializeOwned,
     axum::Form<T>: FromRequest<S, Rejection = axum::extract::rejection::FormRejection>,
     S: Send + Sync,
 {
     type Rejection = Response;
 
     async fn from_request(req: Request, st: &S) -> Result<Self, Self::Rejection> {
-        match axum::Form::<T>::from_request(req, st).await {
-            Ok(axum::Form(v)) => Ok(Form(v)),
+        let incomplete = |status: StatusCode| {
+            user_error(
+                status,
+                "The form is incomplete. Reload the page and try again.",
+            )
+        };
+        let form_body = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("application/x-www-form-urlencoded"));
+        if req.method() == axum::http::Method::GET || !form_body {
+            return match axum::Form::<T>::from_request(req, st).await {
+                Ok(axum::Form(v)) => Ok(Form(v)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "dashboard form rejected");
+                    Err(incomplete(e.status()))
+                }
+            };
+        }
+        let body = match axum::body::Bytes::from_request(req, st).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "dashboard form body rejected");
+                return Err(incomplete(e.status()));
+            }
+        };
+        let parsed = serde_urlencoded::from_bytes::<Vec<(String, String)>>(&body)
+            .map_err(|e| e.to_string())
+            .and_then(|pairs| {
+                serde_urlencoded::to_string(join_multi(pairs)).map_err(|e| e.to_string())
+            })
+            .and_then(|text| serde_urlencoded::from_str::<T>(&text).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(v) => Ok(Form(v)),
             Err(e) => {
                 tracing::warn!(error = %e, "dashboard form rejected");
-                Err(user_error(
-                    e.status(),
-                    "The form is incomplete. Reload the page and try again.",
-                ))
+                Err(incomplete(StatusCode::UNPROCESSABLE_ENTITY))
             }
         }
     }
@@ -680,6 +740,8 @@ struct UsageQ {
     range: Option<String>,
     sort: Option<String>,
     direction: Option<String>,
+    /// Only requests for this upstream or requested model name.
+    model: Option<String>,
 }
 
 #[derive(Template)]
@@ -693,6 +755,7 @@ struct UsagePage {
     sort: String,
     direction: &'static str,
     limit: i64,
+    model: String,
     sort_options: Vec<(&'static str, &'static str)>,
     headers: Vec<(&'static str, String)>,
     money_headers: Vec<(&'static str, String)>,
@@ -722,6 +785,12 @@ async fn usage(
             ("Profit", "profit"),
         ]);
     }
+    let model = q
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned);
     let requested_sort = q.sort.as_deref().unwrap_or("requests");
     let sort = columns
         .iter()
@@ -734,7 +803,8 @@ async fn usage(
             group,
             sort,
             q.direction.as_deref() == Some("asc"),
-            &q.page
+            &q.page,
+            model.as_deref(),
         )
         .await
     );
@@ -771,6 +841,7 @@ async fn usage(
             "desc"
         },
         limit: q.page.limit(),
+        model: model.unwrap_or_default(),
         headers: columns.iter().take(6).copied().map(header).collect(),
         money_headers: columns.iter().skip(6).copied().map(header).collect(),
         sort_options: columns,
@@ -797,20 +868,119 @@ async fn search(
     Path(kind): Path<String>,
     Query(q): Query<PageQuery>,
 ) -> Response {
-    if !matches!(
-        kind.as_str(),
-        "users" | "teams" | "models" | "routes" | "providers"
-    ) {
+    // Models have their own endpoint: `search_models`.
+    if !matches!(kind.as_str(), "users" | "teams" | "routes" | "providers") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let mut names = tryr!(db::search_names(&st.db, &kind, &q.q).await);
-    if kind == "models" {
-        names.extend(tryr!(db::search_names(&st.db, "routes", &q.q).await));
-        names.sort_by(|a, b| a.name.cmp(&b.name));
-        names.dedup_by(|a, b| a.name == b.name);
-        names.truncate(20);
-    }
+    let names = tryr!(db::search_names(&st.db, &kind, &q.q).await);
     axum::Json(names).into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct ModelSearchQ {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    limit: String,
+    /// Comma-separated source names, for example `route,model`.
+    #[serde(default)]
+    src: String,
+}
+
+/// One option of the model picker list.
+struct ModelOption {
+    id: String,
+    source: &'static str,
+    tag: &'static str,
+    meta: String,
+}
+
+#[derive(Template)]
+#[template(path = "model_options.html")]
+struct ModelOptions {
+    hits: Vec<ModelOption>,
+}
+
+/// "128K" or "1M" tokens.
+fn context_text(n: u64) -> String {
+    if n >= 1_000_000 {
+        let tenths = (n + 50_000) / 100_000;
+        if tenths.is_multiple_of(10) {
+            format!("{}M", tenths / 10)
+        } else {
+            format!("{}.{}M", tenths / 10, tenths % 10)
+        }
+    } else if n >= 1000 {
+        format!("{}K", (n + 500) / 1000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// The model picker search: `<li role="option">` items for the picker and
+/// htmx, or JSON for `Accept: application/json`.
+async fn search_models(
+    _: Admin,
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ModelSearchQ>,
+) -> Response {
+    use crate::model_search::{DEFAULT_LIMIT, SearchCtx};
+    let text: String = q.q.trim().chars().take(200).collect();
+    let provider = Some(q.provider.trim().to_owned()).filter(|p| !p.is_empty());
+    let scoped = provider.is_some();
+    let only = Some(csv(&q.src)).filter(|v| !v.is_empty());
+    let limit = q.limit.trim().parse().unwrap_or(DEFAULT_LIMIT);
+    let ctx = SearchCtx {
+        provider,
+        state: st.clone(),
+    };
+    let hits = st
+        .model_sources
+        .search(&ctx, &text, limit, only.as_deref())
+        .await;
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !headers.contains_key("hx-request") && !accept.contains("text/html") {
+        return axum::Json(hits).into_response();
+    }
+    let hits = hits
+        .into_iter()
+        .map(|h| {
+            let mut meta = Vec::new();
+            if h.label != h.id {
+                meta.push(h.label.clone());
+            }
+            if !scoped
+                && let Some(p) = &h.provider
+                && !h.id.starts_with(&format!("{p}/"))
+            {
+                meta.push(p.clone());
+            }
+            if let Some(c) = h.context {
+                meta.push(format!("{} context", context_text(c)));
+            }
+            if let Some(p) = &h.price {
+                meta.push(p.clone());
+            }
+            ModelOption {
+                tag: if h.source == "route" { "info" } else { "" },
+                source: h.source,
+                id: h.id,
+                meta: meta.join(", "),
+            }
+        })
+        .collect();
+    let mut r = render(ModelOptions { hits });
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Accept, HX-Request"));
+    r
 }
 
 async fn chosen_id(
