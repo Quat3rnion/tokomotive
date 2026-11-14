@@ -55,6 +55,14 @@ async fn first_start_uses_snapshot_without_network() {
         .await
         .unwrap();
     assert_eq!(count, 9135);
+    sqlx::query("INSERT INTO providers(name,kind,base_url,keys_json) VALUES('existing-anthropic','\"anthropic\"','https://api.anthropic.com','[]')").execute(&db).await.unwrap();
+    let id = db::create_model(&db, "claude-sonnet-4-5", "existing-anthropic", &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        models_dev::mapped(&db, id).await.unwrap(),
+        Some(("anthropic".into(), "claude-sonnet-4-5".into()))
+    );
     models_dev::seed(&db).await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM models_dev_models")
@@ -167,6 +175,14 @@ async fn fetch_handles_etag_304_caps_size_and_refuses_redirects() {
             )
             .route("/data", get(|| async { ([("etag", "\"v2\"")], payload()) }))
             .route(
+                "/chunked",
+                get(|| async {
+                    axum::body::Body::from_stream(futures_util::stream::iter(
+                        (0..17).map(|_| Ok::<_, std::io::Error>(vec![b' '; 1024 * 1024])),
+                    ))
+                }),
+            )
+            .route(
                 "/large",
                 get(|| async {
                     (
@@ -212,6 +228,13 @@ async fn fetch_handles_etag_304_caps_size_and_refuses_redirects() {
             .unwrap_err()
             .to_string()
             .contains("redirects")
+    );
+    assert!(
+        models_dev::fetch(&format!("{url}/chunked"), None)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("16 MB")
     );
 }
 

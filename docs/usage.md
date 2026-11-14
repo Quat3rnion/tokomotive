@@ -24,7 +24,8 @@ connection. Daily sync uses `https://models.dev/api.json` by default. In
 **Refresh model data**. A failed check keeps old data and shows an error.
 
 Each Model matches a models.dev Provider from its Provider preset or API URL.
-API URLs can differ by a trailing slash or `/v1`. The Model matches by exact ID,
+API URLs can differ by a trailing slash or `/v1`. Existing Providers also match
+a hand-verified preset by its API URL. The Model matches by exact ID,
 then `canonical_model_id`, then the longest `<id>-` prefix, as in catalog lookup.
 The Model page shows the matched limits, capabilities, dates, status and Provider
 documentation. It shows **Not in models.dev** when there is no match. Use the

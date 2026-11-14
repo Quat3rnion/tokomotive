@@ -374,8 +374,23 @@ pub fn start_background(st: crate::state::AppState) -> tokio::task::JoinHandle<(
 async fn mapping(conn: &mut SqliteConnection, id: i64) -> Result<Option<(String, String)>> {
     let row = sqlx::query("SELECT m.name,m.models_dev_provider,m.models_dev_model,p.preset,p.base_url FROM models m LEFT JOIN providers p ON p.name=m.provider WHERE m.id=?").bind(id).fetch_one(&mut *conn).await?;
     let override_provider: Option<String> = row.get("models_dev_provider");
-    let preset: Option<String> = row.get("preset");
     let base: Option<String> = row.get("base_url");
+    // Providers created before presets were persisted (including seed files)
+    // can still use a verified preset's identity. Some upstream entries, such
+    // as Anthropic, deliberately have no API URL in models.dev.
+    let preset: Option<String> = row.get::<Option<String>, _>("preset").or_else(|| {
+        let url = base
+            .as_deref()?
+            .trim_end_matches('/')
+            .trim_end_matches("/v1");
+        crate::presets::PRESETS
+            .iter()
+            .find(|p| {
+                !p.base_url.is_empty()
+                    && p.base_url.trim_end_matches('/').trim_end_matches("/v1") == url
+            })
+            .map(|p| p.name.to_owned())
+    });
     let provider: Option<String> = if let Some(p) = override_provider {
         Some(p)
     } else {
@@ -544,6 +559,9 @@ pub struct SearchHit {
     pub price: Option<String>,
 }
 /// Picker adapter: query on demand and bound results, never keep all models in RAM.
+/// The picker can call `models_dev::search(&st.db, provider, q, limit).await`
+/// and convert each `SearchHit` to its `ModelHit`. `provider` is a models.dev ID.
+/// This function is independent of the picker trait, which is not on this branch.
 pub async fn search(
     db: &Db,
     provider: Option<&str>,
