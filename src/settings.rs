@@ -145,6 +145,7 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
     if let Some(pw) = override_password {
         put(db, "admin_password_hash", &hash_password(&pw)?).await?;
     } else if value(db, "admin_password_hash").await?.is_none()
+        && !crate::admin::configured(db).await?
         && let Some(pw) = cfg.admin_password()
     {
         put(db, "admin_password_hash", &hash_password(&pw)?).await?;

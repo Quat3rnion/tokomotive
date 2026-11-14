@@ -169,6 +169,32 @@ the selected range. The `/metrics` endpoint exports `llm_cache_hits_total`,
 `llm_cache_stored_bytes_total`. Bypasses are not misses. Ledger-based metrics
 have a `cache_hit` label so that you can separate stored usage from upstream usage.
 
+## Dashboard accounts and audit log
+
+Open `/setup` on first use. Choose the first Owner's username and password.
+After an upgrade from the single-password dashboard, log in as `admin` with
+the same password. An empty username also means `admin`.
+
+In **Settings > Admin accounts**, an Owner can add accounts and set their roles:
+
+- Owner: all configuration, admin accounts and metrics credentials.
+- Admin: configuration and audit records, without admin-account management or
+  metrics-credential changes.
+- Viewer: read-only dashboard access. Configuration forms are hidden and
+  configuration changes return HTTP 403. Logout and own-password changes
+  remain available.
+
+Keep at least one Owner. A role change, password change or account deletion
+ends that account's sessions. To change your own password, enter the current
+password in **Settings > Change password**.
+
+Open **Audit log** to see dashboard changes. Filter by account, action, target
+or UTC time, then use the page links for older entries. Before/after fields
+exclude secrets and URLs. An interrupted operation shows an unknown outcome.
+Set retention in **Settings > Audit log**. The default is 365 days, with an
+hourly purge. Only Owners and Admins can read the log. Dashboard OIDC sign-in
+is not available.
+
 ## Connect a client
 
 Set the base URL of the client to the Proxy. Use a Virtual Key as the API key.

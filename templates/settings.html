@@ -130,14 +130,14 @@
       {% if !base.simple %}<label>Hit Price (microdollars per request) <input name="cache_hit_price_micros" type="number" min="0" value="{{ settings.cache.hit_price_micros }}" required></label>{% endif %}
     </div>
   </fieldset>
-  <fieldset aria-describedby="s-token-help">
+  {% if base.owner %}<fieldset aria-describedby="s-token-help">
     <legend>Metrics token</legend>
     <p class="hint" id="s-token-help">{% if metrics_set %}A token is set. /metrics needs it as a bearer token. Leave the field blank to keep it.{% else %}No token is set, so /metrics is public. Enter a token to protect it.{% endif %}</p>
     <div class="row">
       <div class="field grow"><label for="s-token">New metrics token</label><input id="s-token" type="password" name="metrics_token" autocomplete="new-password" spellcheck="false"></div>
       {% if metrics_set %}<label class="check"><input type="checkbox" name="clear_metrics_token" id="s-clear" data-clears="s-token"> Remove the token</label>{% endif %}
     </div>
-  </fieldset>
+  </fieldset>{% endif %}
   <div class="form-error" role="alert" tabindex="-1"></div>
   <button>Save settings</button>
 </form>
@@ -145,7 +145,7 @@
 
 <section class="panel" aria-labelledby="password-h">
 <h2 id="password-h">Change password</h2>
-<p class="muted">All sessions end when you change the password, and you log in again. An environment password replaces this password at the next start.</p>
+<p class="muted">Your sessions end when you change your password. Other accounts stay logged in. The environment password resets the admin account at the next start.</p>
 <form method="post" action="/admin/settings/password" class="row" aria-labelledby="password-h">
   <div class="field"><label for="s-current">Current password</label><input id="s-current" type="password" name="current_password" autocomplete="current-password" required></div>
   <div class="field"><label for="s-new">New password</label><input id="s-new" type="password" name="password" minlength="8" autocomplete="new-password" required aria-describedby="s-new-help"><p class="hint" id="s-new-help">At least 8 characters.</p></div>
@@ -153,6 +153,36 @@
   <div class="form-error" role="alert" tabindex="-1"></div>
 </form>
 </section>
+{% if !base.viewer %}
+<section class="panel" id="audit" aria-labelledby="audit-h">
+<h2 id="audit-h">Audit log</h2>
+<p><a href="/admin/audit">Open the audit log</a>. Secrets and URLs are not recorded.</p>
+<form method="post" action="/admin/settings/audit" class="row"><label>Retention (days) <input type="number" name="days" min="1" max="36500" value="{{ audit_retention_days }}" required></label><button>Save retention</button></form>
+</section>
+{% endif %}
+{% if base.owner %}
+<section class="panel" id="accounts" aria-labelledby="accounts-h">
+<h2 id="accounts-h">Admin accounts</h2>
+<p>Owner: all settings and accounts. Admin: configuration without accounts or metrics credentials. Viewer: read-only, with own password and logout.</p>
+{% for account in accounts %}
+<div class="panel">
+<form method="post" action="/admin/settings/accounts/{{ account.id }}" class="row">
+<label>Username <input name="username" value="{{ account.username }}" maxlength="64" required autocomplete="off"></label>
+<label>Role <select name="role"><option value="owner" {% if account.role == "owner" %}selected{% endif %}>Owner</option><option value="admin" {% if account.role == "admin" %}selected{% endif %}>Admin</option><option value="viewer" {% if account.role == "viewer" %}selected{% endif %}>Viewer</option></select></label>
+<label>New password <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Leave blank to keep"></label>
+<button>Save</button>
+</form>
+<form method="post" action="/admin/settings/accounts/{{ account.id }}/delete" data-confirm="Delete account {{ account.username }}? Its sessions will end."><button class="danger">Delete account</button></form>
+</div>
+{% endfor %}
+<h3>Add an admin account</h3>
+<form method="post" action="/admin/settings/accounts" class="row">
+<label>Username <input name="username" maxlength="64" required autocomplete="off"></label>
+<label>Role <select name="role"><option value="viewer">Viewer</option><option value="admin">Admin</option><option value="owner">Owner</option></select></label>
+<label>Password <input name="password" type="password" minlength="8" required autocomplete="new-password"></label><button>Add account</button>
+</form>
+</section>
+{% endif %}
 {% endblock %}
 {% block scripts %}
 <script>

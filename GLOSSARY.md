@@ -68,7 +68,7 @@
 
 **Master Key** - The secret that protects stored Provider Keys, OAuth client settings and tokens, subscription credentials and the metrics token. It comes from `TOKOMOTIVE_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
 
-**Setup** - The first-use step in which the Operator sets the dashboard password and selects the mode. It runs once, on `/setup`.
+**Setup** - The first-use step in which the Operator creates the first Owner account with a username and password, and selects the mode. It runs once, on `/setup`.
 
 **Seed file** - An optional TOML file that fills an empty database once. It is not the source of truth. The dashboard is.
 

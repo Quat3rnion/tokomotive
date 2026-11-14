@@ -6,6 +6,7 @@
   <p class="muted">Tokomotive</p>
   <h1>Log in</h1>
   <form method="post" action="/admin/login" class="stack" data-plain>
+    <label>Username <input name="username" value="admin" autocomplete="username" maxlength="64"></label>
     <label>Dashboard password <input type="password" name="password" autocomplete="current-password" autofocus required{% if error.is_some() %} aria-invalid="true" aria-describedby="login-error"{% endif %}></label>
     {% if let Some(e) = error %}<p class="form-error" role="alert" id="login-error">{{ e }}</p>{% endif %}
     <button>Log in</button>

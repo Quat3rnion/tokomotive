@@ -167,6 +167,8 @@ async fn delete_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
 struct SettingsPage {
     observability: std::sync::Arc<crate::observability::Settings>,
     export_headers_set: bool,
+    audit_retention_days: String,
+    accounts: Vec<accounts::AccountView>,
     webhooks: Vec<crate::alerts::Webhook>,
     alert_thresholds: String,
     models_dev_url: String,
@@ -183,6 +185,13 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     render(SettingsPage {
         observability: st.observability.settings(),
         export_headers_set: !st.observability.settings().headers.is_empty(),
+        audit_retention_days: tryr!(store::value(&st.db, "audit_retention_days").await)
+            .unwrap_or_else(|| "365".into()),
+        accounts: if ctx().role == "owner" {
+            tryr!(accounts::list(&st).await)
+        } else {
+            vec![]
+        },
         webhooks: tryr!(crate::alerts::list(&st.db).await),
         alert_thresholds: tryr!(crate::alerts::thresholds(&st.db).await),
         models_dev_url: tryr!(store::value(&st.db, "models_dev_url").await).unwrap_or_default(),
@@ -395,7 +404,7 @@ struct PasswordForm {
     password: String,
 }
 async fn change_password(
-    _: Admin,
+    admin: Admin,
     State(st): State<AppState>,
     Form(f): Form<PasswordForm>,
 ) -> Response {
@@ -403,19 +412,18 @@ async fn change_password(
     if f.password.chars().count() < 8 {
         return form_error("Use at least 8 characters for the new password.");
     }
-    let old = tryr!(store::value(&st.db, "admin_password_hash").await).unwrap_or_default();
-    if !store::verify_password(&f.current_password, &old) {
+    if !store::verify_password(&f.current_password, &admin.0.password_hash) {
         return form_error("Incorrect current password.");
     }
     let hash = tryr!(store::hash_password(&f.password));
     let mut tx = tryr!(st.db.begin().await);
     tryr!(
-        sqlx::query("UPDATE settings SET value=? WHERE key='admin_password_hash'")
-            .bind(hash)
+        sqlx::query("UPDATE admin_accounts SET password_hash=? WHERE id=?")
+            .bind(&hash)
+            .bind(admin.0.id)
             .execute(&mut *tx)
             .await
     );
-    tryr!(sqlx::query("DELETE FROM sessions").execute(&mut *tx).await);
     tryr!(tx.commit().await);
     saved(
         "/admin/login",
@@ -2055,7 +2063,7 @@ fn setup_done() -> Response {
 }
 
 async fn setup_page(State(st): State<AppState>) -> Response {
-    if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_some() {
+    if tryr!(crate::admin::configured(&st.db).await) {
         return setup_done();
     }
     render(SetupPage {
@@ -2066,6 +2074,8 @@ async fn setup_page(State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct SetupForm {
+    #[serde(default)]
+    username: String,
     password: String,
     /// Optional, so that scripted Setup with one field keeps working.
     password_confirm: Option<String>,
@@ -2074,7 +2084,7 @@ struct SetupForm {
 
 async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response {
     let _guard = st.settings_write.lock().await;
-    if tryr!(store::value(&st.db, "admin_password_hash").await).is_some() {
+    if tryr!(crate::admin::configured(&st.db).await) {
         return setup_done();
     }
     if f.password.chars().count() < 8 {
@@ -2095,15 +2105,25 @@ async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response
     ));
     settings.mode = mode;
     let hash = tryr!(crate::settings::hash_password(&f.password));
+    let username = tryform!(crate::admin::username(&f.username));
     let mut tx = tryr!(st.db.begin().await);
-    let result = tryr!(
-        sqlx::query("INSERT OR IGNORE INTO settings(key,value) VALUES('admin_password_hash',?)")
+    let result=tryr!(
+        sqlx::query("INSERT INTO admin_accounts(username,password_hash,role) SELECT ?,?,'owner' WHERE NOT EXISTS(SELECT 1 FROM admin_accounts)")
+            .bind(username)
             .bind(&hash)
             .execute(&mut *tx)
             .await
     );
     if result.rows_affected() == 0 {
         return setup_done();
+    }
+    if username.eq_ignore_ascii_case("admin") {
+        tryr!(
+            sqlx::query("INSERT INTO settings(key,value) VALUES('admin_password_hash',?)")
+                .bind(&hash)
+                .execute(&mut *tx)
+                .await
+        );
     }
     tryr!(
         sqlx::query("UPDATE settings SET value=? WHERE key='runtime_settings'")
@@ -2114,12 +2134,14 @@ async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response
     tryr!(tx.commit().await);
     tryr!(st.reload_settings().await);
     // Log the Operator in, so the password is not typed twice.
-    let session = tryr!(start_session(&st, &hash).await);
+    let account = tryr!(crate::admin::by_username(&st.db, username).await).expect("setup account");
+    let session = tryr!(start_session(&st, &account).await);
     let mut r = saved(
         "/admin",
         "Setup is complete. Follow the steps below to connect your first client.",
     );
     r.headers_mut()
         .append(header::SET_COOKIE, tryr!(HeaderValue::from_str(&session)));
+    r.extensions_mut().insert(account);
     r
 }

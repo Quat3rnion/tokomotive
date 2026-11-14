@@ -1464,8 +1464,14 @@ pub async fn resolve_name(db: &Db, kind: &str, value: &str, allow_id: bool) -> R
 
 /// Store a new dashboard session. Only the hash of the token is stored.
 pub async fn create_session(db: &Db, token: &str, days: i64) -> Result<()> {
-    let password = crate::settings::value(db, "admin_password_hash").await?;
-    create_session_for_password(db, token, days, password.as_deref()).await
+    let account = crate::admin::by_username(db, "admin").await?;
+    create_session_for_password(
+        db,
+        token,
+        days,
+        account.as_ref().map(|a| a.password_hash.as_str()),
+    )
+    .await
 }
 
 /// Use the exact hash that the login verified, not a fresh password lookup.
@@ -1479,25 +1485,20 @@ pub async fn create_session_for_password(
         .bind(now_s())
         .execute(db)
         .await?;
-    sqlx::query("INSERT INTO sessions(token_hash, expires_at, password_hash) VALUES(?, ?, ?)")
+    let account = crate::admin::by_username(db, "admin").await?;
+    sqlx::query("INSERT INTO sessions(token_hash, expires_at, password_hash,account_id,account_version) VALUES(?, ?, ?,?,?)")
         .bind(hash_key(token))
         .bind(now_s() + days * 86_400)
         .bind(password_hash)
+        .bind(account.as_ref().map(|a| a.id))
+        .bind(account.as_ref().map_or(0, |a| a.session_version))
         .execute(db)
         .await?;
     Ok(())
 }
 
 pub async fn session_valid(db: &Db, token: &str) -> Result<bool> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM sessions WHERE token_hash = ? AND expires_at >= ?
-         AND password_hash IS (SELECT value FROM settings WHERE key='admin_password_hash')",
-    )
-    .bind(hash_key(token))
-    .bind(now_s())
-    .fetch_one(db)
-    .await?;
-    Ok(n > 0)
+    Ok(crate::admin::session(db, token).await?.is_some())
 }
 
 pub async fn delete_session(db: &Db, token: &str) -> Result<()> {

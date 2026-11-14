@@ -135,6 +135,8 @@ fn opt_date(ts: Option<i64>) -> Stamp {
 /// Data that `base.html` needs on every page.
 #[derive(Clone, Default)]
 pub struct Base {
+    pub owner: bool,
+    pub viewer: bool,
     pub simple: bool,
     /// Show the navigation. False on login, Setup and logged-out errors.
     pub logged_in: bool,
@@ -148,6 +150,8 @@ impl Base {
     pub fn new(st: &crate::state::AppState) -> Self {
         let ctx = super::ctx();
         Self {
+            owner: ctx.role == "owner",
+            viewer: ctx.role == "viewer",
             simple: st.settings().mode == "simple",
             logged_in: true,
             flash: ctx.flash,
@@ -159,6 +163,8 @@ impl Base {
     pub fn anonymous() -> Self {
         let ctx = super::ctx();
         Self {
+            owner: ctx.role == "owner",
+            viewer: ctx.role == "viewer",
             simple: false,
             logged_in: ctx.session,
             flash: ctx.flash,

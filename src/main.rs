@@ -19,21 +19,26 @@ async fn main() -> Result<()> {
     let batches = tokomotive::batches::start_background(state.clone());
     let retention = tokomotive::observability::start_retention(state.clone());
     let cache_purge = tokomotive::cache::start_purge(state.clone());
+    let audit_purge = tokomotive::admin::start_audit_purge(state.db.clone());
     let app = tokomotive::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.listen)
         .await
         .with_context(|| format!("bind {}", cfg.server.listen))?;
     tracing::info!(listen = %cfg.server.listen, "tokomotive started");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await?;
     // Write the Ledger Entries that are still pending.
     batches.abort();
     retention.abort();
     cache_purge.abort();
     state.flush().await;
     sync.abort();
+    audit_purge.abort();
     Ok(())
 }
 

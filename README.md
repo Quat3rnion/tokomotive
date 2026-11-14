@@ -86,6 +86,13 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   are redacted, size-capped, encrypted and retained for 7 days by default.
   Only Admins can read them. See [Request diagnostics](docs/usage.md#request-diagnostics).
 
+- Supports Owner, Admin and read-only Viewer dashboard accounts with Argon2
+  passwords. Settings includes account management and own-password changes.
+  An upgrade keeps the old password on an Owner named `admin`; an empty login
+  username still means `admin`.
+- Records dashboard changes in a filterable, paginated audit log for Owners
+  and Admins. Public before/after fields exclude secrets and URLs. Retention
+  defaults to 365 days. See [Dashboard accounts](docs/usage.md#dashboard-accounts-and-audit-log).
 - Stores Providers, Provider Keys, Routes and settings in the database. The
   Operator changes them on the **Providers**, **Routes** and **Settings** pages.
   Changes apply without a restart.

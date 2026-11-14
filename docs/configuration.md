@@ -210,21 +210,57 @@ See "Simple mode" in [usage.md](usage.md#simple-mode) for the behavior.
 
 ### Dashboard password
 
-If no password hash exists, dashboard pages redirect to `/setup`. Setup accepts
-a password of at least 8 characters and refuses all later setup requests.
-The Proxy stores passwords as salted Argon2 hashes. Use **Settings** to change the
-password. Enter the current password and a new password of at least 8 characters.
-This ends all sessions. Existing sessions otherwise survive restarts.
+If no admin account exists, dashboard pages redirect to `/setup`. Setup creates
+the first Owner with a username and a password of at least 8 characters. Later
+Setup requests are refused. Passwords use salted Argon2 hashes.
 
-`TOKOMOTIVE_ADMIN_PASSWORD`, when non-empty, replaces the stored hash at
-each start. Remove that variable after recovery if you want UI password changes
-to remain after a restart. Legacy `admin_password` or `admin_password_env` values
-seed a hash only when none exists. The default environment variable remains the
-recovery override.
+An upgrade keeps the old password. It creates an Owner named `admin` and binds
+existing valid sessions to that account. The login form now has a username.
+An empty or absent username means `admin`, so old login scripts still work.
+Usernames are not case-sensitive. They contain at most 64 letters, digits,
+dots, underscores or hyphens.
+
+Use **Settings > Admin accounts** to add, change or delete accounts. Only an
+Owner can use these controls. At least one Owner must remain. An Admin can
+change other configuration, but cannot manage accounts or change the metrics
+token. A Viewer has read-only access. Viewers can still log out and change
+their own password with the current password.
+
+Use **Settings > Change password** for your own password. A password change,
+role change or account deletion ends that account's sessions only. Other
+accounts stay logged in. Sessions otherwise survive restarts.
+
+`TOKOMOTIVE_ADMIN_PASSWORD`, when non-empty, creates or resets the Owner named
+`admin` at each start. It ends that account's sessions. Remove the variable
+after recovery to keep UI password changes after a restart. Legacy
+`admin_password` or `admin_password_env` values seed an Owner only when no
+account exists.
 
 Complete Setup through a trusted local connection before you expose the service.
 Use TLS at the reverse proxy for remote access. Preserve the public Host and
 Origin headers. All dashboard POST routes refuse cross-origin browser forms.
+Login permits 5 attempts per socket IP and username in 5 minutes. Forwarded IP
+headers do not bypass this limit. Behind a reverse proxy, the socket IP is the
+reverse proxy IP. The in-memory table has at most 1024 entries. When full,
+new entries are refused until an entry expires.
+
+### Audit log
+
+Owners and Admins can open **Audit log** from Settings or the navigation.
+Filter by account, action, target type or ID, and UTC time. The page contains
+at most 200 entries at a time. Each dashboard mutation records its account,
+time, route, target, HTTP outcome and public before/after fields. Passwords,
+Provider Keys, client secrets, tokens and URLs are not copied to the log.
+Secret-only changes show metadata, not secret values. Authorized form errors
+also have entries. Failed login attempts are not stored, to limit unauthenticated
+log growth. An interrupted configuration operation has an unknown outcome.
+
+**Settings > Audit log** controls retention in days. The default is 365 days.
+The server removes old entries at start and once per hour. The log covers
+dashboard operations, not direct database edits, environment recovery or
+background model-data sync. Export audit records separately if you need
+protection against database administrators. Dashboard OIDC sign-in is not
+implemented.
 
 ### Metrics token
 

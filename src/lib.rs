@@ -1,5 +1,6 @@
 //! LLM router and proxy with optional per-model Cost, Price and Profit accounting per User.
 
+pub mod admin;
 mod affinity;
 pub mod alerts;
 pub mod batches;
@@ -67,7 +68,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/batches", any(batches::handle))
         .route("/v1/batches/{*rest}", any(batches::handle))
         .route("/v1/{*rest}", any(proxy::handle))
-        .merge(web::router())
+        .merge(web::router(state.clone()))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }

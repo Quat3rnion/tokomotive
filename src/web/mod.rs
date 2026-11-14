@@ -46,13 +46,15 @@ macro_rules! tryform {
     };
 }
 
+pub(crate) mod accounts;
+mod audit;
 mod models_dev;
 mod oauth;
 mod pickers;
 mod quota;
 mod settings;
 
-pub fn router() -> Router<AppState> {
+pub fn router(st: AppState) -> Router<AppState> {
     Router::new()
         .route("/admin", get(overview))
         .route("/admin/login", get(login_page).post(login))
@@ -84,7 +86,12 @@ pub fn router() -> Router<AppState> {
         .merge(settings::router())
         .merge(models_dev::router())
         .merge(oauth::router())
+        .merge(accounts::router())
         .fallback(not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            st,
+            accounts::authorize,
+        ))
         .layer(axum::middleware::from_fn(same_origin))
         .layer(axum::middleware::from_fn(htmx_redirect))
         .layer(axum::middleware::from_fn(context))
@@ -104,6 +111,7 @@ pub(crate) struct RequestCtx {
     /// True when the request carries a session cookie. Only used to hide the
     /// navigation on error pages for visitors who are not logged in.
     pub session: bool,
+    pub role: String,
 }
 
 tokio::task_local! {
@@ -133,6 +141,7 @@ async fn context(req: Request, next: Next) -> Response {
         flash,
         proxy_url: proxy_url(h),
         session: cookie(h, COOKIE).is_some(),
+        role: String::new(),
     };
     let mut resp = CTX.scope(ctx, next.run(req)).await;
     if shown && resp.status() == StatusCode::OK {
@@ -442,7 +451,10 @@ async fn htmx_redirect(req: Request, next: Next) -> Response {
 }
 
 async fn same_origin(req: Request, next: Next) -> Response {
-    if req.method() == axum::http::Method::POST {
+    if !matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) {
         let h = req.headers();
         let cross_site = h
             .get("sec-fetch-site")
@@ -490,28 +502,17 @@ async fn favicon() -> Response {
 // -------------------------------------------------------------------- auth
 
 /// Extractor: present only for a logged-in Operator.
-pub struct Admin;
+pub struct Admin(pub(crate) crate::admin::Account);
 
 impl FromRequestParts<AppState> for Admin {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, Self::Rejection> {
-        if crate::settings::value(&st.db, "admin_password_hash")
-            .await
-            .map_err(internal)?
-            .is_none()
-        {
+        if !crate::admin::configured(&st.db).await.map_err(internal)? {
             return Err(Redirect::to("/setup").into_response());
         }
-        let ok = match session_cookie(&parts.headers) {
-            Some(s) => db::session_valid(&st.db, &s).await.unwrap_or_else(|e| {
-                tracing::error!(error = %e, "session lookup failed");
-                false
-            }),
-            None => false,
-        };
-        if ok {
-            Ok(Admin)
+        if let Some(account) = parts.extensions.get::<crate::admin::Account>() {
+            Ok(Admin(account.clone()))
         } else {
             Err(Redirect::to("/admin/login").into_response())
         }
@@ -541,7 +542,7 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
 }
 
 async fn login_page(State(st): State<AppState>) -> Response {
-    if tryr!(crate::settings::value(&st.db, "admin_password_hash").await).is_none() {
+    if !tryr!(crate::admin::configured(&st.db).await) {
         return Redirect::to("/setup").into_response();
     }
     render(LoginPage {
@@ -552,32 +553,76 @@ async fn login_page(State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct LoginForm {
+    #[serde(default)]
+    username: String,
     password: String,
 }
 
-async fn login(State(st): State<AppState>, Form(f): Form<LoginForm>) -> Response {
-    let Some(pw) = tryr!(crate::settings::value(&st.db, "admin_password_hash").await) else {
+async fn login(
+    State(st): State<AppState>,
+    peer: Result<
+        axum::extract::ConnectInfo<std::net::SocketAddr>,
+        axum::extract::rejection::ExtensionRejection,
+    >,
+    Form(f): Form<LoginForm>,
+) -> Response {
+    if !tryr!(crate::admin::configured(&st.db).await) {
         return Redirect::to("/setup").into_response();
+    }
+    let username = f.username.trim();
+    let username = if username.is_empty() {
+        "admin"
+    } else {
+        username
     };
-    if !crate::settings::verify_password(&f.password, &pw) {
+    let ip = peer
+        .ok()
+        .map(|p| p.0.ip().to_string())
+        .unwrap_or_else(|| "local".into());
+    if !st
+        .dashboard
+        .login
+        .lock()
+        .expect("login limiter")
+        .allow(&ip, username, db::now_s())
+    {
+        let mut response = page_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many login attempts. Wait 5 minutes and try again.",
+        );
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("300"));
+        return response;
+    }
+    let account = tryr!(crate::admin::by_username(&st.db, username).await);
+    // Verify a valid dummy hash for unknown usernames to avoid a cheap enumeration oracle.
+    let hash = account
+        .as_ref()
+        .map(|a| a.password_hash.as_str())
+        .unwrap_or(&st.dashboard.dummy_hash);
+    if !crate::settings::verify_password(&f.password, hash) || account.is_none() {
         let mut r = render(LoginPage {
             base: Base::anonymous(),
-            error: Some("Incorrect password. Try again.".into()),
+            error: Some("Incorrect username or password. Try again.".into()),
         });
         *r.status_mut() = StatusCode::UNAUTHORIZED;
         return r;
     }
-    let cookie = tryr!(start_session(&st, &pw).await);
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/admin")).into_response()
+    let account = account.expect("verified account");
+    let cookie = tryr!(start_session(&st, &account).await);
+    let mut response = ([(header::SET_COOKIE, cookie)], Redirect::to("/admin")).into_response();
+    response.extensions_mut().insert(account);
+    response
 }
 
-/// Creates a session for the password hash `pw` and returns its Set-Cookie
-/// value. Login and Setup use it.
-async fn start_session(st: &AppState, pw: &str) -> anyhow::Result<String> {
+/// Creates a session for the account's verified hash and version, then returns
+/// its Set-Cookie value. Login and Setup use it.
+async fn start_session(st: &AppState, account: &crate::admin::Account) -> anyhow::Result<String> {
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
-    db::create_session_for_password(&st.db, &token, st.settings().session_days, Some(pw)).await?;
+    crate::admin::create_session(&st.db, &token, st.settings().session_days, account).await?;
     let max_age = st.settings().session_days * 86_400;
     Ok(format!(
         "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}"
@@ -615,7 +660,7 @@ async fn htmx() -> Response {
 
 fn render<T: Template>(t: T) -> Response {
     match t.render() {
-        Ok(s) => Html(s).into_response(),
+        Ok(s) => Html(accounts::visible_forms(s, &ctx().role)).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "template render failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "template error").into_response()

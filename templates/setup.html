@@ -6,6 +6,7 @@
   <h1>Set up Tokomotive</h1>
   <p>Choose a mode and set the dashboard password. You can change both later in Settings.</p>
   <form method="post" action="/setup" class="stack">
+    <label>Owner username <input name="username" value="admin" autocomplete="username" maxlength="64" required></label>
     <fieldset class="choices">
       <legend>Mode</legend>
       <label class="choice"><input type="radio" name="mode" value="full" {% if mode != "simple" %}checked{% endif %} aria-describedby="mode-full-help"><span><b>Full Mode</b><span id="mode-full-help">Routes requests and records usage. Also applies pricing, Budgets and Rate Limits.</span></span></label>

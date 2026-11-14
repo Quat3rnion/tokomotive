@@ -92,6 +92,7 @@ pub struct Inner {
     pub secret_key: crate::settings::SecretKey,
     pub oauth: crate::oauth::OAuthManager,
     pub settings_write: tokio::sync::Mutex<()>,
+    pub(crate) dashboard: crate::web::accounts::DashboardState,
     /// Serialize spend reads with Ledger commits and Reservation release.
     pub(crate) budget_check: tokio::sync::Mutex<()>,
     router_table: RwLock<Arc<RouterTable>>,
@@ -151,6 +152,7 @@ impl AppState {
             secret_key,
             oauth,
             settings_write: tokio::sync::Mutex::new(()),
+            dashboard: crate::web::accounts::DashboardState::new()?,
             budget_check: tokio::sync::Mutex::new(()),
             router_table: RwLock::new(Arc::new(router_table)),
             circuits: Mutex::new(HashMap::new()),

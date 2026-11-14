@@ -478,6 +478,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       <li><a href="/admin/teams" {% block nav_teams %}{% endblock %}>Teams</a></li>
       <li><a href="/admin/keys" {% block nav_keys %}{% endblock %}>Keys</a></li>
       <li class="gs"><a href="/admin/settings" {% block nav_settings %}{% endblock %}>Settings</a></li>
+      {% if !base.viewer %}<li><a href="/admin/audit">Audit log</a></li>{% endif %}
     </ul>
   </nav>
   <form method="post" action="/admin/logout" data-plain><button class="ghost">Log out</button></form>
@@ -485,6 +486,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
 </header>
 {% endblock %}
 <main id="main" tabindex="-1">
+{% if base.viewer %}<p class="panel">Viewer access: configuration is read-only.</p>{% endif %}
 {% if let Some(f) = base.flash %}<div class="flash" role="status" tabindex="-1">{{ f }}</div>{% endif %}
 {% block content %}{% endblock %}
 </main>
