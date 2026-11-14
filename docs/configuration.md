@@ -93,6 +93,16 @@ The database is the source of truth. Start the Proxy without a file, open
 [usage.md](usage.md) for the Operator guide and [INSTALL.md](../INSTALL.md) for
 the first installation.
 
+SQLite uses WAL, up to eight connections, and a five-second busy timeout.
+Ledger and account-health writes take the writer lock before they read data.
+If that lock stays busy past the timeout, these writes wait and try again.
+They do not discard a Ledger Entry because another writer holds the lock.
+
+Ledger writes run in tracked background tasks. A response can reach the client
+before its Ledger Entry is stored. `AppState::flush` waits for these tasks,
+including stream drains after a client disconnect. Tests that read the Ledger
+after requests must call it first.
+
 ## Process options and optional seed file
 
 The Proxy reads a seed file only when you give a path:

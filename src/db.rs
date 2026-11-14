@@ -48,6 +48,30 @@ pub async fn connect(url: &str) -> Result<Db> {
     Ok(pool)
 }
 
+/// Acquire the WAL writer before taking a snapshot. SQLite's busy handler is
+/// bounded, so retry lock acquisition rather than discard an accounting write
+/// when a busy host or another process holds the writer for longer than that.
+/// No statements have run when BEGIN fails; retrying cannot duplicate a write.
+pub(crate) async fn begin_write(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+    let mut delay = std::time::Duration::from_millis(10);
+    loop {
+        match db.begin_with("BEGIN IMMEDIATE").await {
+            Ok(tx) => return Ok(tx),
+            Err(sqlx::Error::Database(e))
+                if e.code().is_some_and(|code| {
+                    // SQLite extended result codes retain the primary code in
+                    // the low byte. SQLITE_BUSY is 5; other errors must surface.
+                    code.parse::<i32>().is_ok_and(|code| code & 0xff == 5)
+                }) =>
+            {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- settings
 
 const DEFAULT_MARKUP: &str = "default_markup_bp";
@@ -611,7 +635,7 @@ fn rollup_model(e: &NewEntry) -> String {
 }
 
 pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let id = insert_entry_in(&mut tx, e).await?;
     tx.commit().await?;
     Ok(id)

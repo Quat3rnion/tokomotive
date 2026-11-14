@@ -317,13 +317,7 @@ async fn record_health(
         // Other outcomes can carry quotas, but do not clear a known failure.
         _ => ("ok", Some("Upstream request failed"), None),
     };
-    let mut tx = db.begin().await?;
-    // Take the SQLite writer lock before reading the previous state.
-    sqlx::query("UPDATE provider_health SET state=state WHERE provider=? AND account=?")
-        .bind(provider)
-        .bind(account)
-        .execute(&mut *tx)
-        .await?;
+    let mut tx = crate::db::begin_write(db).await?;
     let previous: Option<String> =
         sqlx::query_scalar("SELECT state FROM provider_health WHERE provider=? AND account=?")
             .bind(provider)
@@ -344,6 +338,13 @@ async fn record_health(
     for window in parse_headers(headers, now) {
         save_window(&mut tx, provider, account, &window, now).await?;
     }
+    if matches!(recovery, Recovery::All) {
+        sqlx::query("DELETE FROM provider_quota WHERE provider=? AND account=?")
+            .bind(provider)
+            .bind(account)
+            .execute(&mut *tx)
+            .await?;
+    }
     if !preserve && previous.as_deref().unwrap_or("ok") != state {
         sqlx::query("INSERT INTO provider_health_alerts(provider,account,state,emitted_at,pending) VALUES(?,?,?,?,1) ON CONFLICT(provider,account,state) DO UPDATE SET emitted_at=excluded.emitted_at,pending=1 WHERE excluded.emitted_at>=provider_health_alerts.emitted_at+600")
             .bind(provider).bind(account).bind(state).bind(now).execute(&mut *tx).await?;
@@ -354,7 +355,9 @@ async fn record_health(
 
 /// Atomically claim pending, deduplicated state changes for webhook delivery.
 pub async fn take_health_events(db: &SqlitePool) -> anyhow::Result<Vec<crate::alerts::Event>> {
-    let rows=sqlx::query("UPDATE provider_health_alerts SET pending=0 WHERE pending=1 RETURNING provider,account,state").fetch_all(db).await?;
+    let mut tx = crate::db::begin_write(db).await?;
+    let rows=sqlx::query("UPDATE provider_health_alerts SET pending=0 WHERE pending=1 RETURNING provider,account,state").fetch_all(&mut *tx).await?;
+    tx.commit().await?;
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -416,11 +419,6 @@ pub async fn reenable(
         Recovery::All,
     )
     .await?;
-    sqlx::query("DELETE FROM provider_quota WHERE provider=? AND account=?")
-        .bind(provider)
-        .bind(account)
-        .execute(&st.db)
-        .await?;
     emit_health_events(st).await;
     Ok(())
 }
@@ -444,7 +442,7 @@ pub async fn save_plan(
     usage: &crate::oauth::PlanUsage,
     now: i64,
 ) -> anyhow::Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
     sqlx::query("INSERT INTO provider_health(provider,account,state,observed_at) VALUES(?,?,'ok',?) ON CONFLICT(provider,account) DO NOTHING")
         .bind(provider).bind(account).bind(now).execute(&mut *tx).await?;
     for w in &usage.windows {
