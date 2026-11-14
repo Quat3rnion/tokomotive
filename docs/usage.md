@@ -56,6 +56,10 @@ On a Provider card, open **Egress proxy** and select one connection:
 - **None** connects directly, even when a global proxy is set.
 - **Custom proxy** uses the URL saved for that Provider.
 
+Only an Owner can change an egress proxy. A proxy decides where the Proxy
+sends Provider credentials. Admins and Viewers see the setting but cannot
+change it.
+
 Enter a URL such as `http://user:password@proxy.example:8080` or
 `socks5h://user:password@proxy.example:1080`. The port is required. Do not add
 a trailing slash, path, query or fragment. Percent-encode reserved characters

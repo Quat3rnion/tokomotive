@@ -564,6 +564,24 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
             .status(),
         403
     );
+    // An egress proxy URL decides where Provider credentials go, like a base
+    // URL of an env-backed Provider: Owner only.
+    for path in [
+        "/admin/settings/egress",
+        "/admin/providers/fixture-provider/egress",
+    ] {
+        assert_eq!(
+            a.post(
+                path,
+                &admin,
+                &[("mode", "custom"), ("proxy_url", "http://127.0.0.1:9")]
+            )
+            .await
+            .status(),
+            403,
+            "Admin {path}"
+        );
+    }
     assert_eq!(
         a.post("/admin/teams", &admin, &[("name", "allowed")])
             .await

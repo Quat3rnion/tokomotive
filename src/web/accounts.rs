@@ -206,6 +206,18 @@ pub(super) async fn authorize(
             "Only an Owner can manage admin accounts or audit retention.",
         );
     }
+    // An egress proxy decides where Provider credentials are sent: Owner only,
+    // like env: references and env-backed Provider destinations.
+    if mutation
+        && (path == "/admin/settings/egress"
+            || (path.starts_with("/admin/providers/") && path.ends_with("/egress")))
+        && account.role != "owner"
+    {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Only an Owner can change an egress proxy.",
+        );
+    }
     // Metrics credentials are Master-Key-sensitive. Ordinary server settings
     // remain available to Admin accounts, including old scripted forms.
     if mutation && path == "/admin/settings" && account.role != "owner" {
