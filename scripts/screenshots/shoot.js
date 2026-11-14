@@ -67,6 +67,8 @@ async function capture() {
     };
     const overview = async () => [0, (await box('div.panel[aria-labelledby$="-h"]', 'Model')).bottom + 10];
     const recipes = {
+      'mcp-servers': async () => [0, await full()],
+      'mcp-log': async () => [0, (await box('nav.pager', null, null, true)).bottom + 24],
       overview,
       'overview-simple': async entry => {
         await mode('simple');

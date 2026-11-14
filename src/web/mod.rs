@@ -49,6 +49,7 @@ macro_rules! tryform {
 pub(crate) mod accounts;
 mod audit;
 mod guardrails;
+mod mcp;
 mod models_dev;
 mod oauth;
 mod pickers;
@@ -87,6 +88,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .merge(settings::router())
         .merge(guardrails::router())
         .merge(models_dev::router())
+        .merge(mcp::router())
         .merge(oauth::router())
         .merge(accounts::router())
         .fallback(not_found)
@@ -1281,6 +1283,7 @@ async fn teams(
     let teams = tryr!(db::teams_page(&st.db, &q).await);
     let mut page = TeamsPage::build(Base::new(&st), &teams.items, &st.catalog());
     for team in &mut page.teams {
+        team.mcp_access = tryr!(crate::mcp::data::access(&st.db, "teams", team.id).await);
         team.budget_view =
             tryr!(views::BudgetView::load(&st, crate::budgets::Subject::Team(team.id)).await);
     }
@@ -1438,6 +1441,7 @@ async fn keys_page(st: &AppState, new_key: Option<String>, q: ListQ, uri: &str) 
     );
     page.pager = pager;
     for key in page.keys.iter_mut().chain(page.revoked.iter_mut()) {
+        key.mcp_access = tryr!(crate::mcp::data::access(&st.db, "keys", key.id).await);
         key.budget_view =
             tryr!(views::BudgetView::load(st, crate::budgets::Subject::Key(key.id)).await);
         let expires: Option<i64> = tryr!(

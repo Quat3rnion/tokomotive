@@ -14,6 +14,13 @@ Without JavaScript this is the plain text input (comma-separated for multi).
 <span class="cb" data-picker="{% if mode == "single" %}single{% else %}multi{% endif %}"{% if mode == "ordered" %} data-ordered{% endif %} data-src="{{ src }}"{% if !scope.is_empty() %} data-scope="{{ scope }}"{% endif %}><input{% if !id.is_empty() %} id="{{ id }}"{% endif %} name="{{ name }}" value="{{ value }}"{% if !class.is_empty() %} class="{{ class }}"{% endif %}{% if required %} required{% endif %} autocomplete="off" autocapitalize="off" spellcheck="false"{% if !placeholder.is_empty() %} placeholder="{{ placeholder }}"{% endif %}{% if !help.is_empty() %} aria-describedby="{{ help }}"{% endif %}></span>
 {%- endmacro %}
 
+{% macro mcp_access(all, patterns) %}
+<fieldset><legend>MCP tool access</legend>
+<label class="check"><input type="checkbox" name="mcp_all"{% if all %} checked{% endif %}> All MCP servers and tools</label>
+<label>Allowed servers and tools <span class="cb" data-picker="multi" data-strict data-kind="mcp-tools" data-endpoint="/admin/mcp/search"><input name="mcp_allow" value="{{ patterns }}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search MCP tools"></span></label>
+<p class="hint">No selection denies all MCP tools. Choose server/* for all tools on one server. Key access and Team access must both allow the tool. A new Team denies all MCP tools.</p></fieldset>
+{%- endmacro %}
+
 {#
 Entity picker (base.html header, item 12): a User, Team, Provider, Route or
 models.dev field. The JS makes a strict combobox that lists the first 20

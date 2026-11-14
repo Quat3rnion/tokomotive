@@ -2154,6 +2154,117 @@ These prefixes are not sent as part of the Vertex model ID. Use model IDs that
 are available in the selected project and region. Live account support is not
 verified; the tests use mock endpoints.
 
+## MCP gateway
+
+Use the **MCP servers** page to connect trusted Streamable HTTP tool servers.
+Give each server a unique name and its exact endpoint URL. Public endpoints
+need HTTPS. Select **Allow private network access** only for a trusted private
+server. This option also permits HTTP, but only to a private address. The
+gateway checks DNS addresses before each request and pins the checked addresses.
+It does not follow redirects or URLs supplied in upstream responses. Environment
+HTTP proxies are not used for MCP requests.
+
+Choose no authentication, a Bearer token or a custom credential header. Credentials
+are encrypted with the same Master Key as Provider Keys. The page shows a mask,
+not the credential. Leave the credential field blank on edit to keep it. Select
+**Test connection and list tools** to run `initialize`, `notifications/initialized`
+and `tools/list`. The tool descriptions from this test fill the access picker.
+Client discovery reads the current tool list, not this dashboard copy.
+
+New Virtual Keys and Teams deny all MCP tools. On **Keys**, edit a key and select
+servers or tools in **MCP tool access**. Choose `research/*` for all tools on that
+server, or `research/search_docs` for one tool. **All MCP servers and tools** also
+allows servers added later. Save MCP access separately from the key's LLM limits.
+If the User has a Team, the Team's MCP access must also allow the tool. Set this
+on **Teams**. Renaming a server does not rename existing access rules.
+
+Clients connect to `https://router.example.com/mcp` and send a Virtual Key in
+`Authorization: Bearer` or `x-api-key`. The aggregate endpoint prefixes names,
+for example `research__search_docs`. To use the original names, connect to
+`https://router.example.com/mcp/research`. Server names must have 1 to 32 ASCII
+letters, digits, dots, hyphens or underscores, with no `__` or dot-only name.
+Tool names have the MCP name characters and at most 128 characters. An aggregate
+name longer than 128 characters is not listed; use the single-server endpoint.
+
+### Client configuration
+
+Set `TOKOMOTIVE_KEY` in the client's environment to its Virtual Key. Keep the
+key out of source control. Claude Code stores the expanded header in its local
+configuration when you run this command:
+
+```sh
+claude mcp add --transport http tokomotive https://router.example.com/mcp \
+  --header "Authorization: Bearer $TOKOMOTIVE_KEY"
+```
+
+For Codex, add this entry to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.tokomotive]
+url = "https://router.example.com/mcp"
+bearer_token_env_var = "TOKOMOTIVE_KEY"
+```
+
+For Cursor, add this entry to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "tokomotive": {
+      "url": "https://router.example.com/mcp",
+      "headers": {"Authorization": "Bearer ${env:TOKOMOTIVE_KEY}"}
+    }
+  }
+}
+```
+
+These examples follow the client documentation for
+[Claude Code](https://code.claude.com/docs/en/mcp),
+[Codex](https://developers.openai.com/codex/mcp) and
+[Cursor](https://cursor.com/docs/context/mcp).
+
+### Protocol, limits and logs
+
+The gateway negotiates MCP `2025-06-18`. It accepts JSON-RPC over POST, returns
+JSON responses, and accepts JSON or SSE from upstream servers. It implements
+`initialize`, `notifications/initialized`, `ping`, `tools/list` and `tools/call`.
+Other notifications are accepted without action. Resources, prompts, sampling,
+elicitation, progress, cancellation, tasks and server-initiated requests are not
+supported, including on a single-server endpoint. GET returns HTTP 405; there is
+no notification stream. OAuth and the old HTTP+SSE transport are not supported.
+
+Clients must finish initialization and retain `Mcp-Session-Id`. Send the negotiated
+version in `MCP-Protocol-Version` on later requests. Unsupported versions get HTTP
+400. Sessions are bound to the key and endpoint, expire after 30 idle minutes,
+and have limits of 1024 total and 16 per key. HTTP 404 means the client must
+initialize again. DELETE ends a session. Upstream sessions are opened on first
+use and are separate for each client session. An upstream 404 clears that mapping;
+the next request initializes it again. Tool calls are never retried automatically.
+Restarting the gateway clears sessions. Use one process, or sticky routing.
+
+The gateway permits at most 64 servers and 64 upstream mappings per session.
+Each upstream request has a 5-second connect timeout and a 20-second total timeout.
+DNS has a 5-second timeout and a 32-address limit. Client requests have a 1 MiB
+body limit. Each upstream response is limited to 4 MiB. SSE is limited to 128
+events and 1 MiB per event. Discovery permits at most 16 upstream pages and 2048
+tools per server, with a 4 MiB combined list limit. The aggregate list also has
+a 2048-tool and 4 MiB limit. Client pages contain at most 100 tools. Send the
+returned `nextCursor` as `params.cursor`; do not treat it as a URL. Discovery is
+not a snapshot: if tools change between pages, restart discovery. Concurrent
+requests to the same upstream session get a busy error instead of queuing.
+
+The **MCP tool calls** page lists time, key, User, server, tool, status, latency
+and error class, with search and page controls. Arguments, results, credentials
+and upstream error messages are not stored. The LLM body-capture setting does
+not enable MCP body capture. An entry is written before dispatch. Status `unknown`
+and error class `incomplete` mean that the call did not record a final outcome,
+for example after a client disconnect or restart. The tool might have run. Check
+the upstream before you retry a tool that changes data. Valid tool call attempts, including denied calls,
+count against key and User RPM limits in both operating modes. A rate rejection
+returns HTTP 429, a JSON-RPC error and `Retry-After`. MCP calls do not consume TPM
+or create LLM token charges. The Prometheus counter
+`tokomotive_mcp_tool_calls_total` has `status` and `error_class` labels.
+
 ## Unofficial subscription sign-in
 
 These flows use public client IDs and private Provider routes. They can stop

@@ -87,6 +87,7 @@ impl Drop for Reservation {
 pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
+    pub mcp: crate::mcp::Sessions,
     pub db: Db,
     pub limiter: crate::ratelimit::RateLimiter,
     #[cfg(test)]
@@ -151,6 +152,7 @@ impl AppState {
             crate::observability::load(&db, &secret_key).await?,
         )?;
         Ok(AppState(Arc::new(Inner {
+            mcp: crate::mcp::Sessions::default(),
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
             #[cfg(test)]

@@ -40,6 +40,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)) or b"{}")
+        if self.path == "/mcp":
+            method = body.get("method")
+            if method == "notifications/initialized":
+                self.send_response(202)
+                self.send_header("content-length", "0")
+                self.end_headers()
+                return
+            if method == "initialize":
+                result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "Demo tools", "version": "1"}}
+            elif method == "tools/list":
+                result = {"tools": [
+                    {"name": "search_docs", "description": "Search the product documentation.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                    {"name": "read_ticket", "description": "Read a support ticket by its number.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}}},
+                ]}
+            else:
+                result = {"content": [{"type": "text", "text": "Demo result"}]}
+            return self.send_json(200, {"jsonrpc": "2.0", "id": body.get("id"), "result": result}, {"mcp-session-id": "demo-mcp-session"})
         model = body.get("model", "unknown")
         stream = bool(body.get("stream"))
         anthropic = self.path.endswith("/messages")

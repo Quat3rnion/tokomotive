@@ -8,6 +8,8 @@
   ],
   "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],
   "captures": [
+    {"image":"mcp-servers.png", "page":"/admin/mcp", "route":"/admin/mcp", "recipe":"mcp-servers", "caption":"MCP servers", "alt":"MCP servers with masked credentials, a connection test and cached tool descriptions.", "kind":"table"},
+    {"image":"mcp-log.png", "page":"/admin/mcp/log?limit=10", "route":"/admin/mcp/log", "recipe":"mcp-log", "caption":"MCP tool calls", "alt":"The MCP tool call log with key, User, server, tool, status, latency and error class. Arguments and results are not stored.", "kind":"table"},
     {"image":"overview.png", "page":"/admin", "route":"/admin", "recipe":"overview", "caption":"Overview", "alt":"The Overview page in Full Mode. It shows the Proxy base URL, the totals for 24 hours, three charts and the By Model table.", "kind":"hero"},
     {"image":"routes.png", "page":"/admin/routes", "route":"/admin/routes", "recipe":"routes", "caption":"Routes", "alt":"The Routes page. The Route \"smart\" uses the weighted strategy with three Deployments on two Providers and two Fallbacks.", "kind":"hero"},
     {"image":"ledger.png", "page":"/admin/ledger", "route":"/admin/ledger", "recipe":"ledger", "caption":"Ledger", "alt":"The newest Ledger Entries with the filters. Each row shows the User, the Model and Provider, the status, the flags, the tokens, the amounts and the latency.", "kind":"table"},
@@ -27,6 +29,7 @@
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"Rule sets, Route attachments and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
+    {"route":"/admin/mcp/search", "reason":"Search result fragment for the MCP tool access picker."},
     {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page."},
     {"route":"/admin/assets/htmx.min.js", "reason":"JavaScript asset, not an HTML page."},
     {"route":"/admin/assets/favicon.svg", "reason":"SVG asset, not an HTML page."},

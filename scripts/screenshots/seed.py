@@ -100,4 +100,23 @@ for i in range(1, 61):
 WORKDIR.mkdir(parents=True, exist_ok=True)
 KEYS.write_text(json.dumps(keys))
 KEYS.chmod(0o600)
+
+# Exercise real MCP forms and requests. All endpoints are local demo fixtures.
+post("/admin/mcp", {"name": "research", "url": MOCK.rstrip("/") + "/mcp", "auth": "bearer", "secret": "demo-mcp-credential", "allow_private": "on", "enabled": "on"})
+html = s.get(B + "/admin/mcp", timeout=30).text
+mcp_id = re.search(r'action="/admin/mcp/(\d+)/test"', html).group(1)
+post(f"/admin/mcp/{mcp_id}/test", {})
+html = s.get(B + "/admin/keys?user=ci-pipeline", timeout=30).text
+key_id = re.search(r'action="/admin/keys/(\d+)/mcp"', html).group(1)
+post(f"/admin/keys/{key_id}/mcp", {"mcp_allow": "research/*"})
+mcp = requests.Session()
+mcp.headers.update({"Authorization": "Bearer " + keys["ci-pipeline"][0], "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18"})
+r = mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "demo", "version": "1"}}}, timeout=30)
+r.raise_for_status()
+mcp.headers["Mcp-Session-Id"] = r.headers["Mcp-Session-Id"]
+mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, timeout=30).raise_for_status()
+for i in range(16):
+    r = mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "id": i + 2, "method": "tools/call", "params": {"name": "research__search_docs", "arguments": {"query": "demo"}}}, timeout=30)
+    r.raise_for_status()
+    assert "result" in r.json(), r.text
 print("keys", sum(map(len, keys.values())))

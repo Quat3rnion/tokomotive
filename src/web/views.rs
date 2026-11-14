@@ -796,6 +796,7 @@ impl UsersPage {
 }
 
 pub struct TeamView {
+    pub mcp_access: crate::mcp::data::Access,
     pub budget_view: BudgetView,
     pub id: i64,
     pub name: String,
@@ -819,6 +820,7 @@ impl TeamsPage {
             teams: teams
                 .iter()
                 .map(|t| TeamView {
+                    mcp_access: Default::default(),
                     budget_view: Default::default(),
                     id: t.id,
                     name: t.name.clone(),
@@ -837,6 +839,7 @@ impl TeamsPage {
 // -------------------------------------------------------------------- keys
 
 pub struct KeyView {
+    pub mcp_access: crate::mcp::data::Access,
     pub capture_bodies: bool,
     pub budget_view: BudgetView,
     pub expires: String,
@@ -895,6 +898,7 @@ impl KeysPage {
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
             let view = KeyView {
+                mcp_access: Default::default(),
                 capture_bodies: k.capture_bodies,
                 budget_view: Default::default(),
                 expires: String::new(),

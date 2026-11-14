@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}MCP tool calls - Tokomotive{% endblock %}
+{% block nav_mcp %}aria-current="page"{% endblock %}
+{% block content %}
+<h1>MCP tool calls</h1><p class="muted"><a href="/admin/mcp">MCP servers</a>. This log does not store arguments, results or upstream error messages. Tool calls count against key and User RPM limits.</p>
+{% include "search.html" %}
+<div class="panel scroll"><table><thead><tr><th scope="col">Time (UTC)</th><th scope="col">Key</th><th scope="col">User</th><th scope="col">Server</th><th scope="col">Tool</th><th scope="col">Status</th><th scope="col">Latency (ms)</th><th scope="col">Error class</th></tr></thead><tbody>{% for c in calls %}<tr><td>{{ c.time() }}</td><td>{{ c.key_name }}</td><td>{{ c.user_name }}</td><td>{{ c.server }}</td><td>{{ c.tool }}</td><td>{{ c.status }}</td><td>{{ c.latency_ms }}</td><td>{{ c.error_class }}</td></tr>{% else %}<tr><td colspan="8" class="empty">No MCP tool calls.</td></tr>{% endfor %}</tbody></table></div>
+{% include "pager.html" %}
+{% endblock %}

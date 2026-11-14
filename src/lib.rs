@@ -11,6 +11,7 @@ pub mod config;
 pub mod db;
 pub mod egress;
 pub mod guardrails;
+pub mod mcp;
 pub mod metrics;
 pub mod model_search;
 pub mod models_dev;
@@ -71,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/batches/{*rest}", any(batches::handle))
         .route("/v1/{*rest}", any(proxy::handle))
         .merge(web::router(state.clone()))
+        .merge(mcp::router())
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }

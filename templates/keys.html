@@ -101,6 +101,7 @@
         <div class="form-error" role="alert" tabindex="-1"></div>
         <div class="row"><button aria-label="Save key {{ k.prefix }}">Save</button><button type="button" class="ghost" data-toggle="edit-k{{ k.id }}">Cancel</button></div>
       </form>
+      <form method="post" action="/admin/keys/{{ k.id }}/mcp" class="subform" aria-label="MCP access for key {{ k.prefix }}">{% call picker::mcp_access(k.mcp_access.all, k.mcp_access.display()) %}<div class="form-error" role="alert" tabindex="-1"></div><button class="ghost">Save MCP access</button></form>
       <form method="post" action="/admin/keys/{{ k.id }}/capture" class="subform" aria-label="Body capture for key {{ k.prefix }}">
         <fieldset aria-describedby="cap-k{{ k.id }}-help">
           <legend>Diagnostics</legend>

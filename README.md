@@ -39,6 +39,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ### Compatibility
 
+- Provides an [MCP gateway](docs/usage.md#mcp-gateway) with encrypted upstream
+  credentials, Virtual Key and Team tool access, and a tool call log.
 - Supports OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/responses`,
   `/v1/embeddings`, `/v1/images/generations`, `/v1/images/edits`) and the
   Anthropic API (`/v1/messages`), with and without streaming.
@@ -145,6 +147,8 @@ The capture manifest records these changes for the next image refresh.
 | [Settings](docs/images/settings.png) | The operating mode, routing settings, metrics and alert controls. |
 | [Audit log](docs/images/audit.png) | The audit log: who changed what and when, with filters and the pager. |
 | [Guardrails](docs/images/guardrails.png) | Rule sets, Route attachments and a test box for pasted text. |
+| [MCP servers](docs/images/mcp-servers.png) | MCP servers with masked credentials, a connection test and cached tool descriptions. |
+| [MCP tool calls](docs/images/mcp-log.png) | The MCP tool call log with key, User, server, tool, status, latency and error class. Arguments and results are not stored. |
 
 ## Quick start
 
