@@ -181,6 +181,8 @@ pub struct RatesCfg {
     pub image_input: f64,
     #[serde(default)]
     pub image_output: f64,
+    #[serde(default)]
+    pub service_units: f64,
 }
 
 // No deny_unknown_fields: serde does not support it with flatten.
@@ -284,6 +286,7 @@ impl RatesCfg {
             cache_write_1h: usd_to_micros(self.cache_write_1h),
             image_input: usd_to_micros(self.image_input),
             image_output: usd_to_micros(self.image_output),
+            service_units: usd_to_micros(self.service_units),
         }
     }
 

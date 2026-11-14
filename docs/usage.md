@@ -127,6 +127,25 @@ The Proxy writes a zero-Cost, zero-Price Ledger Entry for audit and metrics.
 Counts do not consume the token Rate Limit. A zero Reservation applies to a
 User with a Budget; counting cannot add inference charges.
 
+`POST /v1/rerank` accepts a Cohere-style JSON body with `model`, `query` and
+non-empty `documents`. The body limit is 1 MiB. Streaming is not supported.
+A `cohere` Provider uses `/v2/rerank`; an OpenAI-compatible Provider uses
+`/v1/rerank`. You can use the latter for Jina or Voyage. Provider-specific
+options pass through. The Proxy does not convert optional options or responses.
+Model routing, Model permissions, Provider Access, Rate Limits and Budgets apply.
+
+The Proxy records Cohere `meta.billed_units.search_units` as Service units.
+For Jina and Voyage, `usage.total_tokens` (or `prompt_tokens`) is Input.
+Set the Model's `service_units` Cost/Price rate in dollars per million search
+units, or set its Input rate for a token-based Provider. For example, $0.002 per
+search unit is `service_units=2000` in a seed card. Blank rates are zero.
+Service units have their own Ledger and `llm_service_units_total` counts; they
+do not consume TPM. Card Versions, Markup and Team overrides apply as for tokens.
+Amounts are frozen on the Ledger Entry under ADR 0002. If usage is absent, the
+Proxy records an Estimated Entry with one search unit per request byte. This is
+a conservative estimate, not a Provider bill. Budget Reservations allow one
+search unit and one input token per request byte across all candidate Models.
+
 | Path ends with                             | Native Provider kind | Usage that the Proxy records                  |
 | ------------------------------------------ | ------------- | --------------------------------------------- |
 | `/chat/completions`                        | `openai`      | Input, output, cache read                     |
@@ -134,6 +153,7 @@ User with a Budget; counting cannot add inference charges.
 | `/embeddings`                              | `openai`      | Input                                         |
 | `/images/generations`, `/images/edits`     | `openai`      | Input, cache read, image input, image output  |
 | `/messages`                                | `anthropic`   | Input, output, cache read, cache write 5 minutes, cache write 1 hour |
+| `/v1/rerank` (exact path)                   | `cohere` or `openai` | Search units or input tokens |
 
 The Proxy forwards every path under `/v1/` to the Provider, for all HTTP
 methods. The Proxy does not read usage for other paths. It records them as

@@ -12,12 +12,13 @@
   <label>Cache write 1h <input name="cache_write_1h" value="{{ r.cache_write_1h }}" inputmode="decimal" autocomplete="off"></label>
   <label>Image input <input name="image_input" value="{{ r.image_input }}" inputmode="decimal" autocomplete="off"></label>
   <label>Image output <input name="image_output" value="{{ r.image_output }}" inputmode="decimal" autocomplete="off"></label>
+  <label>Service units <input name="service_units" value="{{ r.service_units }}" inputmode="decimal" autocomplete="off"></label>
 </div>
-<p class="hint">Dollars per million tokens. A blank rate is 0.</p>
+<p class="hint">Dollars per million tokens or Service units. Service units are non-token counts defined by the endpoint. A blank rate is 0.</p>
 <div class="field tiers">
   <label for="{{ id }}-tiers">Context Tiers (optional)</label>
   <textarea id="{{ id }}-tiers" name="tiers" rows="2" spellcheck="false" autocomplete="off" aria-describedby="{{ id }}-tiers-help">{{ r.tiers }}</textarea>
-  <p class="hint" id="{{ id }}-tiers-help">For long prompts with other rates. One tier per line, 6 or 8 numbers: input tokens above which the tier applies, then Input, Output, Cache read, Cache write 5m, Cache write 1h, and optionally Image input and Image output. Input tokens include cache tokens. Example: <code>200000 6 22.5 0.6 7.5 12</code></p>
+  <p class="hint" id="{{ id }}-tiers-help">For long prompts with other rates. One tier per line, 6, 8 or 9 numbers: input tokens above which the tier applies, then Input, Output, Cache read, Cache write 5m, Cache write 1h, optionally Image input and Image output, then Service units. Input tokens include cache tokens. Example: <code>200000 6 22.5 0.6 7.5 12</code></p>
 </div>
 <label class="check"><input type="checkbox" name="allow_zero" value="1"> Input and Output are $0 on purpose</label>
 {% endmacro %}

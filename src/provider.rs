@@ -144,6 +144,7 @@ pub enum Endpoint {
     Responses,
     Messages,
     CountTokens,
+    Rerank,
     Embeddings,
     /// `/v1/images/generations` and `/v1/images/edits`.
     Images,
@@ -156,6 +157,8 @@ impl Endpoint {
         let p = path.trim_end_matches('/');
         if p == "/v1/messages/count_tokens" {
             Endpoint::CountTokens
+        } else if p == "/v1/rerank" {
+            Endpoint::Rerank
         } else if p.ends_with("/chat/completions") {
             Endpoint::ChatCompletions
         } else if p.ends_with("/responses") {
@@ -179,6 +182,7 @@ impl Endpoint {
             | Endpoint::Embeddings
             | Endpoint::Images => Some(ProviderKind::Openai),
             Endpoint::Messages | Endpoint::CountTokens => Some(ProviderKind::Anthropic),
+            Endpoint::Rerank => Some(ProviderKind::Cohere),
             Endpoint::Other => None,
         }
     }
@@ -193,6 +197,7 @@ impl Endpoint {
             Endpoint::Responses => "responses",
             Endpoint::Messages => "messages",
             Endpoint::CountTokens => "count_tokens",
+            Endpoint::Rerank => "rerank",
             Endpoint::Embeddings => "embeddings",
             Endpoint::Images => "images",
             Endpoint::Other => "other",
@@ -234,6 +239,9 @@ impl ProviderKind {
 
     /// Usage from a non-streamed JSON response body.
     pub fn usage_from_json(&self, endpoint: Endpoint, v: &Value) -> Option<Usage> {
+        if endpoint == Endpoint::Rerank {
+            return rerank_usage(v);
+        }
         match (self, endpoint) {
             (ProviderKind::Openai, Endpoint::Images) => image_usage(v.get("usage")?),
             (ProviderKind::Openai, _) => openai_usage(usage_object(v)?),
@@ -258,6 +266,29 @@ impl ProviderKind {
 
 pub fn is_stream(body: &Value) -> bool {
     body.get("stream").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn rerank_usage(v: &Value) -> Option<Usage> {
+    if let Some(n) = v
+        .pointer("/meta/billed_units/search_units")
+        .or_else(|| v.pointer("/usage/billed_units/search_units"))
+        .and_then(Value::as_i64)
+    {
+        return Some(Usage {
+            service_units: n,
+            ..Default::default()
+        });
+    }
+    // Voyage reports total_tokens; Jina reports total_tokens or prompt_tokens.
+    let usage = v.get("usage")?;
+    let n = usage
+        .get("total_tokens")
+        .or_else(|| usage.get("prompt_tokens"))?
+        .as_i64()?;
+    Some(Usage {
+        input: n,
+        ..Default::default()
+    })
 }
 
 /// Google counts cached input inside promptTokenCount, but thoughts separately

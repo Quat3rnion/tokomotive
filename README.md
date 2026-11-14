@@ -35,6 +35,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   Anthropic API (`/v1/messages`), with and without streaming.
 - Counts input tokens at `POST /v1/messages/count_tokens`. Non-Anthropic
   deployments return a marked estimate without an inference charge.
+- Routes `POST /v1/rerank` to Cohere or compatible Providers, with search-unit
+  or input-token accounting.
 - Translates between Chat Completions and Messages, with streaming and tools.
   A Chat Completions client can use an Anthropic Provider. A Messages client
   can use an OpenAI Provider. See [Translation](docs/usage.md#routing-and-translation)

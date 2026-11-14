@@ -55,6 +55,9 @@ async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Res
 
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
+    if endpoint == Endpoint::Rerank {
+        return matches!(kind, ProviderKind::Cohere | ProviderKind::Openai);
+    }
     if endpoint == Endpoint::CountTokens {
         return compatible(kind, Endpoint::Messages);
     }
@@ -96,6 +99,7 @@ fn subscription_path_allowed(endpoint: Endpoint, path_q: &str) -> bool {
         Endpoint::Responses => path == "/v1/responses",
         Endpoint::Messages => path == "/v1/messages",
         Endpoint::CountTokens => path == "/v1/messages/count_tokens",
+        Endpoint::Rerank => path == "/v1/rerank",
         Endpoint::Embeddings => path == "/v1/embeddings",
         Endpoint::Images => path == "/v1/images/generations" || path == "/v1/images/edits",
         Endpoint::Other => false,
@@ -115,7 +119,7 @@ fn prepare_body(
     endpoint: Endpoint,
     body: Option<&Value>,
 ) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
-    if endpoint == Endpoint::CountTokens {
+    if matches!(endpoint, Endpoint::CountTokens | Endpoint::Rerank) {
         let mut prepared = body.cloned().unwrap_or(Value::Null);
         if candidate.rewrite {
             prepared["model"] = json!(candidate.model);
@@ -562,6 +566,21 @@ fn worst_case_price(
     if endpoint == Endpoint::CountTokens {
         return 0;
     }
+    if endpoint == Endpoint::Rerank {
+        // A provider can split long documents into search units. Reserve one
+        // unit per request byte, as well as one token per byte for token APIs.
+        return catalog
+            .quote(
+                model,
+                team_id,
+                &Usage {
+                    service_units: body_len as i64,
+                    input: body_len as i64,
+                    ..Default::default()
+                },
+            )
+            .price_micros;
+    }
     let max_out = body
         .and_then(|body| {
             translate::output_token_limit(body)
@@ -613,6 +632,28 @@ pub async fn handle(
         serde_json::from_slice(&body).ok()
     };
     let requested_model = json_body.as_ref().and_then(model_of);
+    if endpoint == Endpoint::Rerank {
+        if body.len() > extra::COUNT_BODY_LIMIT {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                "rerank body exceeds 1 MiB",
+            );
+        }
+        if requested_model.is_none()
+            || json_body.as_ref().is_none_or(|v| {
+                !v["query"].is_string()
+                    || v["documents"].as_array().is_none_or(Vec::is_empty)
+                    || is_stream(v)
+            })
+        {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "model, query and non-empty documents are required; streaming is not supported",
+            );
+        }
+    }
     if endpoint == Endpoint::CountTokens {
         if body.len() > extra::COUNT_BODY_LIMIT {
             return error(
@@ -950,7 +991,12 @@ pub async fn handle(
                 });
                 continue;
             }
-            path = "/v2/chat".into();
+            path = if endpoint == Endpoint::Rerank {
+                "/v2/rerank"
+            } else {
+                "/v2/chat"
+            }
+            .into();
         }
         if codex && (method != Method::POST || !subscription_path_allowed(endpoint, path_q)) {
             translation_error = Some(translate::TranslateError {
@@ -1287,6 +1333,7 @@ pub async fn handle(
     });
     let kind = ctx.provider.kind;
     if kind == ProviderKind::Cohere
+        && endpoint != Endpoint::Rerank
         && status.is_success()
         && parsed.as_ref().is_none_or(|v| {
             !v["message"].is_object()
@@ -1341,7 +1388,16 @@ pub async fn handle(
     ctx.finish(Outcome {
         status: status.as_u16(),
         model,
-        usage: usage.unwrap_or_default(),
+        usage: usage.unwrap_or_else(|| {
+            if status.is_success() && endpoint == Endpoint::Rerank {
+                Usage {
+                    service_units: body.len() as i64,
+                    ..Default::default()
+                }
+            } else {
+                Usage::default()
+            }
+        }),
         reported_cost_micros: parsed
             .as_ref()
             .and_then(crate::provider::reported_cost_micros),
@@ -1350,10 +1406,11 @@ pub async fn handle(
         client_aborted: false,
     });
 
-    let bytes = if matches!(
-        kind,
-        ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
-    ) {
+    let bytes = if endpoint != Endpoint::Rerank
+        && matches!(
+            kind,
+            ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
+        ) {
         out_headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),

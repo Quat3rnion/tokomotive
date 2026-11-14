@@ -936,6 +936,7 @@ impl KeysPage {
 /// form: no value in any field.
 #[derive(Clone, Default)]
 pub struct RatesView {
+    pub service_units: String,
     pub input: String,
     pub output: String,
     pub cache_read: String,
@@ -959,6 +960,7 @@ impl RatesView {
                 x.cache_write_1h,
                 x.image_input,
                 x.image_output,
+                x.service_units,
             ]
             .map(fmt_rate)
         };
@@ -971,6 +973,7 @@ impl RatesView {
             cache_write_1h: b[4].clone(),
             image_input: b[5].clone(),
             image_output: b[6].clone(),
+            service_units: b[7].clone(),
             has_image: std::iter::once(&c.base)
                 .chain(c.tiers.iter().map(|t| &t.rates))
                 .any(|x| x.image_input != 0 || x.image_output != 0),
@@ -980,7 +983,9 @@ impl RatesView {
                 .map(|t| {
                     let v = r(&t.rates);
                     // Leave out the image rates when they are zero.
-                    let n = if t.rates.image_input == 0 && t.rates.image_output == 0 {
+                    let n = if t.rates.service_units != 0 {
+                        8
+                    } else if t.rates.image_input == 0 && t.rates.image_output == 0 {
                         5
                     } else {
                         7
@@ -1012,6 +1017,9 @@ impl RatesView {
         if self.has_image {
             v.push(("Image input", self.image_input.clone()));
             v.push(("Image output", self.image_output.clone()));
+        }
+        if self.service_units != "0.00" {
+            v.push(("Service units", self.service_units.clone()));
         }
         if self.tier_count > 0 {
             v.push(("Context Tiers", self.tier_count.to_string()));
@@ -1275,6 +1283,7 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub service_units: String,
     pub id: i64,
     pub time: Stamp,
     pub user: String,
@@ -1362,6 +1371,7 @@ impl LedgerView {
             })
             .unwrap_or_default();
         LedgerView {
+            service_units: int(r.service_units),
             id: r.id,
             time,
             user: r.user.clone(),

@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/models", get(proxy::list_models))
         .route("/v1/models/{id}", get(proxy::get_model))
         .route("/v1/messages/count_tokens", post(proxy::handle))
+        .route("/v1/rerank", post(proxy::handle))
         .route("/v1/{*rest}", any(proxy::handle))
         .merge(web::router())
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))

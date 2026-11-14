@@ -15,6 +15,9 @@ pub struct Usage {
     pub image_input: i64,
     #[serde(default)]
     pub image_output: i64,
+    /// Non-token units, defined by the endpoint (for example search units).
+    #[serde(default)]
+    pub service_units: i64,
 }
 
 impl Usage {
@@ -35,6 +38,7 @@ impl Usage {
             cache_write_1h: c(self.cache_write_1h),
             image_input: c(self.image_input),
             image_output: c(self.image_output),
+            service_units: c(self.service_units),
         }
     }
 
@@ -54,7 +58,7 @@ impl Usage {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total() == 0
+        self.total() == 0 && self.service_units == 0
     }
 }
 
@@ -72,6 +76,7 @@ mod overflow_tests {
             cache_write_1h: i64::MAX,
             image_input: i64::MAX,
             image_output: i64::MAX,
+            service_units: i64::MAX,
         }
         .bounded();
         assert!(u.total() > 0);

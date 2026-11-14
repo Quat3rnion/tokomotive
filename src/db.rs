@@ -614,8 +614,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let id = sqlx::query(
         "INSERT INTO ledger(ts_ms, user_id, key_id, team_id, provider, endpoint, requested_model, model, model_id, status, streamed,
             input, output, cache_read, cache_write_5m, cache_write_1h, cost_micros, price_micros, cost_card_id, price_card_id,
-            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription, reported_cost_micros, session_affinity)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription, reported_cost_micros, session_affinity, service_units)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(e.ts_ms)
     .bind(e.user_id)
@@ -649,6 +649,7 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(e.subscription)
     .bind(e.reported_cost_micros)
     .bind(&e.session_affinity)
+    .bind(u.service_units)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -657,8 +658,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let error = (e.status >= 400) as i64;
     sqlx::query(
         "INSERT INTO rollup_hourly(hour, user_id, model, requests, errors, input, output, cache_read, cache_write_5m, cache_write_1h,
-            cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count, image_input, image_output)
-         VALUES(?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count, image_input, image_output, service_units)
+         VALUES(?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(hour, user_id, model) DO UPDATE SET
             requests = requests + 1, errors = errors + excluded.errors,
             input = input + excluded.input, output = output + excluded.output,
@@ -668,7 +669,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
             cost_micros = cost_micros + excluded.cost_micros, price_micros = price_micros + excluded.price_micros,
             latency_ms_sum = latency_ms_sum + excluded.latency_ms_sum,
             ttft_ms_sum = ttft_ms_sum + excluded.ttft_ms_sum, ttft_count = ttft_count + excluded.ttft_count,
-            image_input = image_input + excluded.image_input, image_output = image_output + excluded.image_output",
+            image_input = image_input + excluded.image_input, image_output = image_output + excluded.image_output,
+            service_units = service_units + excluded.service_units",
     )
     .bind(hour)
     .bind(e.user_id)
@@ -686,6 +688,7 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(e.ttft_ms.is_some() as i64)
     .bind(u.image_input)
     .bind(u.image_output)
+    .bind(u.service_units)
     .execute(&mut *tx)
     .await?;
 
@@ -712,7 +715,7 @@ pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
     loop {
         let rows = sqlx::query(
         "SELECT id, ts_ms, user_id, team_id, requested_model, model, input, output, cache_read, cache_write_5m, cache_write_1h,
-            image_input, image_output, subscription
+            image_input, image_output, service_units, subscription
          FROM ledger WHERE unpriced = 1 AND id>? ORDER BY id LIMIT 200",
     )
     .bind(after)
@@ -731,6 +734,7 @@ pub async fn reprice_unpriced(db: &Db, catalog: &Catalog) -> Result<u64> {
                 cache_write_1h: r.get("cache_write_1h"),
                 image_input: r.get("image_input"),
                 image_output: r.get("image_output"),
+                service_units: r.get("service_units"),
             };
             let model: Option<String> = r
                 .get::<Option<String>, _>("model")
@@ -794,11 +798,11 @@ async fn rebuild_rollup_hour(
         .await?;
     sqlx::query(
         "INSERT INTO rollup_hourly(hour, user_id, model, requests, errors, input, output, cache_read, cache_write_5m,
-            cache_write_1h, cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count, image_input, image_output)
+            cache_write_1h, cost_micros, price_micros, latency_ms_sum, ttft_ms_sum, ttft_count, image_input, image_output, service_units)
          SELECT ?1, user_id, COALESCE(m.name, l.model, l.requested_model, ''), COUNT(*), SUM(status >= 400),
             SUM(input), SUM(output), SUM(cache_read), SUM(cache_write_5m), SUM(cache_write_1h),
             SUM(cost_micros), SUM(price_micros), SUM(latency_ms), IFNULL(SUM(ttft_ms), 0), COUNT(ttft_ms),
-            SUM(image_input), SUM(image_output)
+            SUM(image_input), SUM(image_output), SUM(service_units)
          FROM ledger l LEFT JOIN models m ON m.id = l.model_id
          WHERE ts_ms >= ?1 * 1000 AND ts_ms < (?1 + 3600) * 1000
          GROUP BY user_id, COALESCE(m.name, l.model, l.requested_model, '')",
@@ -813,6 +817,7 @@ async fn rebuild_rollup_hour(
 
 #[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct Totals {
+    pub service_units: i64,
     pub requests: i64,
     pub errors: i64,
     pub input: i64,
@@ -835,7 +840,8 @@ const TOTALS_COLS: &str = "IFNULL(SUM(requests),0) AS requests, IFNULL(SUM(error
     IFNULL(SUM(cost_micros),0) AS cost_micros, IFNULL(SUM(price_micros),0) AS price_micros,
     IFNULL(SUM(latency_ms_sum),0) AS latency_ms_sum, IFNULL(SUM(ttft_ms_sum),0) AS ttft_ms_sum,
     IFNULL(SUM(ttft_count),0) AS ttft_count,
-    IFNULL(SUM(image_input),0) AS image_input, IFNULL(SUM(image_output),0) AS image_output";
+    IFNULL(SUM(image_input),0) AS image_input, IFNULL(SUM(image_output),0) AS image_output,
+    IFNULL(SUM(service_units),0) AS service_units";
 
 pub async fn totals_since(db: &Db, since_s: i64) -> Result<Totals> {
     Ok(sqlx::query_as(&format!(
@@ -956,7 +962,7 @@ async fn grouped_page(
         "SELECT {key} AS key, COUNT(*) AS requests, SUM(l.status >= 400) AS errors,
             SUM(l.input) AS input, SUM(l.output) AS output, SUM(l.cache_read) AS cache_read,
             SUM(l.cache_write_5m) AS cache_write_5m, SUM(l.cache_write_1h) AS cache_write_1h,
-            SUM(l.image_input) AS image_input, SUM(l.image_output) AS image_output,
+            SUM(l.image_input) AS image_input, SUM(l.image_output) AS image_output, SUM(l.service_units) AS service_units,
             SUM(l.cost_micros) AS cost_micros, SUM(l.price_micros) AS price_micros,
             SUM(l.latency_ms) AS latency_ms_sum, IFNULL(SUM(l.ttft_ms),0) AS ttft_ms_sum,
             COUNT(l.ttft_ms) AS ttft_count, SUM(l.attempts) AS attempts, SUM(l.attempts > 1) AS retried
@@ -1054,6 +1060,7 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub service_units: i64,
     pub id: i64,
     pub ts_ms: i64,
     pub user: String,
@@ -1150,7 +1157,7 @@ pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<Ledger
         "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
-            l.image_input, l.image_output, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity
+            l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
     );
     b.push(match q.filter {

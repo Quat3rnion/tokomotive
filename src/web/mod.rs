@@ -1716,6 +1716,8 @@ struct RatesForm {
     #[serde(default)]
     image_output: String,
     #[serde(default)]
+    service_units: String,
+    #[serde(default)]
     tiers: String,
     /// The check box "Input and Output are $0 on purpose".
     #[serde(default)]
@@ -1730,7 +1732,7 @@ enum CardUse {
     Price,
 }
 
-const RATE_LABELS: [&str; 7] = [
+const RATE_LABELS: [&str; 8] = [
     "Input",
     "Output",
     "Cache read",
@@ -1738,6 +1740,7 @@ const RATE_LABELS: [&str; 7] = [
     "Cache write 1h",
     "Image input",
     "Image output",
+    "Service units",
 ];
 
 /// One rate in dollars per million tokens. Blank is 0; negative is refused.
@@ -1755,7 +1758,7 @@ fn rate(label: &str, s: &str) -> Result<i64, Response> {
     }
 }
 
-fn rates_of(v: [i64; 7]) -> Rates {
+fn rates_of(v: [i64; 8]) -> Rates {
     Rates {
         input: v[0],
         output: v[1],
@@ -1764,11 +1767,12 @@ fn rates_of(v: [i64; 7]) -> Rates {
         cache_write_1h: v[4],
         image_input: v[5],
         image_output: v[6],
+        service_units: v[7],
     }
 }
 
 impl RatesForm {
-    fn fields(&self) -> [&str; 7] {
+    fn fields(&self) -> [&str; 8] {
         [
             &self.input,
             &self.output,
@@ -1777,6 +1781,7 @@ impl RatesForm {
             &self.cache_write_1h,
             &self.image_input,
             &self.image_output,
+            &self.service_units,
         ]
     }
 
@@ -1787,13 +1792,17 @@ impl RatesForm {
         if self.fields().iter().all(|s| s.trim().is_empty()) && self.tiers.trim().is_empty() {
             return Ok(None);
         }
-        let mut v = [0; 7];
+        let mut v = [0; 8];
         for (i, s) in self.fields().iter().enumerate() {
             v[i] = rate(RATE_LABELS[i], s)?;
         }
         let base = rates_of(v);
         let tiers = parse_tiers(&self.tiers)?;
-        if base.input == 0 && base.output == 0 && self.allow_zero.is_empty() {
+        if base.input == 0
+            && base.output == 0
+            && base.service_units == 0
+            && self.allow_zero.is_empty()
+        {
             return Err(bad(match card {
                 CardUse::NewModel => {
                     "The Input and Output rates are 0, so the requests of this Model would have no Cost and would not be flagged as Unpriced. Select \"Input and Output are $0 on purpose\" to save a $0 Cost Card, or leave all rates blank to keep the Model Unpriced."
@@ -1813,7 +1822,7 @@ impl RatesForm {
 /// One tier per line: `above_input_tokens input output cache_read
 /// cache_write_5m cache_write_1h [image_input image_output]`.
 fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
-    const HELP: &str = "Write 6 or 8 numbers: the input tokens above which the tier applies, then the Input, Output, Cache read, Cache write 5m and Cache write 1h rates, and optionally the Image input and Image output rates.";
+    const HELP: &str = "Write 6, 8 or 9 numbers: the input tokens above which the tier applies, then the Input, Output, Cache read, Cache write 5m and Cache write 1h rates, optionally Image input and Image output, then Service units.";
     let mut out = vec![];
     for (n, line) in s.lines().map(str::trim).enumerate() {
         let n = n + 1;
@@ -1821,7 +1830,7 @@ fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() != 6 && parts.len() != 8 {
+        if parts.len() != 6 && parts.len() != 8 && parts.len() != 9 {
             return Err(bad(format!(
                 "Context Tier line {n} has {} numbers. {HELP}",
                 parts.len()
@@ -1833,7 +1842,7 @@ fn parse_tiers(s: &str) -> Result<Vec<ContextTier>, Response> {
                 parts[0]
             ))
         })?;
-        let mut v = [0; 7];
+        let mut v = [0; 8];
         for (i, p) in parts[1..].iter().enumerate() {
             v[i] = rate(&format!("Context Tier line {n} {}", RATE_LABELS[i]), p)?;
         }

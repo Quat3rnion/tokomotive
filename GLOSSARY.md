@@ -36,9 +36,11 @@
 
 **Token Class** - One billable category of tokens: input, output, cache read, cache write (5 minute), cache write (1 hour), image input, image output.
 
-**Cost Card** - The rates per million tokens, per Token Class, that the Provider charges the Operator for a Model.
+**Service unit** - A non-token count defined by an endpoint, for example a search unit for rerank. It does not consume the token Rate Limit.
 
-**Price Card** - The rates per million tokens, per Token Class, that the Operator charges a User for a Model.
+**Cost Card** - The rates per million tokens or Service units that the Provider charges the Operator for a Model.
+
+**Price Card** - The rates per million tokens or Service units that the Operator charges a User for a Model.
 
 **Markup** - A percentage added to a Cost Card to make a Price Card, when the Price Card has no explicit rates.
 

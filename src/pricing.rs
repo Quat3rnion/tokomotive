@@ -26,6 +26,9 @@ pub struct Rates {
     pub image_input: i64,
     #[serde(default)]
     pub image_output: i64,
+    /// Micro-dollars per million endpoint-defined non-token units.
+    #[serde(default)]
+    pub service_units: i64,
 }
 
 impl Rates {
@@ -40,6 +43,7 @@ impl Rates {
             cache_write_1h: f(self.cache_write_1h),
             image_input: f(self.image_input),
             image_output: f(self.image_output),
+            service_units: f(self.service_units),
         }
     }
 
@@ -51,7 +55,8 @@ impl Rates {
             + u.cache_write_5m as i128 * self.cache_write_5m as i128
             + u.cache_write_1h as i128 * self.cache_write_1h as i128
             + u.image_input as i128 * self.image_input as i128
-            + u.image_output as i128 * self.image_output as i128;
+            + u.image_output as i128 * self.image_output as i128
+            + u.service_units as i128 * self.service_units as i128;
         div_round(sum, 1_000_000) as i64
     }
 }
@@ -187,6 +192,7 @@ mod tests {
                 cache_write_1h: 6_000_000,
                 image_input: 8_000_000,
                 image_output: 30_000_000,
+                ..Default::default()
             },
             tiers: vec![ContextTier {
                 above_input_tokens: 200_000,
@@ -212,6 +218,7 @@ mod tests {
             cache_write_1h: 1000,
             image_input: 100,
             image_output: 10,
+            ..Default::default()
         };
         // 1000*3 + 500*15 + 10000*0.3 + 2000*3.75 + 1000*6 + 100*8 + 10*30
         assert_eq!(sonnet().amount(&u), 28_100);

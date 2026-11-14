@@ -46,6 +46,9 @@ pub fn record(user: &str, e: &NewEntry) {
         }
     }
     counter!("llm_cost_micros_total", &base).increment(e.quote.cost_micros.max(0) as u64);
+    let mut units = base.to_vec();
+    units.push(("endpoint", e.endpoint.clone()));
+    counter!("llm_service_units_total", &units).increment(u.service_units.max(0) as u64);
     counter!("llm_price_micros_total", &base).increment(e.quote.price_micros.max(0) as u64);
     if e.quote.unpriced {
         counter!("llm_unpriced_requests_total", &base).increment(1);
