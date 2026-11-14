@@ -383,7 +383,7 @@ impl Ctx {
         let catalog = self.st.catalog();
         let model = o.model.or_else(|| self.upstream_model.clone());
         let mut quote = catalog.quote(model.as_deref(), self.auth.team_id, &o.usage);
-        if self.provider.auth != crate::provider::ProviderAuth::ApiKey {
+        if self.provider.auth.is_subscription() {
             quote.cost_micros = 0;
             quote.cost_card_id = None;
         }
@@ -395,7 +395,7 @@ impl Ctx {
             key_id: self.auth.key_id,
             team_id: self.auth.team_id,
             provider: self.provider.name.clone(),
-            subscription: self.provider.auth != crate::provider::ProviderAuth::ApiKey,
+            subscription: self.provider.auth.is_subscription(),
             endpoint: self.endpoint.name().into(),
             requested_model: self.requested_model.clone(),
             model,
@@ -691,16 +691,6 @@ pub async fn handle(
             });
             continue;
         }
-        let base = if provider.auth == crate::provider::ProviderAuth::ApiKey {
-            &provider.base_url
-        } else {
-            st.oauth.resource(provider.auth)
-        };
-        let url = if provider.auth == crate::provider::ProviderAuth::ApiKey {
-            crate::provider::upstream_url(base, &path)
-        } else {
-            format!("{}{}", base.trim_end_matches('/'), path)
-        };
         let order: Vec<Option<usize>> = match provider.key_order() {
             o if o.is_empty() => vec![None],
             o => o.into_iter().map(Some).collect(),
@@ -738,6 +728,21 @@ pub async fn handle(
             let key = oauth_token
                 .as_deref()
                 .unwrap_or_else(|| idx.map(|i| provider.keys[i].as_str()).unwrap_or(""));
+            let Ok(base) = st
+                .oauth
+                .inference_resource(&provider.name, provider.auth, &provider.base_url)
+                .await
+            else {
+                permit.record(false);
+                break;
+            };
+            // API-key Providers keep the version-aware join from the presets
+            // (an `/api/v1` base and a `/v1/...` path do not double `/v1`).
+            let url = if provider.auth == crate::provider::ProviderAuth::ApiKey {
+                crate::provider::upstream_url(&base, &path)
+            } else {
+                format!("{}{}", base.trim_end_matches('/'), path)
+            };
             let Some(req) =
                 build_request(&st, provider, key, &method, &url, &headers, anthropic_hint).await
             else {

@@ -56,7 +56,10 @@ impl RouterTable {
         }
         self.providers
             .iter()
-            .filter(|p| names.contains(&p.name.as_str()))
+            .filter(|p| {
+                p.auth != crate::provider::ProviderAuth::GoogleVertex
+                    && names.contains(&p.name.as_str())
+            })
             .collect()
     }
     fn prefixed<'a>(&'a self, model: &'a str) -> Option<(&'a Provider, &'a str)> {
@@ -147,8 +150,12 @@ impl RouterTable {
         });
         self.providers
             .iter()
-            .find(|p| p.kind == kind)
-            .or(self.providers.first())
+            .find(|p| p.kind == kind && p.auth != crate::provider::ProviderAuth::GoogleVertex)
+            .or_else(|| {
+                self.providers
+                    .iter()
+                    .find(|p| p.auth != crate::provider::ProviderAuth::GoogleVertex)
+            })
             .cloned()
     }
 }
@@ -362,7 +369,9 @@ impl AppState {
             });
         }
         let mut seen = HashSet::new();
-        out.retain(|c| seen.insert(c.key()));
+        out.retain(|c| {
+            c.provider.auth != crate::provider::ProviderAuth::GoogleVertex && seen.insert(c.key())
+        });
         out
     }
 

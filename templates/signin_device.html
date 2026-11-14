@@ -3,7 +3,7 @@
   {% if device.state == "pending" %}
   <p>Continue only if you started this sign-in. Do not share this code.</p>
   <div class="copy-row"><pre class="code" style="font-size:1.75rem;letter-spacing:.12em">{{ device.user_code }}</pre><button type="button" data-copy="{{ device.user_code }}" aria-label="Copy the sign-in code">Copy</button></div>
-  <p><a href="{{ device.verification_url }}" target="_blank" rel="noopener noreferrer">Open the verification page (opens in a new tab)</a>. Sign in to ChatGPT and enter the code.</p>
+  <p><a href="{{ device.verification_url }}" target="_blank" rel="noopener noreferrer">Open the verification page (opens in a new tab)</a>. Sign in to the Provider and enter the code.</p>
   <p role="status">Waiting for approval. Expires in {{ device.remaining_secs }} seconds.</p>
   <p class="hint">Keep this panel open. It connects automatically after approval.</p>
   {% else if device.state == "denied" %}

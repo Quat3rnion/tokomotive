@@ -1,19 +1,19 @@
 <div class="signin-panel" role="region" aria-labelledby="signin-{{ path }}-{{ name }}-h">
   <h4 id="signin-{{ path }}-{{ name }}-h" tabindex="-1" data-focus>Sign in to {{ name }} ({{ label }})</h4>
-  <p>{% if claude %}Paste the sign-in code.{% else %}Paste the redirect URL.{% endif %}</p>
+  <p>{% if claude || key %}Paste the sign-in code.{% else %}Paste the redirect URL.{% endif %}</p>
   <ol>
     <li><a href="{{ url }}" target="_blank" rel="noopener noreferrer">Open the sign-in page (opens in a new tab)</a>.</li>
     {% if claude %}
     <li>Sign in to Claude and select <strong>Authorize</strong>.</li>
     <li>The page shows a code. Copy all of it, including the part after <code>#</code>.</li>
     {% else %}
-    <li>Sign in to ChatGPT and allow access.</li>
-    <li>The browser then opens an address that starts with <code class="url">{{ callback }}</code>. The page does not load. This is correct. Copy the full address from the address bar.</li>
+    <li>Sign in to {{ label }} and allow access.</li>
+    <li>{{ instructions }}{% if !key %} The address starts with <code class="url">{{ callback }}</code>.{% endif %}</li>
     {% endif %}
     <li>Paste it below and select <strong>Connect</strong>. This attempt expires in 10 minutes.</li>
   </ol>
   <form method="post" action="/admin/providers/{{ name }}/{{ path }}/finish" class="row" aria-label="Finish sign-in to {{ name }}">
-    <div class="field grow"><label for="cb-{{ path }}-{{ name }}">{% if claude %}Code{% else %}Address from the address bar{% endif %}</label><input id="cb-{{ path }}-{{ name }}" name="callback" type="text" required autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="{% if claude %}code#state{% else %}{{ callback }}?code=...{% endif %}"></div>
+    <div class="field grow"><label for="cb-{{ path }}-{{ name }}">{% if claude || key %}Code{% else %}Address from the address bar{% endif %}</label><input id="cb-{{ path }}-{{ name }}" name="callback" type="text" required autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="{% if claude %}code#state{% else if key %}Code from OpenRouter{% else %}{{ callback }}?code=...{% endif %}"></div>
     <button>Connect</button>
     <div class="form-error" role="alert" tabindex="-1"></div>
   </form>

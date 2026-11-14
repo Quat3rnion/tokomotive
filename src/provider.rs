@@ -16,6 +16,9 @@ pub enum ProviderAuth {
     Chatgpt,
     Codex,
     Claude,
+    HuggingFace,
+    Entra,
+    GoogleVertex,
 }
 
 impl ProviderAuth {
@@ -25,7 +28,13 @@ impl ProviderAuth {
             Self::Chatgpt => "chatgpt",
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::HuggingFace => "hugging_face",
+            Self::Entra => "entra",
+            Self::GoogleVertex => "google_vertex",
         }
+    }
+    pub fn is_subscription(self) -> bool {
+        matches!(self, Self::Chatgpt | Self::Codex | Self::Claude)
     }
 }
 

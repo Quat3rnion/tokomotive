@@ -6,7 +6,7 @@
 
 **Full Mode** - The default mode. It includes pricing, Budget checks, Reservations and Rate Limits.
 
-**Provider** - An upstream LLM service that serves a request. It can use a Provider Key or a subscription.
+**Provider** - An upstream LLM service that serves a request. It can use a Provider Key, OAuth or a subscription.
 
 **Subscription Provider** - A Provider that uses the Operator's ChatGPT or Claude subscription. Its per-request Cost is zero. The normal Price still applies.
 
@@ -14,7 +14,9 @@
 
 **Device Code Sign-in** - A sign-in method in which the Operator enters a short code on the account service's verification page. The Proxy waits for approval and connects automatically.
 
-**Provider Access** - The Providers that a Virtual Key can use. A Subscription Provider needs explicit permission. Permission to use a Route does not replace Provider Access.
+**OAuth Provider** - A Provider that uses an OAuth bearer token. OAuth does not imply a subscription. Hugging Face and Entra requests have normal Cost. Google Vertex sign-in stores a token but cannot route requests until its adapter is available.
+
+**Provider Access** - The Providers that a Virtual Key can use. Subscription and OAuth bearer Providers need explicit permission. Permission to use a Route does not replace Provider Access.
 
 **Model** - A named LLM offered by a Provider. A Model can have a Cost Card and a Price Card.
 
@@ -56,7 +58,7 @@
 
 **Provider Key** - The secret credential that the Proxy uses to call a Provider. Users never see it.
 
-**Master Key** - The secret that protects stored Provider Keys, subscription credentials and the metrics token. It comes from `TOKOMOTIVE_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
+**Master Key** - The secret that protects stored Provider Keys, OAuth client settings and tokens, subscription credentials and the metrics token. It comes from `TOKOMOTIVE_SECRET_KEY` or from the generated `secret.key` file. Back it up with the database.
 
 **Setup** - The first-use step in which the Operator sets the dashboard password and selects the mode. It runs once, on `/setup`.
 

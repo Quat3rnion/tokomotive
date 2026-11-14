@@ -1197,3 +1197,109 @@ the error body to the client's format. The Ledger Entry has that status. A
 | `/admin/login`  | 401    | Wrong password.                                                |
 | `/admin/...`    | 400    | A form field is not valid, for example a dollar amount.        |
 | `/admin/models/{id}` | 404 | No such Model.                                            |
+
+## Official OAuth sign-in
+
+These sign-ins use the Provider's documented OAuth flow. They do not use a
+ChatGPT or Claude subscription. Cost follows the Cost Card. Price follows the
+Price Card. A Hugging Face or Entra Provider needs explicit Provider Access on
+each Virtual Key. An OpenRouter key follows the normal API-key access rules.
+
+Client IDs, client secrets and tokens are encrypted with the Master Key. The
+client settings form does not show saved values again. In **OAuth client settings**,
+enter the client ID each time you save. An empty client secret keeps the saved
+secret. Saving client settings disconnects that login. Sign in again after saving.
+Back up the Master Key with the database.
+
+### Sign in with OpenRouter
+
+1. Add an API-key Provider with API format **OpenAI** and base URL
+   `https://openrouter.ai/api`. You do not need to enter a Provider Key.
+2. Select **Sign in with OpenRouter** on that Provider.
+3. Open the sign-in page. Sign in to OpenRouter and create the key.
+4. Copy the authorization code that OpenRouter shows. Paste the code into the
+   sign-in panel and select **Connect** within 10 minutes.
+
+This is the [headless PKCE flow](https://openrouter.ai/docs/guides/overview/auth/oauth).
+It has no public callback. Do not paste an API key into the sign-in panel.
+The Proxy exchanges the code with its private PKCE verifier. It adds the issued
+key to the encrypted Key Pool as a normal Provider Key. The dashboard shows only
+the last four characters. To remove it, select **Delete key**. There is no token
+refresh for this flow.
+
+### Sign in with Hugging Face
+
+1. [Register an OAuth app](https://huggingface.co/docs/hub/oauth#creating-an-oauth-app).
+   There is no shared public client ID. A public app needs no client secret.
+   For the paste fallback, register `http://localhost/auth/callback` as a redirect
+   URI. Allow the `inference-api` scope.
+2. Add a Provider with authentication **Hugging Face OAuth**. Its base URL is
+   `https://router.huggingface.co`.
+3. Open **OAuth client settings** on the Provider. Enter your client ID. If the
+   app has a secret, enter it. Select **Save OAuth client**.
+4. Select **Sign in with a device code**. Open the verification page and enter
+   the displayed user code. Keep the panel open until it connects.
+
+If device sign-in is not available, select **Paste the redirect URL instead**.
+Sign in, then copy the full local redirect address from the browser address bar.
+The local page need not load. Paste the address into the panel and select
+**Connect**. The Proxy uses PKCE and checks the state of the attempt.
+
+You can also use [Client ID Metadata Documents (CIMD)](https://huggingface.co/docs/hub/oauth#automated-oauth-app-creation).
+Enter `https://YOUR-PUBLIC-PROXY/.well-known/oauth-cimd` as the client ID on a
+Provider with no saved client secret. The Proxy serves that public metadata
+document, with its client ID, name, loopback redirect URIs and
+`token_endpoint_auth_method: none`. Use the same public URL for all CIMD clients
+on this Proxy. The URL must be reachable by Hugging Face over HTTPS. Select the
+paste fallback for this option. Device-code PKCE with CIMD was not verified and
+is not enabled for this flow.
+
+The Proxy sends the bearer only to model paths on
+`https://router.huggingface.co/v1`. It refreshes the token when necessary.
+This is paid inference, not a zero-Cost subscription.
+
+### Sign in with Azure Entra ID
+
+1. Register your own public OAuth client in the tenant of your Azure resource.
+   Enable public-client device sign-in. Give the account the Azure role that
+   permits inference on that resource.
+2. Add a Provider with authentication **Azure Entra ID**. Set its base URL to
+   `https://RESOURCE.openai.azure.com/openai`, without `/v1`. Use your resource
+   name, not the example name.
+3. Open **OAuth client settings**. Enter the tenant ID or domain and your client
+   ID. A public client needs no client secret.
+4. Leave Scope empty to use
+   `https://cognitiveservices.azure.com/.default offline_access`, or enter the
+   scope that your resource needs. Select **Save OAuth client**.
+5. Select **Sign in with a device code**. Open the Microsoft verification page,
+   sign in and enter the displayed user code. Keep the panel open until it connects.
+
+Microsoft documents the [device grant and offline access](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code)
+and the [Cognitive Services scope for the Azure OpenAI v1 endpoint](https://learn.microsoft.com/en-us/azure/developer/ai/how-to/switching-endpoints).
+Some Foundry documentation uses `https://ai.azure.com/.default` instead. Set the
+scope to match your resource. Include `offline_access` to obtain a refresh token.
+For the paste fallback, register `http://localhost/auth/callback` on your client.
+
+The Proxy sends the token as `Authorization: Bearer`, not as an `api-key`
+header. Requests use the configured Azure resource's `/openai/v1` model paths.
+They have normal Cost and Price.
+
+### Sign in with Google for Vertex
+
+1. Create your own Google **Desktop app** OAuth client. Enable the Google Cloud
+   services that your account needs. Configure the consent screen for that client.
+2. Add a Provider with authentication **Google Vertex (adapter pending)**.
+3. Open **OAuth client settings**. Enter the client ID and secret. Select
+   **Save OAuth client**.
+4. Select **Sign in**. Open the Google page and allow the
+   `https://www.googleapis.com/auth/cloud-platform` scope.
+5. Copy the full address that starts with `http://localhost/auth/callback` from
+   the browser address bar, even if that local page does not load. Paste the
+   address into the panel and select **Connect** within 10 minutes.
+
+This uses [Google's installed-app flow](https://developers.google.com/identity/protocols/oauth2/native-app)
+with PKCE and offline access. It does not use Google's discontinued OOB flow.
+The Proxy stores and refreshes the token. The UI marks this Provider
+**sign-in ready, adapter pending**. It is not available for routing or Model
+discovery until the Vertex adapter is implemented. No inference request uses
+this token yet.

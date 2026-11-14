@@ -4,7 +4,9 @@ use crate::oauth::Flow;
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
+        .route("/.well-known/oauth-cimd", get(client_metadata))
         .route("/admin/providers/{name}/oauth/start", post(start))
+        .route("/admin/providers/{name}/oauth/configure", post(configure))
         .route("/admin/providers/{name}/oauth/paste", post(paste))
         .route(
             "/admin/providers/{name}/oauth/device/status",
@@ -24,12 +26,47 @@ pub(super) fn router() -> Router<AppState> {
             post(usage_disconnect),
         )
 }
+async fn client_metadata(State(st): State<AppState>) -> Response {
+    match st.oauth.client_metadata().await {
+        Ok(Some(value)) => axum::Json(value).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => internal(e),
+    }
+}
 fn flow(st: &AppState, name: &str) -> Option<Flow> {
     st.router_table()
         .providers
         .iter()
         .find(|p| p.name == name)
-        .and_then(|p| Flow::from_auth(p.auth))
+        .and_then(|p| {
+            Flow::from_auth(p.auth).or_else(|| {
+                (p.auth == crate::provider::ProviderAuth::ApiKey
+                    && matches!(
+                        p.base_url.trim_end_matches('/'),
+                        "https://openrouter.ai/api" | "https://openrouter.ai/api/v1"
+                    ))
+                .then_some(Flow::OpenRouter)
+            })
+        })
+}
+async fn configure(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(options): Form<crate::oauth::ClientOptions>,
+) -> Response {
+    let Some(flow) = flow(&st, &name) else {
+        return bad("This Provider does not use OAuth.");
+    };
+    if st.oauth.configure(&name, flow, options).await.is_err() {
+        return form_error(
+            "Check the client ID, secret and tenant settings. For CIMD, use the public HTTPS metadata URL with no saved secret.",
+        );
+    }
+    saved(
+        "/admin/providers",
+        "OAuth client saved. Sign in to connect.",
+    )
 }
 #[derive(Template)]
 #[template(path = "signin.html")]
@@ -42,11 +79,13 @@ struct AttemptPage {
     /// Claude shows a code; the other flows redirect to a local address.
     claude: bool,
     callback: &'static str,
+    instructions: &'static str,
+    key: bool,
 }
 async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Response {
     match st.oauth.start(&name, flow).await {
         Ok(a) => render(AttemptPage {
-            name,
+            name: name.clone(),
             path,
             url: a.authorize_url,
             label: match flow {
@@ -54,9 +93,20 @@ async fn begin(st: AppState, name: String, flow: Flow, path: &'static str) -> Re
                 Flow::Claude => "Claude Pro/Max",
                 Flow::Codex if path == "usage" => "Codex plan usage",
                 Flow::Codex => "ChatGPT via Codex",
+                Flow::HuggingFace => "Hugging Face",
+                Flow::Entra => "Azure Entra ID",
+                Flow::GoogleVertex => "Google Vertex (adapter pending)",
+                Flow::OpenRouter => "OpenRouter",
+                _ => "OAuth",
             },
             claude: flow == Flow::Claude,
             callback: flow.redirect(),
+            instructions: st
+                .oauth
+                .instructions(&name, flow)
+                .await
+                .unwrap_or("Allow access and copy the redirect URL."),
+            key: flow == Flow::OpenRouter,
         }),
         Err(_) => bad("Cannot start sign-in for this Provider. Reload the page and try again."),
     }
@@ -65,7 +115,7 @@ async fn start(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -
     let Some(flow) = flow(&st, &name) else {
         return bad("This Provider does not use OAuth.");
     };
-    if flow == Flow::Codex {
+    if flow.device() {
         begin_device(st, name, flow, "oauth").await
     } else {
         begin(st, name, flow, "oauth").await
@@ -161,8 +211,18 @@ struct CallbackForm {
     callback: String,
 }
 async fn exchange(st: AppState, name: String, flow: Flow, callback: String) -> Response {
+    let _settings = if flow == Flow::OpenRouter {
+        Some(st.settings_write.lock().await)
+    } else {
+        None
+    };
     match st.oauth.finish(&name, flow, &callback).await {
-        Ok(()) => saved("/admin/providers", &format!("Provider {name} connected.")),
+        Ok(()) => {
+            if flow == Flow::OpenRouter {
+                tryr!(st.reload_settings().await);
+            }
+            saved("/admin/providers", &format!("Provider {name} connected."))
+        }
         // Never echo callback input or an issuer body. Log the fixed manager
         // message and show the Operator what to do.
         Err(e) => {

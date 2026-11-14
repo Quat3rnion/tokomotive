@@ -548,6 +548,7 @@ struct ProviderView {
     key_header: &'static str,
     keys: Vec<KeyView>,
     auth: String,
+    openrouter: bool,
     /// "API key", "ChatGPT subscription" or "Claude Pro/Max".
     auth_label: &'static str,
     status: Option<StatusView>,
@@ -685,6 +686,11 @@ fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
         crate::provider::ProviderAuth::Chatgpt => "ChatGPT subscription",
         crate::provider::ProviderAuth::Codex => "ChatGPT via Codex",
         crate::provider::ProviderAuth::Claude => "Claude Pro/Max",
+        crate::provider::ProviderAuth::HuggingFace => "Hugging Face OAuth",
+        crate::provider::ProviderAuth::Entra => "Azure Entra ID",
+        crate::provider::ProviderAuth::GoogleVertex => {
+            "Google Vertex: sign-in ready, adapter pending"
+        }
     }
 }
 
@@ -800,6 +806,11 @@ async fn providers(
             key_pager,
             name,
             auth: auth.as_str().into(),
+            openrouter: auth == crate::provider::ProviderAuth::ApiKey
+                && matches!(
+                    row.get::<&str, _>("base_url").trim_end_matches('/'),
+                    "https://openrouter.ai/api" | "https://openrouter.ai/api/v1"
+                ),
             auth_label: auth_label(auth),
             status,
             usage_status,
@@ -896,7 +907,11 @@ async fn save_provider(
     // the address with /v1, as the Provider documentation often shows it.
     match f.auth {
         ProviderAuth::ApiKey => {}
-        ProviderAuth::Chatgpt | ProviderAuth::Codex => f.kind = ProviderKind::Openai,
+        ProviderAuth::Chatgpt
+        | ProviderAuth::Codex
+        | ProviderAuth::HuggingFace
+        | ProviderAuth::Entra
+        | ProviderAuth::GoogleVertex => f.kind = ProviderKind::Openai,
         ProviderAuth::Claude => f.kind = ProviderKind::Anthropic,
     }
     if f.auth != ProviderAuth::ApiKey {

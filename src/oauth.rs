@@ -22,19 +22,23 @@ pub const CLAUDE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's 
 const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const SHARING_SCOPE: &str = "chatgpt.tokens.use.direct";
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Flow {
-    Chatgpt,
-    Claude,
-    Codex,
-}
+mod config;
+pub use config::{ClientOptions, FlowConfig, FlowType, InferenceBase, RefreshRule, TokenEncoding};
+
+/// Stable storage identity, not a protocol enum. The registry supplies the data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Flow(&'static str);
+#[allow(non_upper_case_globals)]
 impl Flow {
+    pub const Chatgpt: Self = Self("chatgpt");
+    pub const Claude: Self = Self("claude");
+    pub const Codex: Self = Self("codex");
+    pub const HuggingFace: Self = Self("hugging_face");
+    pub const Entra: Self = Self("entra");
+    pub const GoogleVertex: Self = Self("google_vertex");
+    pub const OpenRouter: Self = Self("openrouter");
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Chatgpt => "chatgpt",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
+        self.0
     }
     pub fn from_auth(auth: ProviderAuth) -> Option<Self> {
         match auth {
@@ -42,6 +46,9 @@ impl Flow {
             ProviderAuth::Chatgpt => Some(Self::Chatgpt),
             ProviderAuth::Codex => Some(Self::Codex),
             ProviderAuth::Claude => Some(Self::Claude),
+            ProviderAuth::HuggingFace => Some(Self::HuggingFace),
+            ProviderAuth::Entra => Some(Self::Entra),
+            ProviderAuth::GoogleVertex => Some(Self::GoogleVertex),
         }
     }
     pub fn redirect(self) -> &'static str {
@@ -49,7 +56,11 @@ impl Flow {
             Self::Claude => CLAUDE_CALLBACK,
             Self::Chatgpt => "http://localhost:1455/auth/callback",
             Self::Codex => "http://127.0.0.1:1455/auth/callback",
+            _ => "http://localhost/auth/callback",
         }
+    }
+    pub fn device(self) -> bool {
+        matches!(self, Self::Codex | Self::HuggingFace | Self::Entra)
     }
 }
 
@@ -63,6 +74,16 @@ pub struct OAuthEndpoints {
     pub claude_resource: String,
     pub codex_usage: String,
     pub codex_resource: String,
+    pub hf_device: String,
+    pub hf_authorize: String,
+    pub hf_token: String,
+    pub hf_resource: String,
+    pub entra_issuer: String,
+    pub entra_resource: Option<String>,
+    pub google_authorize: String,
+    pub google_token: String,
+    pub openrouter_authorize: String,
+    pub openrouter_token: String,
 }
 impl Default for OAuthEndpoints {
     fn default() -> Self {
@@ -74,6 +95,16 @@ impl Default for OAuthEndpoints {
             claude_resource: "https://api.anthropic.com".into(),
             codex_usage: "https://chatgpt.com/backend-api/wham/usage".into(),
             codex_resource: "https://chatgpt.com/backend-api/codex".into(),
+            hf_device: "https://huggingface.co/oauth/device".into(),
+            hf_authorize: "https://huggingface.co/oauth/authorize".into(),
+            hf_token: "https://huggingface.co/oauth/token".into(),
+            hf_resource: "https://router.huggingface.co".into(),
+            entra_issuer: "https://login.microsoftonline.com".into(),
+            entra_resource: None,
+            google_authorize: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+            google_token: "https://oauth2.googleapis.com/token".into(),
+            openrouter_authorize: "https://openrouter.ai/auth".into(),
+            openrouter_token: "https://openrouter.ai/api/v1/auth/keys".into(),
         }
     }
 }
@@ -84,6 +115,8 @@ struct Saved {
     client_id: Option<String>,
     credential: Option<Credential>,
     last_error: Option<String>,
+    #[serde(default)]
+    options: ClientOptions,
 }
 #[derive(Serialize, Deserialize)]
 struct Credential {
@@ -95,6 +128,8 @@ struct Credential {
     account: Option<String>,
     plan: Option<String>,
     account_id: Option<String>,
+    #[serde(default)]
+    inference_base: Option<String>,
 }
 #[derive(Default, Serialize)]
 pub struct Status {
@@ -126,6 +161,7 @@ struct DeviceAttempt {
     device_auth_id: String,
     next_poll: i64,
     seen_at: i64,
+    verifier: Option<String>,
 }
 #[derive(Clone)]
 pub struct UsageWindow {
@@ -143,6 +179,7 @@ struct Attempt {
     state: String,
     nonce: String,
     client_id: Option<String>,
+    redirect: &'static str,
 }
 #[derive(Deserialize)]
 struct Tokens {
@@ -151,6 +188,8 @@ struct Tokens {
     id_token: Option<String>,
     expires_in: Option<i64>,
     scope: Option<String>,
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
 }
 type Identity = (String, Flow);
 type FlightLocks = Mutex<HashMap<Identity, Arc<Mutex<()>>>>;
@@ -164,6 +203,7 @@ pub struct OAuthManager {
     devices: Mutex<HashMap<Identity, DeviceAttempt>>,
     usage_cache: Mutex<HashMap<String, (i64, Option<PlanUsage>)>>,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    configs: HashMap<Flow, FlowConfig>,
 }
 fn random(bytes: usize) -> String {
     let mut v = vec![0; bytes];
@@ -218,7 +258,13 @@ impl Attempt {
             bail!("Invalid OAuth callback");
         }
         let mut params = HashMap::new();
-        if flow == Flow::Claude && !input.starts_with("https://") && !input.starts_with("http://") {
+        if !input.starts_with("https://") && !input.starts_with("http://") {
+            if flow == Flow::OpenRouter && !input.contains('#') {
+                if input.is_empty() || input.len() > 8192 {
+                    bail!("Missing OAuth code");
+                }
+                return Ok((input.into(), String::new()));
+            }
             let (code, state) = input
                 .split_once('#')
                 .context("Missing OAuth code or state")?;
@@ -230,14 +276,19 @@ impl Attempt {
             if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
                 bail!("Invalid callback URL");
             }
-            if flow == Flow::Claude {
-                let expected = reqwest::Url::parse(CLAUDE_CALLBACK)?;
+            if !matches!(flow, Flow::Chatgpt | Flow::Codex) {
+                let expected = reqwest::Url::parse(self.redirect)?;
                 if url.origin() != expected.origin() || url.path() != expected.path() {
                     bail!("Invalid callback URL");
                 }
             } else if url.scheme() != "http"
                 || !matches!(url.host_str(), Some("localhost" | "127.0.0.1"))
-                || url.port() != Some(1455)
+                || url.port()
+                    != if matches!(flow, Flow::Chatgpt | Flow::Codex) {
+                        Some(1455)
+                    } else {
+                        None
+                    }
                 || url.path() != "/auth/callback"
             {
                 bail!("Invalid callback URL");
@@ -278,6 +329,7 @@ impl Attempt {
                     .context("Missing OAuth client ID")?
                     .clone()
             }
+            _ => self.client_id.clone().unwrap_or_default(),
         };
         Ok((code, client))
     }
@@ -336,10 +388,16 @@ impl OAuthManager {
             devices: Mutex::default(),
             usage_cache: Mutex::default(),
             clock: Arc::new(db::now_ms),
+            configs: HashMap::new(),
         })
     }
     pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.clock = Arc::new(clock);
+        self
+    }
+    /// Trusted process-construction seam, like OAuthEndpoints; not an HTTP input.
+    pub fn with_flow_config(mut self, flow: Flow, config: FlowConfig) -> Self {
+        self.configs.insert(flow, config);
         self
     }
     fn now(&self) -> i64 {
@@ -365,11 +423,15 @@ impl OAuthManager {
         lock.lock_owned().await
     }
     /// Keep provider rename/delete atomic with in-flight credential writes.
-    pub(crate) async fn provider_write(&self, name: &str) -> [tokio::sync::OwnedMutexGuard<()>; 3] {
+    pub(crate) async fn provider_write(&self, name: &str) -> [tokio::sync::OwnedMutexGuard<()>; 7] {
         [
             self.flight(name, Flow::Chatgpt).await,
             self.flight(name, Flow::Claude).await,
             self.flight(name, Flow::Codex).await,
+            self.flight(name, Flow::HuggingFace).await,
+            self.flight(name, Flow::Entra).await,
+            self.flight(name, Flow::GoogleVertex).await,
+            self.flight(name, Flow::OpenRouter).await,
         ]
     }
     async fn load(&self, name: &str, flow: Flow) -> Result<Saved> {
@@ -396,6 +458,21 @@ impl OAuthManager {
             Flow::Claude => auth.as_deref() == Some("claude"),
             Flow::Chatgpt => auth.as_deref() == Some("chatgpt"),
             Flow::Codex => matches!(auth.as_deref(), Some("chatgpt" | "codex")),
+            Flow::OpenRouter => {
+                let base: Option<String> =
+                    sqlx::query_scalar("SELECT base_url FROM providers WHERE name=?")
+                        .bind(name)
+                        .fetch_optional(&self.db)
+                        .await?;
+                auth.as_deref() == Some("api_key")
+                    && base.as_deref().is_some_and(|s| {
+                        matches!(
+                            s.trim_end_matches('/'),
+                            "https://openrouter.ai/api" | "https://openrouter.ai/api/v1"
+                        )
+                    })
+            }
+            _ => auth.as_deref() == Some(flow.as_str()),
         };
         if !valid {
             bail!("OAuth flow does not match this Provider");
@@ -406,8 +483,95 @@ impl OAuthManager {
         match auth {
             ProviderAuth::Claude => &self.endpoints.claude_resource,
             ProviderAuth::Codex => &self.endpoints.codex_resource,
+            ProviderAuth::HuggingFace => &self.endpoints.hf_resource,
             _ => self.endpoints.openai_resource.trim_end_matches("/v1"),
         }
+    }
+    pub fn entra_resource<'a>(&'a self, configured: &'a str) -> &'a str {
+        self.endpoints
+            .entra_resource
+            .as_deref()
+            .unwrap_or(configured)
+    }
+    pub async fn inference_resource(
+        &self,
+        name: &str,
+        auth: ProviderAuth,
+        configured: &str,
+    ) -> Result<String> {
+        let Some(flow) = Flow::from_auth(auth) else {
+            return Ok(configured.into());
+        };
+        if auth == ProviderAuth::GoogleVertex {
+            bail!("Vertex adapter pending");
+        }
+        let saved = self.load(name, flow).await?;
+        if let Some(base) = saved.credential.and_then(|c| c.inference_base) {
+            return Ok(base);
+        }
+        Ok(if auth == ProviderAuth::Entra {
+            self.entra_resource(configured)
+        } else {
+            self.resource(auth)
+        }
+        .into())
+    }
+    /// Client configuration is encrypted with the tokens and never returned to HTML.
+    pub async fn configure(
+        &self,
+        name: &str,
+        flow: Flow,
+        mut options: ClientOptions,
+    ) -> Result<()> {
+        let _guard = self.flight(name, flow).await;
+        self.validate(name, flow).await?;
+        if !matches!(flow, Flow::HuggingFace | Flow::Entra | Flow::GoogleVertex) {
+            bail!("This sign-in has a fixed client configuration");
+        }
+        if [
+            &options.client_id,
+            &options.client_secret,
+            &options.tenant,
+            &options.scope,
+        ]
+        .iter()
+        .any(|s| s.len() > 8192 || s.contains(['\r', '\n']))
+        {
+            bail!("Invalid OAuth client configuration");
+        }
+        let mut saved = self.load(name, flow).await?;
+        if options.client_secret.is_empty() {
+            options.client_secret = saved.options.client_secret.clone();
+        }
+        saved.options = options;
+        self.config(flow, &saved)?;
+        saved.credential = None;
+        saved.last_error = None;
+        self.pending.lock().await.remove(&(name.into(), flow));
+        self.devices.lock().await.remove(&(name.into(), flow));
+        self.save(name, flow, &saved).await
+    }
+    pub async fn instructions(&self, name: &str, flow: Flow) -> Result<&'static str> {
+        Ok(self
+            .config(flow, &self.load(name, flow).await?)?
+            .instructions)
+    }
+    pub async fn client_metadata(&self) -> Result<Option<Value>> {
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM providers WHERE auth='hugging_face' ORDER BY name",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        for name in names {
+            let saved = self.load(&name, Flow::HuggingFace).await?;
+            if saved.options.client_id.starts_with("https://") {
+                let url = reqwest::Url::parse(&saved.options.client_id)?;
+                return Ok(Some(
+                    json!({"client_id":url.as_str(),"client_name":"Tokomotive","redirect_uris":[Flow::HuggingFace.redirect(),"http://127.0.0.1/auth/callback"],"token_endpoint_auth_method":"none","client_uri":url.origin().ascii_serialization()}),
+                ));
+            }
+        }
+        Ok(None)
     }
     pub async fn status(&self, name: &str, flow: Flow) -> Result<Status> {
         self.validate(name, flow).await?;
@@ -438,6 +602,7 @@ impl OAuthManager {
         self.validate(name, flow).await?;
         self.devices.lock().await.remove(&(name.into(), flow));
         let mut s = self.load(name, flow).await?;
+        let config = self.config(flow, &s)?;
         if s.host_id.is_empty() {
             s.host_id = format!("urn:uuid:{}", uuid());
             self.save(name, flow, &s).await?;
@@ -449,39 +614,30 @@ impl OAuthManager {
             random(32)
         };
         let nonce = random(32);
-        let authorize = match flow {
-            Flow::Chatgpt => format!("{}/api/accounts/authorize", self.endpoints.issuer),
-            Flow::Codex => format!("{}/oauth/authorize", self.endpoints.issuer),
-            Flow::Claude => self.endpoints.claude_authorize.clone(),
-        };
-        let mut url = reqwest::Url::parse(&authorize)?;
+        let mut url = reqwest::Url::parse(&config.authorize)?;
         {
             let mut q = url.query_pairs_mut();
-            q.append_pair("response_type", "code")
-                .append_pair("redirect_uri", flow.redirect())
-                .append_pair("state", &state)
+            if config.flow_type != FlowType::PkceKey {
+                q.append_pair("response_type", "code")
+                    .append_pair("redirect_uri", config.redirect)
+                    .append_pair("client_id", &config.client_id)
+                    .append_pair("scope", &config.scopes);
+            }
+            q.append_pair("state", &state)
                 .append_pair("code_challenge_method", "S256")
                 .append_pair(
                     "code_challenge",
                     &URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
                 );
-            match flow {
-                Flow::Chatgpt => {
-                    q.append_pair("client_id",s.client_id.as_deref().unwrap_or("dynamic_agent_client"))
-                .append_pair("ext_agent_host_id",&s.host_id).append_pair("nonce",&nonce).append_pair("resource",&self.endpoints.openai_resource)
-                .append_pair("scope","openid profile email offline_access resource.invoke chatgpt.tokens.use.direct");
-                    if s.client_id.is_none() {
-                        q.append_pair("agent_name_hint", "tokomotive");
-                    }
-                }
-                Flow::Claude => {
-                    q.append_pair("client_id", CLAUDE_CLIENT)
-                        .append_pair("code", "true")
-                        .append_pair("scope", CLAUDE_SCOPES);
-                }
-                Flow::Codex => {
-                    q.append_pair("client_id",CODEX_CLIENT).append_pair("scope","openid profile email offline_access api.connectors.read api.connectors.invoke")
-                .append_pair("id_token_add_organizations","true").append_pair("codex_cli_simplified_flow","true").append_pair("originator","codex_cli_rs");
+            for (k, v) in &config.authorize_params {
+                q.append_pair(k, v);
+            }
+            if flow == Flow::Chatgpt {
+                q.append_pair("ext_agent_host_id", &s.host_id)
+                    .append_pair("nonce", &nonce)
+                    .append_pair("resource", &self.endpoints.openai_resource);
+                if s.client_id.is_none() {
+                    q.append_pair("agent_name_hint", "tokomotive");
                 }
             }
         }
@@ -498,7 +654,12 @@ impl OAuthManager {
                 verifier,
                 state,
                 nonce,
-                client_id: s.client_id,
+                client_id: if flow == Flow::Chatgpt {
+                    s.client_id
+                } else {
+                    Some(config.client_id)
+                },
+                redirect: config.redirect,
             },
         );
         Ok(started)
@@ -509,6 +670,7 @@ impl OAuthManager {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
         let mut s = self.load(name, flow).await?;
+        let config = self.config(flow, &s)?;
         if s.last_error.is_some() {
             bail!("Subscription disconnected; sign in again");
         }
@@ -522,12 +684,15 @@ impl OAuthManager {
             return Ok(c.access_token.clone());
         }
         let refresh = c.refresh_token.clone();
+        if config.refresh == RefreshRule::None || refresh.is_empty() {
+            bail!("Sign in again to renew this credential");
+        }
         let client = s.client_id.clone().context("Missing OAuth client")?;
         // Commit before sending: a crash or an ambiguous failure must not replay
         // a refresh token that the issuer may already have consumed.
         s.last_error = Some("Refresh did not complete; sign in again".into());
         self.save(name, flow, &s).await?;
-        let t = self.tokens(flow,json!({"grant_type":"refresh_token","client_id":client,"refresh_token":refresh,"resource":self.endpoints.openai_resource})).await?;
+        let t = self.tokens(name,flow,json!({"grant_type":"refresh_token","client_id":client,"refresh_token":refresh,"resource":self.endpoints.openai_resource})).await?;
         let c = s.credential.as_mut().expect("credential checked");
         let scope = t.scope.unwrap_or_else(|| c.scope.clone());
         if flow == Flow::Chatgpt && !has_scope(&scope) {
@@ -535,7 +700,7 @@ impl OAuthManager {
         }
         let refresh = match t.refresh_token {
             Some(v) => v,
-            None if flow == Flow::Codex => refresh,
+            None if config.refresh == RefreshRule::RefreshToken => refresh,
             None => bail!("Missing rotating refresh token"),
         };
         c.access_token = t.access_token;
@@ -560,7 +725,8 @@ impl OAuthManager {
         }
         Ok(())
     }
-    async fn tokens(&self, flow: Flow, mut body: Value) -> Result<Tokens> {
+    async fn tokens(&self, name: &str, flow: Flow, mut body: Value) -> Result<Tokens> {
+        let config = self.config(flow, &self.load(name, flow).await?)?;
         if flow != Flow::Chatgpt {
             body.as_object_mut()
                 .expect("token object")
@@ -569,20 +735,7 @@ impl OAuthManager {
         if flow != Flow::Claude {
             body.as_object_mut().expect("token object").remove("state");
         }
-        let url = match flow {
-            Flow::Claude => self.endpoints.claude_token.clone(),
-            Flow::Chatgpt => format!("{}/api/accounts/oauth/token", self.endpoints.issuer),
-            Flow::Codex => format!("{}/oauth/token", self.endpoints.issuer),
-        };
-        let req = self.http.post(url);
-        let req = if flow == Flow::Claude {
-            req.header("accept", "application/json, text/plain, */*")
-                .header("user-agent", "axios/1.13.6")
-                .json(&body)
-        } else {
-            let form: HashMap<String, String> = serde_json::from_value(body)?;
-            req.form(&form)
-        };
+        let req = self.oauth_request(&config, &config.token, body)?;
         let response = req
             .send()
             .await
@@ -592,6 +745,10 @@ impl OAuthManager {
         }
         let t: Tokens = serde_json::from_value(bounded_json(response).await?)
             .map_err(|_| anyhow::anyhow!("Invalid OAuth token response"))?;
+        Self::check_tokens(flow, &t)?;
+        Ok(t)
+    }
+    fn check_tokens(flow: Flow, t: &Tokens) -> Result<()> {
         if t.access_token.is_empty()
             || t.access_token.len() > 16_384
             || t.refresh_token
@@ -602,7 +759,31 @@ impl OAuthManager {
         {
             bail!("Invalid OAuth token response");
         }
-        Ok(t)
+        Ok(())
+    }
+    fn oauth_request(
+        &self,
+        config: &FlowConfig,
+        url: &str,
+        mut body: Value,
+    ) -> Result<reqwest::RequestBuilder> {
+        let mut req = self.http.post(url);
+        for (k, v) in &config.headers {
+            req = req.header(k, v);
+        }
+        if let Some(secret) = &config.client_secret {
+            if config.basic_secret {
+                req = req.basic_auth(&config.client_id, Some(secret));
+            } else {
+                body["client_secret"] = json!(secret);
+            }
+        }
+        Ok(match config.token_encoding {
+            TokenEncoding::Json => req.json(&body),
+            TokenEncoding::Form => {
+                req.form(&serde_json::from_value::<HashMap<String, String>>(body)?)
+            }
+        })
     }
     async fn profile(&self, token: &str) -> Result<Value> {
         let response = self
@@ -667,7 +848,31 @@ impl OAuthManager {
             .remove(&(name.into(), flow))
             .context("OAuth attempt expired or missing")?;
         let (code, client) = a.callback(flow, callback, self.now())?;
-        let tokens = self.tokens(flow,json!({"grant_type":"authorization_code","client_id":client,"code":code,"state":a.state,"redirect_uri":flow.redirect(),"code_verifier":a.verifier,"resource":self.endpoints.openai_resource})).await?;
+        let config = self.config(flow, &self.load(name, flow).await?)?;
+        if config.flow_type == FlowType::PkceKey {
+            let response = self
+                .oauth_request(
+                    &config,
+                    &config.token,
+                    json!({"code":code,"code_verifier":a.verifier,"code_challenge_method":"S256"}),
+                )?
+                .send()
+                .await
+                .map_err(|_| anyhow::anyhow!("OAuth key request failed"))?;
+            if !response.status().is_success() {
+                bail!("OAuth key request rejected");
+            }
+            let value = bounded_json(response).await?;
+            let key = value["key"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 16384)
+                .context("Invalid OAuth key response")?;
+            let encrypted = self.key.encrypt(key)?;
+            sqlx::query("UPDATE providers SET keys_json=json_insert(keys_json,'$[#]',?) WHERE name=? AND auth='api_key'")
+                .bind(encrypted).bind(name).execute(&self.db).await?;
+            return Ok(());
+        }
+        let tokens = self.tokens(name,flow,json!({"grant_type":"authorization_code","client_id":client,"code":code,"state":a.state,"redirect_uri":a.redirect,"code_verifier":a.verifier,"resource":self.endpoints.openai_resource})).await?;
         self.store_tokens(name, flow, client, &a.nonce, tokens)
             .await
     }
@@ -679,9 +884,13 @@ impl OAuthManager {
         nonce: &str,
         tokens: Tokens,
     ) -> Result<()> {
-        let refresh = tokens
-            .refresh_token
-            .context("OAuth response has no refresh token")?;
+        let config = self.config(flow, &self.load(name, flow).await?)?;
+        let inference_base = self.derive_inference(&config, &tokens).await?;
+        let refresh = match tokens.refresh_token {
+            Some(v) => v,
+            None if config.refresh == RefreshRule::None => String::new(),
+            None => bail!("OAuth response has no refresh token"),
+        };
         let scope = tokens.scope.unwrap_or_default();
         let mut account = None;
         let mut plan = None;
@@ -723,7 +932,9 @@ impl OAuthManager {
             plan = claims["https://api.openai.com/auth"]["chatgpt_plan_type"]
                 .as_str()
                 .map(str::to_owned);
-        } else if let Ok(profile) = self.profile(&tokens.access_token).await {
+        } else if flow == Flow::Claude
+            && let Ok(profile) = self.profile(&tokens.access_token).await
+        {
             account = profile["account"]["email"].as_str().map(str::to_owned);
             plan = profile["organization"]["plan_display_name"]
                 .as_str()
@@ -741,10 +952,62 @@ impl OAuthManager {
             account,
             plan,
             account_id,
+            inference_base,
         });
         self.save(name, flow, &s).await?;
         self.usage_cache.lock().await.remove(name);
         Ok(())
+    }
+    async fn derive_inference(
+        &self,
+        config: &FlowConfig,
+        tokens: &Tokens,
+    ) -> Result<Option<String>> {
+        let (value, origin) = match &config.inference_base {
+            InferenceBase::Fixed(base) => return Ok((!base.is_empty()).then(|| base.clone())),
+            InferenceBase::AdapterPending => return Ok(None),
+            InferenceBase::TokenField { field, origin } => (
+                tokens
+                    .extra
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .context("Missing inference base URL")?
+                    .to_owned(),
+                origin,
+            ),
+            InferenceBase::FollowUp { url, field, origin } => {
+                let response = self
+                    .http
+                    .get(url)
+                    .bearer_auth(&tokens.access_token)
+                    .send()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Inference discovery failed"))?;
+                if !response.status().is_success() {
+                    bail!("Inference discovery rejected");
+                }
+                let value = bounded_json(response).await?;
+                (
+                    value[field]
+                        .as_str()
+                        .context("Missing inference base URL")?
+                        .to_owned(),
+                    origin,
+                )
+            }
+        };
+        let url = reqwest::Url::parse(&value)
+            .map_err(|_| anyhow::anyhow!("Invalid inference base URL"))?;
+        if url.scheme() != "https"
+            || url.origin().ascii_serialization() != *origin
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            bail!("Invalid inference base URL");
+        }
+        Ok(Some(value.trim_end_matches('/').into()))
     }
     pub async fn codex_account(&self, name: &str) -> Result<String> {
         self.load(name, Flow::Codex)
@@ -759,18 +1022,33 @@ impl OAuthManager {
     pub async fn start_device(&self, name: &str, flow: Flow) -> Result<DeviceStatus> {
         let _guard = self.flight(name, flow).await;
         self.validate(name, flow).await?;
-        if flow != Flow::Codex {
+        let config = self.config(flow, &self.load(name, flow).await?)?;
+        if config.device.is_none() {
             bail!("Device sign-in is not supported for this flow");
         }
         self.pending.lock().await.remove(&(name.into(), flow));
         self.devices.lock().await.remove(&(name.into(), flow));
-        let response = self
-            .http
-            .post(format!(
-                "{}/api/accounts/deviceauth/usercode",
-                self.endpoints.issuer
-            ))
-            .json(&json!({"client_id":CODEX_CLIENT}))
+        let verifier = config.device_pkce.then(|| random(64));
+        let mut body = json!({"client_id":config.client_id});
+        if flow != Flow::Codex {
+            body["scope"] = json!(config.scopes);
+        }
+        if let Some(v) = &verifier {
+            body["code_challenge_method"] = json!("S256");
+            body["code_challenge"] = json!(URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes())));
+        }
+        let request = if flow == Flow::Codex {
+            self.http
+                .post(config.device.as_ref().expect("device checked"))
+                .json(&body)
+        } else {
+            self.oauth_request(
+                &config,
+                config.device.as_ref().expect("device checked"),
+                body,
+            )?
+        };
+        let response = request
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("Cannot start device sign-in"))?;
@@ -785,7 +1063,11 @@ impl OAuthManager {
                 .map(str::to_owned)
                 .context("Invalid device sign-in response")
         };
-        let device_auth_id = field("device_auth_id")?;
+        let device_auth_id = field(if flow == Flow::Codex {
+            "device_auth_id"
+        } else {
+            "device_code"
+        })?;
         let user_code = field("user_code").or_else(|_| field("usercode"))?;
         if user_code.len() > 128 {
             bail!("Invalid device sign-in response");
@@ -800,7 +1082,19 @@ impl OAuthManager {
         let status = DeviceStatus {
             attempt: random(24),
             user_code,
-            verification_url: format!("{}/codex/device", self.endpoints.issuer),
+            verification_url: if flow == Flow::Codex {
+                format!("{}/codex/device", self.endpoints.issuer)
+            } else {
+                let uri = field("verification_uri").or_else(|_| field("verification_url"))?;
+                let parsed = reqwest::Url::parse(&uri)?;
+                if parsed.scheme() != "https"
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                {
+                    bail!("Invalid device verification URL");
+                }
+                uri
+            },
             expires_at: now + ttl * 1000,
             remaining_secs: ttl,
             interval,
@@ -815,6 +1109,7 @@ impl OAuthManager {
                 device_auth_id,
                 next_poll: now + interval * 1000,
                 seen_at: now,
+                verifier,
             },
         );
         Ok(status)
@@ -850,7 +1145,7 @@ impl OAuthManager {
         self.validate(name, flow).await?;
         let identity = (name.into(), flow);
         let now = self.now();
-        let (device, user) = {
+        let (device, user, verifier) = {
             let mut devices = self.devices.lock().await;
             let Some(a) = devices
                 .get_mut(&identity)
@@ -874,9 +1169,15 @@ impl OAuthManager {
                 return Ok(true);
             }
             a.next_poll = now + a.status.interval * 1000;
-            (a.device_auth_id.clone(), a.status.user_code.clone())
+            (
+                a.device_auth_id.clone(),
+                a.status.user_code.clone(),
+                a.verifier.clone(),
+            )
         };
-        let result = self.poll_device_response(name, &device, &user).await;
+        let result = self
+            .poll_device_response(name, flow, &device, &user, verifier.as_deref())
+            .await;
         let mut devices = self.devices.lock().await;
         let Some(a) = devices.get_mut(&identity) else {
             return Ok(false);
@@ -901,16 +1202,27 @@ impl OAuthManager {
     async fn poll_device_response(
         &self,
         name: &str,
+        flow: Flow,
         device: &str,
         user: &str,
+        device_verifier: Option<&str>,
     ) -> Result<&'static str> {
-        let response = self
-            .http
-            .post(format!(
-                "{}/api/accounts/deviceauth/token",
-                self.endpoints.issuer
-            ))
-            .json(&json!({"device_auth_id":device,"user_code":user}))
+        let config = self.config(flow, &self.load(name, flow).await?)?;
+        let request = if flow == Flow::Codex {
+            self.http
+                .post(format!(
+                    "{}/api/accounts/deviceauth/token",
+                    self.endpoints.issuer
+                ))
+                .json(&json!({"device_auth_id":device,"user_code":user}))
+        } else {
+            let mut body = json!({"grant_type":"urn:ietf:params:oauth:grant-type:device_code","client_id":config.client_id,"device_code":device});
+            if let Some(v) = device_verifier {
+                body["code_verifier"] = json!(v);
+            }
+            self.oauth_request(&config, &config.token, body)?
+        };
+        let response = request
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("Device poll failed"))?;
@@ -929,35 +1241,42 @@ impl OAuthManager {
                     Some("expired_token") => "expired",
                     Some("authorization_pending") => "pending",
                     _ if status.as_u16() == 429 => "slow_down",
-                    _ if matches!(status.as_u16(), 403 | 404) => "pending",
+                    _ if flow == Flow::Codex && matches!(status.as_u16(), 403 | 404) => "pending",
                     _ => "failed",
                 },
             );
         }
-        let code = value["authorization_code"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= 16384)
-            .context("Invalid device authorization")?;
-        let verifier = value["code_verifier"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= 16384)
-            .context("Invalid device authorization")?;
-        if value["code_challenge"].as_str()
-            != Some(&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
-        {
-            bail!("Invalid device PKCE challenge");
-        }
-        let tokens = self.tokens(Flow::Codex,json!({"grant_type":"authorization_code","client_id":CODEX_CLIENT,"code":code,"redirect_uri":format!("{}/deviceauth/callback",self.endpoints.issuer),"code_verifier":verifier})).await?;
+        let tokens = if flow != Flow::Codex {
+            let tokens: Tokens = serde_json::from_value(value)
+                .map_err(|_| anyhow::anyhow!("Invalid OAuth token response"))?;
+            Self::check_tokens(flow, &tokens)?;
+            tokens
+        } else {
+            let code = value["authorization_code"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 16384)
+                .context("Invalid device authorization")?;
+            let verifier = value["code_verifier"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 16384)
+                .context("Invalid device authorization")?;
+            if value["code_challenge"].as_str()
+                != Some(&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
+            {
+                bail!("Invalid device PKCE challenge");
+            }
+            self.tokens(name,Flow::Codex,json!({"grant_type":"authorization_code","client_id":CODEX_CLIENT,"code":code,"redirect_uri":format!("{}/deviceauth/callback",self.endpoints.issuer),"code_verifier":verifier})).await?
+        };
         // Expiry and a lost browser heartbeat also cancel an in-flight result.
         let devices = self.devices.lock().await;
         let a = devices
-            .get(&(name.into(), Flow::Codex))
+            .get(&(name.into(), flow))
             .context("Device attempt missing")?;
         if a.status.expires_at <= self.now() || a.seen_at + 15_000 < self.now() {
             return Ok("expired");
         }
         drop(devices);
-        self.store_tokens(name, Flow::Codex, CODEX_CLIENT.into(), "", tokens)
+        self.store_tokens(name, flow, config.client_id, "", tokens)
             .await?;
         Ok("connected")
     }

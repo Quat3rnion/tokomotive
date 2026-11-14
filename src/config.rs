@@ -343,7 +343,10 @@ impl Config {
                 let base = match p.auth {
                     ProviderAuth::Chatgpt => "https://api.openai.com",
                     ProviderAuth::Codex => "https://chatgpt.com/backend-api/codex",
-                    _ => "https://api.anthropic.com",
+                    ProviderAuth::Claude => "https://api.anthropic.com",
+                    ProviderAuth::HuggingFace => "https://router.huggingface.co",
+                    ProviderAuth::GoogleVertex => "https://aiplatform.googleapis.com",
+                    _ => p.base_url.as_str(),
                 };
                 if p.base_url.trim_end_matches('/') != base
                     || p.api_key.is_some()
@@ -357,7 +360,11 @@ impl Config {
             if matches!(
                 (p.auth, p.kind),
                 (
-                    ProviderAuth::Chatgpt | ProviderAuth::Codex,
+                    ProviderAuth::Chatgpt
+                        | ProviderAuth::Codex
+                        | ProviderAuth::HuggingFace
+                        | ProviderAuth::Entra
+                        | ProviderAuth::GoogleVertex,
                     ProviderKind::Anthropic
                 ) | (ProviderAuth::Claude, ProviderKind::Openai)
             ) {
@@ -386,6 +393,16 @@ impl Config {
                     "Provider {} needs an HTTP or HTTPS base URL without credentials, query or fragment.",
                     p.name
                 );
+            }
+            if p.auth == ProviderAuth::Entra
+                && (url.scheme() != "https"
+                    || !url.host_str().is_some_and(|h| {
+                        h.ends_with(".openai.azure.com")
+                            || h.ends_with(".services.ai.azure.com")
+                            || h.ends_with(".cognitiveservices.azure.com")
+                    }))
+            {
+                bail!("Entra needs the HTTPS Azure resource base URL.");
             }
         }
         if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
