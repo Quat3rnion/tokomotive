@@ -28,6 +28,25 @@ fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -
     (status, axum::Json(body)).into_response()
 }
 
+/// The largest non-streaming upstream body that the Proxy reads. The same
+/// as the request body limit; base64 images can make responses large.
+const MAX_UPSTREAM_BODY: usize = 64 * 1024 * 1024;
+
+/// Read a response body, and stop with an error when it passes `max` bytes.
+async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Result<Bytes> {
+    if response.content_length().is_some_and(|n| n > max as u64) {
+        anyhow::bail!("upstream body is larger than {max} bytes");
+    }
+    let mut out = bytes::BytesMut::new();
+    while let Some(chunk) = response.chunk().await? {
+        if out.len() + chunk.len() > max {
+            anyhow::bail!("upstream body is larger than {max} bytes");
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out.freeze())
+}
+
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
     endpoint.native_kind().is_none_or(|native| native == kind)
@@ -994,7 +1013,7 @@ pub async fn handle(
         );
     }
 
-    let bytes = match upstream.bytes().await {
+    let bytes = match read_capped(upstream, MAX_UPSTREAM_BODY).await {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(error = %e, "upstream body read failed");

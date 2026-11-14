@@ -115,7 +115,16 @@ impl OAuthManager {
                 ];
                 let mut user = e.copilot_user.clone();
                 let mut fallback = e.copilot_resource.clone();
-                let mut hosts = vec!["githubcopilot.com".into()];
+                // Copilot API hosts for each plan type, as GitHub returns
+                // them in `endpoints.api`. Exact matches only.
+                let mut hosts: Vec<String> = [
+                    "api.githubcopilot.com",
+                    "api.individual.githubcopilot.com",
+                    "api.business.githubcopilot.com",
+                    "api.enterprise.githubcopilot.com",
+                ]
+                .map(str::to_owned)
+                .to_vec();
                 if !o.tenant.is_empty() {
                     let domain = o
                         .tenant
@@ -170,9 +179,11 @@ impl OAuthManager {
                         "dashscope-intl.aliyuncs.com",
                         "dashscope-us.aliyuncs.com",
                         "portal.qwen.ai",
-                        "maas.aliyuncs.com",
+                        "token-plan.maas.aliyuncs.com",
                         "maas.qianwenaiapi.com",
                         "maas.qwencloudapi.com",
+                        "token-plan.maas.qianwenaiapi.com",
+                        "token-plan.maas.qwencloudapi.com",
                     ]
                     .map(str::to_owned)
                     .to_vec(),

@@ -293,9 +293,9 @@ fn trusted_resource(value: &str, hosts: &[String], version: Option<&str>) -> Res
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || !hosts
-            .iter()
-            .any(|h| host == h || host.ends_with(&format!(".{h}")))
+        // Exact hosts only. A suffix match would trust every subdomain of a
+        // provider domain with an account-wide bearer token.
+        || !hosts.iter().any(|h| host.eq_ignore_ascii_case(h))
     {
         bail!("Untrusted inference base URL");
     }

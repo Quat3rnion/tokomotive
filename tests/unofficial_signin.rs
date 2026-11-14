@@ -200,6 +200,10 @@ async fn copilot_discovery_refuses_missing_access_and_foreign_destinations() {
         json!({"chat_enabled":false}),
         json!({"chat_enabled":true,"endpoints":{"api":"https://foreign.example"}}),
         json!({"chat_enabled":true,"endpoints":{"api":"http://api.githubcopilot.com"}}),
+        // Exact Copilot API hosts only: no other githubcopilot.com subdomain.
+        json!({"chat_enabled":true,"endpoints":{"api":"https://evil.githubcopilot.com"}}),
+        json!({"chat_enabled":true,"endpoints":{"api":"https://x.api.githubcopilot.com"}}),
+        json!({"chat_enabled":true,"endpoints":{"api":"https://githubcopilot.com"}}),
     ] {
         let app=Router::new().route("/device",post(||async{Json(json!({"device_code":"d","user_code":"U","verification_uri":"https://github.com/login/device","interval":1}))})).route("/token",post(||async{Json(json!({"access_token":"private-copilot"}))})).route("/user",get(move |h:axum::http::HeaderMap|{let user=user.clone();async move{assert_eq!(h["authorization"],"Bearer private-copilot");assert_eq!(h["x-github-api-version"],"2025-04-01");assert_eq!(h["user-agent"],"Tokomotive/0.1.0");Json(user)}}));
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -313,6 +317,14 @@ async fn qwen_resource_urls_are_normalized_only_for_trusted_https_hosts() {
         ("https://portal.qwen.ai@evil.example", None),
         ("https://portal.qwen.ai:8443/v1", None),
         ("https://portal.qwen.ai/v1?redirect=evil", None),
+        // Exact hosts only: no wildcard subdomains of a trusted host.
+        ("https://attacker.portal.qwen.ai/v1", None),
+        ("https://x.dashscope.aliyuncs.com/v1", None),
+        ("https://user.maas.aliyuncs.com/v1", None),
+        (
+            "https://token-plan.maas.aliyuncs.com/v1",
+            Some("https://token-plan.maas.aliyuncs.com/v1"),
+        ),
     ] {
         let app=Router::new().route("/device",post(||async{Json(json!({"device_code":"d","user_code":"U","verification_uri":"https://chat.qwen.ai","interval":1}))})).route("/token",post(move||async move{Json(json!({"access_token":"private","refresh_token":"refresh","expires_in":3600,"resource_url":resource}))}));
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
