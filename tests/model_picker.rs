@@ -536,6 +536,7 @@ async fn usage_model_filter_limits_the_rows() {
         db::insert_entry(
             &a.st.db,
             &db::NewEntry {
+                session_affinity: None,
                 reported_cost_micros: None,
                 ts_ms: now,
                 user_id: user,

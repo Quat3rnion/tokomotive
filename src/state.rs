@@ -87,6 +87,7 @@ pub struct Inner {
     router_table: RwLock<Arc<RouterTable>>,
     pub(crate) circuits: Mutex<HashMap<(String, String), crate::routing::Circuit>>,
     pub(crate) route_next: Mutex<HashMap<String, usize>>,
+    pub(crate) affinity: Mutex<crate::affinity::AffinityTable>,
     pub metrics: Option<PrometheusHandle>,
     reservations: Mutex<HashMap<i64, i64>>,
     catalog: RwLock<Arc<Catalog>>,
@@ -139,6 +140,7 @@ impl AppState {
             router_table: RwLock::new(Arc::new(router_table)),
             circuits: Mutex::new(HashMap::new()),
             route_next: Mutex::new(HashMap::new()),
+            affinity: Mutex::new(crate::affinity::AffinityTable::default()),
             metrics,
             reservations: Mutex::new(HashMap::new()),
             catalog: RwLock::new(Arc::new(catalog)),
@@ -190,6 +192,10 @@ impl AppState {
                 provider.next = old.next.clone();
             }
         }
+        self.affinity
+            .lock()
+            .expect("session affinity")
+            .configure(&table);
         *current = Arc::new(table);
     }
 

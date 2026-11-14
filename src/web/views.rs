@@ -1263,6 +1263,7 @@ pub struct LedgerView {
     pub image_input: String,
     pub image_output: String,
     pub attempts: i64,
+    pub session_affinity: Option<String>,
     pub key: String,
     pub cost: Money,
     pub reported_cost: Option<Money>,
@@ -1361,6 +1362,7 @@ impl LedgerView {
             image_input: int(r.image_input),
             image_output: int(r.image_output),
             attempts: r.attempts,
+            session_affinity: r.session_affinity.clone(),
             key: r
                 .provider_key
                 .map(|k| key_label(&r.provider, k).unwrap_or_else(|| format!("Key {}", k + 1)))

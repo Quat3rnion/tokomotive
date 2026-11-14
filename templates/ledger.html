@@ -74,6 +74,7 @@
         <div><dt>Time to first token</dt><dd>{{ r.ttft }}</dd></div>
         <div><dt>Provider Key</dt><dd>{{ r.key }}</dd></div>
         <div><dt>Attempts</dt><dd>{{ r.attempts }}</dd></div>
+        {% if let Some(session) = r.session_affinity %}<div><dt>Session</dt><dd>{{ session }}</dd></div>{% endif %}
       </dl>
       {% if !base.simple %}<p class="hint">For comparison only. Provider-reported cost does not change pricing. Pricing uses the Cost Card.</p>{% endif %}
     </div></td>

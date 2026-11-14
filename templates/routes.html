@@ -18,7 +18,7 @@
 {% macro deployments_editor(providers, deployments, spare) %}
 <fieldset class="deployments">
   <legend>Deployments</legend>
-  <p class="muted">With the Priority strategy, the Proxy tries them in this order. Weight is used only by the Weighted strategy. A row with no Provider and no model is ignored.</p>
+  <p class="muted">With the Priority strategy, the Proxy tries them in this order. Weight is used by the Weighted strategy and Session affinity. A row with no Provider and no model is ignored.</p>
   <div data-rows>
   {% for d in deployments.iter() %}{% call deployment_row(providers, d.provider.as_str(), d.model, d.weight) %}{% endfor %}
   {% if spare %}{% call deployment_row(providers, "", "", 1) %}{% else %}<noscript>{% call deployment_row(providers, "", "", 1) %}</noscript>{% endif %}
@@ -28,6 +28,9 @@
 {% endmacro %}
 {% macro strategy_select(pre, name, strategy) %}
 <div class="field"><label for="{{ pre }}{{ name }}-strategy">Strategy</label><select id="{{ pre }}{{ name }}-strategy" name="strategy" data-strategy aria-describedby="{{ pre }}{{ name }}-strategy-help"><option value="priority"{% if strategy == "priority" %} selected{% endif %}>Priority</option><option value="round_robin"{% if strategy == "round_robin" %} selected{% endif %}>Round robin</option><option value="weighted"{% if strategy == "weighted" %} selected{% endif %}>Weighted</option></select><p class="hint" id="{{ pre }}{{ name }}-strategy-help">Priority uses the first healthy Deployment. Round robin takes turns. Weighted shares by weight.</p></div>
+{% endmacro %}
+{% macro affinity_select(pre, name, enabled) %}
+<div class="field"><label for="{{ pre }}{{ name }}-affinity">Session affinity</label><select id="{{ pre }}{{ name }}-affinity" name="session_affinity" data-affinity aria-describedby="{{ pre }}{{ name }}-affinity-help"><option value="off"{% if !enabled %} selected{% endif %}>Off</option><option value="on"{% if enabled %} selected{% endif %}>On</option></select><p class="hint" id="{{ pre }}{{ name }}-affinity-help">Keep a conversation on one Deployment to reuse its KV cache. Uses weights instead of the strategy. One Deployment ignores this setting.</p></div>
 {% endmacro %}
 {% block content %}
 <h1>Routes</h1>
@@ -44,12 +47,14 @@
   <h2 id="r-{{ r.name }}-h">{{ r.name }}</h2>
   <div class="end"><form class="inline" method="post" action="/admin/routes/{{ r.name }}/delete" data-confirm="Delete Route {{ r.name }}? Clients that send this model name get an error."><button class="danger" aria-label="Delete Route {{ r.name }}">Delete route</button></form></div>
 </div>
+<p class="muted">Active pinned sessions: {{ r.active_sessions }}</p>
 <form method="post" action="/admin/routes/{{ r.name }}" class="route-form" aria-label="Edit Route {{ r.name }}">
   <input type="hidden" name="deployment_offset" value="{{ r.deployment_offset }}">
   <input type="hidden" name="deployment_count" value="{{ r.deployment_count }}">
   <div class="row">
   <div class="field"><label for="r-{{ r.name }}-name">Name</label><input id="r-{{ r.name }}-name" name="name" value="{{ r.name }}" required autocomplete="off" spellcheck="false"></div>
   {% call strategy_select("r-", r.name.as_str(), r.strategy.as_str()) %}
+  {% call affinity_select("r-", r.name.as_str(), r.session_affinity) %}
   <div class="field grow"><label for="r-{{ r.name }}-fb">Fallbacks</label>{% let fb_id = format!("r-{}-fb", r.name) %}{% let fb_help = format!("r-{}-fb-help", r.name) %}{% call picker::model(fb_id, "fallbacks", r.fallbacks, "ordered", "route,model", "", "", fb_help, "", false) %}<p class="hint" id="r-{{ r.name }}-fb-help">Other Routes or Models, in the order to try. Without JavaScript, enter comma-separated names.</p></div>
   </div>
   {% call deployments_editor(provider_choices, r.deployments, false) %}
@@ -66,6 +71,7 @@
   <div class="row">
   <div class="field"><label for="nr-name">Name</label><input id="nr-name" name="name" required autocomplete="off" spellcheck="false" placeholder="fast"></div>
   {% call strategy_select("nr", "", "priority") %}
+  {% call affinity_select("nr", "", false) %}
   <div class="field grow"><label for="nr-fb">Fallbacks</label>{% call picker::model("nr-fb", "fallbacks", "", "ordered", "route,model", "", "", "nr-fb-help", "", false) %}<p class="hint" id="nr-fb-help">Optional. Other Routes or Models, in the order to try. Without JavaScript, enter comma-separated names.</p></div>
   </div>
   {% call deployments_editor(provider_choices, self.no_deployments(), true) %}
@@ -86,7 +92,8 @@
     const rows = set.querySelector('[data-rows]');
     const add = set.querySelector('[data-add]');
     const strategy = form.querySelector('[data-strategy]');
-    // Weight is used only by the Weighted strategy.
+    const affinity = form.querySelector('[data-affinity]');
+    // Affinity uses weights even when the strategy does not.
     // Name each row button after its position.
     const of = (form.getAttribute('aria-label') || '').replace(/^Edit /, '') || 'the new Route';
     const number = () => rows.querySelectorAll('.deployment').forEach((row, i) => {
@@ -95,7 +102,7 @@
       row.querySelector('[data-move="1"]').setAttribute('aria-label', `Move Deployment ${n} down`);
       row.querySelector('[data-remove]').setAttribute('aria-label', `Remove Deployment ${n}`);
     });
-    const weights = () => rows.querySelectorAll('[data-weight]').forEach(w => { w.hidden = strategy.value !== 'weighted'; });
+    const weights = () => rows.querySelectorAll('[data-weight]').forEach(w => { w.hidden = strategy.value !== 'weighted' && affinity.value !== 'on'; });
     const wire = row => {
       row.querySelector('[data-tools]').hidden = false;
       row.querySelector('[data-remove]').addEventListener('click', () => { row.remove(); number(); add.focus(); });
@@ -122,6 +129,7 @@
       row.querySelector('[name=deployment_provider]').focus();
     });
     strategy.addEventListener('change', weights);
+    affinity.addEventListener('change', weights);
     number();
     weights();
   });

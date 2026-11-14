@@ -33,6 +33,8 @@ pub struct RouterCfg {
     pub failure_threshold: usize,
     pub cooldown_secs: u64,
     pub max_attempts: usize,
+    pub session_affinity_ttl_secs: u64,
+    pub session_affinity_capacity: usize,
 }
 
 impl Default for RouterCfg {
@@ -41,6 +43,8 @@ impl Default for RouterCfg {
             failure_threshold: 3,
             cooldown_secs: 30,
             max_attempts: 8,
+            session_affinity_ttl_secs: 1800,
+            session_affinity_capacity: 100_000,
         }
     }
 }
@@ -60,6 +64,8 @@ pub struct RouteCfg {
     pub name: String,
     #[serde(default)]
     pub strategy: Strategy,
+    #[serde(default)]
+    pub session_affinity: bool,
     pub deployments: Vec<DeploymentCfg>,
     #[serde(default)]
     pub fallbacks: Vec<String>,
@@ -407,6 +413,10 @@ impl Config {
         }
         if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
             bail!("The failure threshold and the maximum attempts must be positive.");
+        }
+        if self.router.session_affinity_ttl_secs == 0 || self.router.session_affinity_capacity == 0
+        {
+            bail!("The session affinity lifetime and capacity must be positive.");
         }
         let mut names = std::collections::HashSet::new();
         for r in &self.routes {

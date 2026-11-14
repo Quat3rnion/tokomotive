@@ -34,6 +34,8 @@ mode = "full" # "simple" records usage without Budget checks or Rate Limits.
 failure_threshold = 3
 cooldown_secs = 30
 max_attempts = 8
+session_affinity_ttl_secs = 1800
+session_affinity_capacity = 100000
 
 # Optional client-facing model name. Strategies: priority (default),
 # round_robin, weighted. Weighted picks one deployment at random first,
@@ -41,6 +43,7 @@ max_attempts = 8
 # [[routes]]
 # name = "smart"
 # strategy = "priority"
+# session_affinity = false # Keep each conversation on one Deployment for KV reuse.
 # deployments = [{ provider = "openai", model = "gpt-4o", weight = 1 }]
 # fallbacks = ["gpt-4o-mini"]
 # Fallbacks are route names or catalog Model names. They are allowed

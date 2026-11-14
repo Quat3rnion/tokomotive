@@ -22,7 +22,9 @@
 
 **Route** - A model name that the client sends, with an ordered set of Deployments. An explicit Route can override a catalog Model. Otherwise a catalog Model has one implicit Deployment.
 
-**Deployment** - A Provider and an upstream model name that can serve a Route. It also has a weight for the `weighted` strategy.
+**Deployment** - A Provider and an upstream model name that can serve a Route. It also has a weight for the `weighted` strategy and Session Affinity.
+
+**Session Affinity** - A Route setting that keeps a User's conversation on one Deployment to reuse its prompt in the upstream KV cache. A process-local session pin overrides weighted rendezvous selection until it expires, is removed, or the Deployment fails.
 
 **Model rewrite** - The replacement of the model name in the request with the upstream model name of the Deployment, or with the name after the `provider/` prefix.
 

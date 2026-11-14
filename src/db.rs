@@ -588,6 +588,7 @@ pub struct NewEntry {
     pub client_aborted: bool,
     pub provider_key: Option<i64>,
     pub attempts: i64,
+    pub session_affinity: Option<String>,
 }
 
 /// The model key of a rollup row: the matched Model name, so that dated
@@ -608,8 +609,8 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     let id = sqlx::query(
         "INSERT INTO ledger(ts_ms, user_id, key_id, team_id, provider, endpoint, requested_model, model, model_id, status, streamed,
             input, output, cache_read, cache_write_5m, cache_write_1h, cost_micros, price_micros, cost_card_id, price_card_id,
-            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription, reported_cost_micros)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            unpriced, estimated, latency_ms, ttft_ms, client_aborted, image_input, image_output, provider_key, attempts, subscription, reported_cost_micros, session_affinity)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(e.ts_ms)
     .bind(e.user_id)
@@ -642,6 +643,7 @@ pub async fn insert_entry(db: &Db, e: &NewEntry) -> Result<i64> {
     .bind(e.attempts)
     .bind(e.subscription)
     .bind(e.reported_cost_micros)
+    .bind(&e.session_affinity)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -1073,6 +1075,7 @@ pub struct LedgerRow {
     pub image_output: i64,
     pub provider_key: Option<i64>,
     pub attempts: i64,
+    pub session_affinity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1142,7 +1145,7 @@ pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<Ledger
         "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
-            l.image_input, l.image_output, l.provider_key, l.attempts, l.reported_cost_micros
+            l.image_input, l.image_output, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
     );
     b.push(match q.filter {

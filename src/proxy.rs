@@ -345,6 +345,7 @@ struct Ctx {
     ts_ms: i64,
     provider_key: Option<i64>,
     attempts: i64,
+    session_affinity: Option<&'static str>,
     rate_scopes: Vec<Scope>,
     /// Released after the Ledger Entry is written, so the amount is always
     /// counted as either reserved or spent.
@@ -410,6 +411,7 @@ impl Ctx {
             client_aborted: o.client_aborted,
             provider_key: self.provider_key,
             attempts: self.attempts,
+            session_affinity: self.session_affinity.map(str::to_owned),
         };
         crate::metrics::record(&self.auth.user_name, &entry);
         let db = self.st.db.clone();
@@ -541,6 +543,14 @@ pub async fn handle(
         .find(|c| !provider_allowed(&auth, &c.provider))
         .map(|c| c.provider.name.clone());
     candidates.retain(|c| provider_allowed(&auth, &c.provider));
+    let session = st.session_order(
+        &table,
+        requested_model.as_deref(),
+        auth.user_id,
+        &headers,
+        json_body.as_ref(),
+        &mut candidates,
+    );
     if candidates.is_empty()
         && let Some(name) = denied
     {
@@ -643,6 +653,7 @@ pub async fn handle(
         ts_ms,
         provider_key: None,
         attempts: 0,
+        session_affinity: None,
         rate_scopes: scopes.into_iter().map(|(scope, _)| scope).collect(),
         reservation,
     };
@@ -817,6 +828,11 @@ pub async fn handle(
                     permit.record(healthy);
                     upstream = Some(r);
                     if healthy {
+                        if upstream.as_ref().is_some_and(|r| r.status().is_success())
+                            && let Some(session) = &session
+                        {
+                            ctx.session_affinity = Some(st.pin_session(&table, session, candidate));
+                        }
                         break 'deployments;
                     }
                 }

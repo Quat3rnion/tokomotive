@@ -66,6 +66,8 @@ struct ServerForm {
     failure_threshold: String,
     cooldown_secs: String,
     max_attempts: String,
+    session_affinity_ttl_secs: Option<String>,
+    session_affinity_capacity: Option<String>,
     /// The dashboard changes the mode with its own form. Scripts that still
     /// send the mode here keep working; without it the mode stays.
     mode: Option<String>,
@@ -110,6 +112,16 @@ impl ServerForm {
             .max_attempts
             .parse()
             .context("Enter the maximum attempts as a whole number, 1 or more.")?;
+        if let Some(value) = &self.session_affinity_ttl_secs {
+            cfg.router.session_affinity_ttl_secs = value
+                .parse()
+                .context("Enter the session affinity lifetime as whole seconds, 1 or more.")?;
+        }
+        if let Some(value) = &self.session_affinity_capacity {
+            cfg.router.session_affinity_capacity = value
+                .parse()
+                .context("Enter the session affinity capacity as a whole number, 1 or more.")?;
+        }
         cfg.validate()?;
         let settings = store::Settings {
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
@@ -239,6 +251,8 @@ impl RoutesPage {
     }
 }
 struct RouteView {
+    session_affinity: bool,
+    active_sessions: usize,
     deployment_pager: Pager,
     deployment_offset: i64,
     deployment_count: usize,
@@ -279,6 +293,7 @@ async fn routes(
         .collect::<Result<Vec<_>, _>>();
     let records = tryr!(records);
     let mut routes = Vec::new();
+    let active_sessions = st.active_sessions();
     for (index, r) in records.into_iter().enumerate() {
         let deployment_q = if query
             .deployments_route
@@ -324,6 +339,8 @@ async fn routes(
                 .collect::<Result<Vec<_>, _>>()
         );
         routes.push(RouteView {
+            session_affinity: r.session_affinity,
+            active_sessions: active_sessions.get(&r.name).copied().unwrap_or(0),
             deployment_pager,
             deployment_offset: deployment_q.offset(),
             deployment_count: deployments.len(),
@@ -353,6 +370,7 @@ async fn routes(
 /// `deployment_provider`, `deployment_model` and `deployment_weight` fields.
 #[derive(Default)]
 struct RouteForm {
+    session_affinity: Option<String>,
     deployment_offset: String,
     deployment_count: String,
     name: String,
@@ -367,6 +385,7 @@ impl RouteForm {
         let mut f = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
+                "session_affinity" => f.session_affinity = Some(value),
                 "deployment_offset" => f.deployment_offset = value,
                 "deployment_count" => f.deployment_count = value,
                 "name" => f.name = value,
@@ -444,9 +463,15 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         Err(_) => return form_error("Choose the strategy Priority, Round robin or Weighted."),
     };
     let added = old.is_none();
+    let session_affinity = match f.session_affinity.as_deref() {
+        Some("on") => true,
+        Some("off") | None => false,
+        _ => return form_error("Choose Session affinity On or Off."),
+    };
     let mut route = RouteCfg {
         name: f.name,
         strategy,
+        session_affinity,
         deployments,
         fallbacks: csv(&f.fallbacks),
     };
@@ -455,6 +480,9 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         let Some(original) = cfg.routes.iter().find(|r| &r.name == name) else {
             return form_error("Route not found.");
         };
+        if f.session_affinity.is_none() {
+            route.session_affinity = original.session_affinity;
+        }
         if !f.deployment_offset.is_empty() || !f.deployment_count.is_empty() {
             let window = f
                 .deployment_offset

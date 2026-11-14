@@ -95,6 +95,7 @@ impl App {
             db::insert_entry(
                 &st.db,
                 &db::NewEntry {
+                    session_affinity: None,
                     reported_cost_micros: None,
                     ts_ms: db::now_ms(),
                     user_id: users[i].0,

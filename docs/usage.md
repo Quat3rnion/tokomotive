@@ -182,6 +182,82 @@ Cost and Price use upstream Token Classes, before Translation. The Proxy
 continues to read upstream streams after a client disconnect to obtain final
 usage.
 
+### Session affinity
+
+Use Session affinity when a Route has several inference instances of the same
+model. Add each instance as a separate Provider and Deployment. On **Routes**,
+set **Session affinity** to **On**. It is off by default. A Route with only one
+Deployment ignores it. The setting keeps conversation turns on the instance
+that can reuse the prompt in its KV cache. It does not enable or control that
+cache on the upstream server.
+
+The Proxy reads the client request before Translation. It takes the first
+non-empty string in this fixed order:
+
+1. The `x-session-id` header.
+2. The OpenAI body field `prompt_cache_key`.
+3. The Anthropic body field `metadata.user_id`.
+4. The OpenAI body field `user`.
+
+The order is not configurable. Invalid header text, non-string body values and
+empty strings are skipped. Explicit keys keep their whitespace. Use a unique
+key per conversation. A value such as `user` or `metadata.user_id` that is the
+same for all conversations keeps those conversations together.
+
+Without an explicit key, the Proxy hashes the model name, initial system or
+developer messages (or `system` and `instructions`), and the first user
+message. This works for Chat Completions, Responses and Messages clients.
+Responses also accepts a string `input` as the first user message. Adjacent
+text parts are joined without a separator; whitespace is not changed. Images
+use their URL or a hash of inline image data. Later conversation turns do not
+change the key. Without a first user message or string input, the Proxy uses
+the Route strategy instead.
+
+The key is a SHA-256 hash scoped to the Route and the Virtual Key's User.
+Different Users never share a pin. Different conversations with the same
+initial prompt under one User can share a pin. Send `x-session-id` to separate
+them. Raw keys and prompt prefixes are not stored in the affinity table,
+Ledger or metrics.
+
+For a new session, weighted rendezvous hashing orders the compatible
+Deployments that Provider Access permits. Deployment identity is the Provider
+name plus the upstream model name. Weights apply even if the Route strategy
+is Priority or Round robin. A live pin keeps its Deployment when weights
+change. For sessions without a pin, adding a Deployment moves only the
+sessions that it wins. Removing a Deployment moves only its sessions.
+
+If the pinned Deployment's circuit is open, the Proxy tries the next
+Deployment in rendezvous order. It also retries connection errors, HTTP 429
+and 5xx before it sends a response to the client. Fallbacks, Provider Key
+pools, the attempt limit and half-open probes work as before. The existing
+all-circuits-open recovery rule still applies. A successful response sets the
+pin to the Deployment that answered, including a Fallback.
+
+In **Settings > Router**, set the session affinity lifetime in seconds
+(`session_affinity_ttl_secs`, default 1800) and capacity
+(`session_affinity_capacity`, default 100000). Both must be positive. The
+lifetime runs from the last use. When the table is full, a new pin removes
+the least recently used pin. The Routes page shows active pins per Route.
+Disabling affinity, removing the Route, or reducing it to one Deployment
+clears its pins on settings reload.
+
+The metric `llm_session_affinity_total{route,result}` counts successful
+selections. Its results are `hit`, `new` and `repinned`. Ledger Details shows
+**Session: pinned**, **new** or **re-pinned**, without a session key.
+
+Limits:
+
+- The table belongs to one Proxy process. Separate Proxy processes do not
+  share pins. A restart loses all pins, including failover choices.
+- A TTL expiry or LRU eviction loses the pin. The next request uses current
+  weights and membership. The upstream KV cache can expire separately.
+- The automatic prefix hash changes if the client rewrites early messages,
+  instructions, image URLs or the model name. Use an explicit session key
+  when the client changes these fields between turns.
+- Affinity is a routing choice, not an isolation boundary for the upstream
+  cache. Provider Access, model permission, Budgets and Rate Limits still
+  apply to every request.
+
 ### List models
 
 `GET /v1/models` and `GET /v1/models/{id}` need a Virtual Key.

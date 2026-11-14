@@ -21,12 +21,15 @@ pub struct RouterSettings {
     pub failure_threshold: usize,
     pub cooldown_secs: u64,
     pub max_attempts: usize,
+    pub session_affinity_ttl_secs: u64,
+    pub session_affinity_capacity: usize,
 }
 
 #[derive(Clone)]
 pub struct Route {
     pub name: String,
     pub strategy: Strategy,
+    pub session_affinity: bool,
     pub deployments: Vec<Deployment>,
     pub fallbacks: Vec<String>,
 }
@@ -113,6 +116,7 @@ impl RouterTable {
                 .map(|r| Route {
                     name: r.name.clone(),
                     strategy: r.strategy,
+                    session_affinity: r.session_affinity,
                     deployments: r
                         .deployments
                         .iter()
@@ -129,6 +133,8 @@ impl RouterTable {
                 failure_threshold: cfg.router.failure_threshold,
                 cooldown_secs: cfg.router.cooldown_secs,
                 max_attempts: cfg.router.max_attempts,
+                session_affinity_ttl_secs: cfg.router.session_affinity_ttl_secs,
+                session_affinity_capacity: cfg.router.session_affinity_capacity,
             },
         }
     }
@@ -451,6 +457,8 @@ mod tests {
             failure_threshold: 1,
             cooldown_secs: 30,
             max_attempts: 8,
+            session_affinity_ttl_secs: 1800,
+            session_affinity_capacity: 100_000,
         };
         let old = st.acquire_deployment(&candidate, &settings, false).unwrap();
         let failed = st.acquire_deployment(&candidate, &settings, false).unwrap();
@@ -491,6 +499,8 @@ mod tests {
             failure_threshold: 1,
             cooldown_secs: 0,
             max_attempts: 8,
+            session_affinity_ttl_secs: 1800,
+            session_affinity_capacity: 100_000,
         };
         let old = st.acquire_deployment(&candidate, &settings, false).unwrap();
         let failed = st.acquire_deployment(&candidate, &settings, false).unwrap();

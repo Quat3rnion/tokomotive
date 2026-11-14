@@ -66,11 +66,13 @@
     </div>
   </fieldset>
   <fieldset>
-    <legend>Circuit Breaker and retries</legend>
+    <legend>Router</legend>
     <div class="row">
       <div class="field"><label for="s-threshold">Failure threshold</label><input id="s-threshold" type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required inputmode="numeric" aria-describedby="s-threshold-help"><p class="hint" id="s-threshold-help">Failures in a row (connection errors, 429 or 5xx) before the Proxy stops using a Provider and model for a cooldown.</p></div>
       <div class="field"><label for="s-cooldown">Cooldown (seconds)</label><input id="s-cooldown" type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required inputmode="numeric" aria-describedby="s-cooldown-help"><p class="hint" id="s-cooldown-help">After the cooldown, one probe request tests whether the Provider works again.</p></div>
       <div class="field"><label for="s-attempts">Maximum attempts</label><input id="s-attempts" type="number" min="1" name="max_attempts" value="{{ settings.router.max_attempts }}" required inputmode="numeric" aria-describedby="s-attempts-help"><p class="hint" id="s-attempts-help">The most upstream tries for one request. Each Deployment, Fallback and Provider Key try counts.</p></div>
+      <div class="field"><label for="s-affinity-ttl">Session affinity lifetime (seconds)</label><input id="s-affinity-ttl" type="number" min="1" name="session_affinity_ttl_secs" value="{{ settings.router.session_affinity_ttl_secs }}" required inputmode="numeric" aria-describedby="s-affinity-ttl-help"><p class="hint" id="s-affinity-ttl-help">Remove a session pin after this time without use. Default: 1800 seconds (30 minutes). This is not the dashboard login lifetime.</p></div>
+      <div class="field"><label for="s-affinity-capacity">Session affinity capacity</label><input id="s-affinity-capacity" type="number" min="1" name="session_affinity_capacity" value="{{ settings.router.session_affinity_capacity }}" required inputmode="numeric" aria-describedby="s-affinity-capacity-help"><p class="hint" id="s-affinity-capacity-help">Maximum session pins in this process. When full, remove the least recently used pin. Default: 100000.</p></div>
     </div>
   </fieldset>
   <fieldset aria-describedby="s-token-help">
