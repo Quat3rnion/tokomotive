@@ -366,18 +366,20 @@ impl Config {
                     bail!("A Subscription Provider needs the base URL {base} and no API keys.");
                 }
             }
-            if matches!(
-                (p.auth, p.kind),
-                (
-                    ProviderAuth::Chatgpt
-                        | ProviderAuth::Codex
-                        | ProviderAuth::HuggingFace
-                        | ProviderAuth::Entra
-                        | ProviderAuth::GoogleVertex,
-                    ProviderKind::Anthropic
-                ) | (ProviderAuth::QwenCode, ProviderKind::Anthropic)
-                    | (ProviderAuth::Claude, ProviderKind::Openai)
-            ) {
+            if (p.kind == ProviderKind::Gemini && p.auth != ProviderAuth::ApiKey)
+                || matches!(
+                    (p.auth, p.kind),
+                    (
+                        ProviderAuth::Chatgpt
+                            | ProviderAuth::Codex
+                            | ProviderAuth::HuggingFace
+                            | ProviderAuth::Entra
+                            | ProviderAuth::GoogleVertex,
+                        ProviderKind::Anthropic
+                    ) | (ProviderAuth::QwenCode, ProviderKind::Anthropic)
+                        | (ProviderAuth::Claude, ProviderKind::Openai)
+                )
+            {
                 bail!(
                     "The authentication of Provider {} does not match its API format.",
                     p.name

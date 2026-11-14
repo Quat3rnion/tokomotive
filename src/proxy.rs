@@ -49,6 +49,9 @@ async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Res
 
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
+    if kind == ProviderKind::Gemini {
+        return matches!(endpoint, Endpoint::ChatCompletions | Endpoint::Messages);
+    }
     endpoint.native_kind().is_none_or(|native| native == kind)
         || translation(kind, endpoint).is_some()
 }
@@ -99,6 +102,16 @@ fn prepare_body(
     endpoint: Endpoint,
     body: Option<&Value>,
 ) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    if candidate.provider.kind == ProviderKind::Gemini {
+        return Ok((
+            Some(crate::translate_gemini::request(
+                endpoint,
+                body.unwrap_or(&Value::Null),
+            )?),
+            Endpoint::Other,
+            false,
+        ));
+    }
     let codex = candidate.provider.auth == crate::provider::ProviderAuth::Codex;
     if codex
         && !matches!(
@@ -338,6 +351,7 @@ fn skip_header(name: &HeaderName) -> bool {
             | "authorization"
             | "x-api-key"
             | "api-key"
+            | "x-goog-api-key"
             | "content-length"
             | "connection"
             | "keep-alive"
@@ -457,7 +471,10 @@ fn worst_case_price(
     default_output: i64,
 ) -> i64 {
     let max_out = body
-        .and_then(translate::output_token_limit)
+        .and_then(|body| {
+            translate::output_token_limit(body)
+                .or_else(|| body.get("generationConfig")?.get("maxOutputTokens"))
+        })
         .and_then(Value::as_i64)
         .unwrap_or(default_output)
         .max(0);
@@ -742,6 +759,26 @@ pub async fn handle(
             });
             continue;
         }
+        if provider.kind == ProviderKind::Gemini {
+            if method != Method::POST || !subscription_path_allowed(endpoint, path_q) {
+                translation_error = Some(translate::TranslateError {
+                    message:
+                        "Gemini accepts only canonical Chat Completions and Messages POST paths"
+                            .into(),
+                });
+                continue;
+            }
+            path = match crate::translate_gemini::path(
+                candidate.model.as_deref().unwrap_or_default(),
+                streamed,
+            ) {
+                Ok(path) => path,
+                Err(error) => {
+                    translation_error = Some(error);
+                    continue;
+                }
+            };
+        }
         if codex && (method != Method::POST || !subscription_path_allowed(endpoint, path_q)) {
             translation_error = Some(translate::TranslateError {
                 message: "Codex accepts only canonical model request paths".into(),
@@ -987,7 +1024,17 @@ pub async fn handle(
                     ),
             )
         });
-        let translator = if codex && endpoint != Endpoint::Responses {
+        let translator = if ctx.provider.kind == ProviderKind::Gemini {
+            Some(ProxyStream::Gemini(
+                crate::translate_gemini::GeminiStream::new(
+                    endpoint,
+                    ctx.upstream_model.as_deref().unwrap_or_default(),
+                    json_body
+                        .as_ref()
+                        .is_some_and(|v| v["stream_options"]["include_usage"] == true),
+                ),
+            ))
+        } else if codex && endpoint != Endpoint::Responses {
             Some(ProxyStream::Responses(
                 ResponseStream::new(
                     ctx.upstream_model.as_deref().unwrap_or_default(),
@@ -1027,11 +1074,25 @@ pub async fn handle(
     };
     let parsed: Option<Value> = serde_json::from_slice(&bytes).ok();
     let kind = ctx.provider.kind;
+    if kind == ProviderKind::Gemini
+        && status.is_success()
+        && parsed.as_ref().is_none_or(|v| {
+            !v["candidates"].is_array() && !v["promptFeedback"]["blockReason"].is_string()
+        })
+    {
+        ctx.finish(Outcome::failed(502));
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "invalid Gemini response",
+        );
+    }
     let usage = parsed
         .as_ref()
         .and_then(|v| kind.usage_from_json(upstream_endpoint, v));
     let model = parsed.as_ref().and_then(model_of);
     let estimated = usage.is_none() && status.is_success() && endpoint.is_accounted();
+    let upstream_model = ctx.upstream_model.clone();
     ctx.finish(Outcome {
         status: status.as_u16(),
         model,
@@ -1044,7 +1105,32 @@ pub async fn handle(
         client_aborted: false,
     });
 
-    let bytes = if let Some(dir) = direction {
+    let bytes = if kind == ProviderKind::Gemini {
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        if status.is_success() {
+            Bytes::from(
+                crate::translate_gemini::response(
+                    endpoint,
+                    parsed.as_ref().unwrap_or(&Value::Null),
+                    upstream_model.as_deref().unwrap_or_default(),
+                )
+                .to_string(),
+            )
+        } else {
+            Bytes::from(translate::translate_error(
+                if endpoint == Endpoint::Messages {
+                    Direction::MessagesToChat
+                } else {
+                    Direction::ChatToMessages
+                },
+                status.as_u16(),
+                &bytes,
+            ))
+        }
+    } else if let Some(dir) = direction {
         out_headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
@@ -1176,7 +1262,8 @@ async fn build_request(
                         | "openai-organization"
                         | "openai-project"
                 ))
-            && !(provider.kind == ProviderKind::Openai && name.as_str().starts_with("anthropic-"))
+            && !(provider.kind != ProviderKind::Anthropic
+                && name.as_str().starts_with("anthropic-"))
             && !(provider.auth == crate::provider::ProviderAuth::Claude
                 && matches!(
                     name.as_str(),

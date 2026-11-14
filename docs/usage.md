@@ -177,6 +177,39 @@ their non-null values are equal. Different values return HTTP 400. Budget
 Reservations cover the prepared output limits of all candidate Deployments,
 including translated thinking budgets and defaults.
 
+#### Gemini native Translation
+
+A `gemini` Provider accepts Chat Completions and Messages clients. The Proxy
+converts text, base64 image data URLs, system instructions, function tools,
+tool results and output limits to the native Gemini format. It maps temperature,
+top-p, top-k, stop sequences, JSON output formats and tool choice. Messages
+requests use the existing Chat translation as an intermediate format.
+JSON responses and SSE streams return in the client's format.
+
+The upstream calls use `POST /v1beta/models/{model}:generateContent` and
+`:streamGenerateContent?alt=sse`. Only canonical client paths
+`/v1/chat/completions` and `/v1/messages` can use this adapter. Responses,
+embeddings, arbitrary paths and remote image URLs are not supported.
+Translation returns one candidate and rejects `n` other than 1.
+Other unsupported client options are not forwarded. Thought text is not
+returned as assistant text. Function calls can carry the `thought_signature`
+extension in Chat tool calls or Messages tool-use blocks. A client must retain
+this extension in its next request if the model requires signed tool history.
+
+The Proxy reads the cumulative `usageMetadata` report. It subtracts
+`cachedContentTokenCount` from `promptTokenCount` for input and records that
+cached count as cache read. Output is `candidatesTokenCount` plus
+`thoughtsTokenCount`. It does not add `totalTokenCount` again. The translated
+client usage follows the same counts. SSE parsing accepts split UTF-8 and
+CRLF boundaries, limits each event to 4 MiB and reports truncated generations
+as stream errors. Budget Reservations use `generationConfig.maxOutputTokens`.
+
+These fields and endpoints are defined in the
+[Gemini API reference](https://ai.google.dev/api) and
+[generateContent reference](https://ai.google.dev/api/generate-content).
+The adapter tests use mock upstreams. Live account and model support are not
+verified by these tests.
+
 The Ledger Entry uses the client's endpoint and the upstream Model and usage.
 Cost and Price use upstream Token Classes, before Translation. The Proxy
 continues to read upstream streams after a client disconnect to obtain final

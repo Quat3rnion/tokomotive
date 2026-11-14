@@ -96,7 +96,7 @@ above still needs a live account check.
 
 | Provider | Work | Sources |
 | --- | --- | --- |
-| Google Gemini (native) | `generateContent` / `streamGenerateContent`, header `x-goog-api-key`. Map `usageMetadata` (`cachedContentTokenCount`, `thoughtsTokenCount`). Translation from Chat and Messages. | [API](https://ai.google.dev/api) |
+| Google Gemini (native) | **Implemented.** `generateContent` / `streamGenerateContent`, header `x-goog-api-key`. Map `usageMetadata` (`cachedContentTokenCount`, `thoughtsTokenCount`). Translation from Chat and Messages, JSON and SSE. Native preset and model list. Mock tests pass; live account support is not verified. | [API](https://ai.google.dev/api), [generateContent](https://ai.google.dev/api/generate-content) |
 | Google Vertex AI | Gemini on Vertex and Anthropic on Vertex (`rawPredict`). Auth with a Google OAuth access token from a service account or from user sign-in. | Not fully verified |
 | AWS Bedrock (native) | Converse / ConverseStream with SigV4, for accounts that do not use Bedrock API keys. Usage in `usage.inputTokens` / `outputTokens`. | [Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html) |
 | Cohere | `/v2/chat`, usage in `meta.billed_units`. | [Chat](https://docs.cohere.com/v2/docs/chat-api) |

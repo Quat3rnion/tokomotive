@@ -201,15 +201,39 @@ they are not a seed-file key. See [Provider presets](usage.md#provider-presets).
 | Key            | Type             | Default | Meaning                                                                                                          |
 | -------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | string           | none    | Required. The name that `models.provider` uses.                                                                  |
-| `kind`         | string           | none    | Required. `"openai"` or `"anthropic"`. The kind selects the wire format and usage parser. |
+| `kind`         | string           | none    | Required. `"openai"`, `"anthropic"` or `"gemini"`. The kind selects the wire format and usage parser. |
 | `auth`         | string           | `"api_key"` | `"api_key"`, `"chatgpt"`, `"codex"` or `"claude"`. Subscription auth needs sign-in on Providers. |
 | `base_url`     | string           | none    | Required. The API origin or versioned base URL. The Proxy does not repeat `/v1`, Z.ai `/v4`, or the version in DeepInfra `/v1/openai`. A full Messages endpoint is also accepted. Custom prefixes and client query parameters stay. |
-| `key_header`   | string           | by kind | `"bearer"`, `"x-api-key"` or `"api-key"`. Applies to API keys only. If omitted, OpenAI uses Bearer and Anthropic uses `x-api-key`. |
+| `key_header`   | string           | by kind | `"bearer"`, `"x-api-key"`, `"api-key"` or `"x-goog-api-key"`. Applies to API keys only. If omitted, OpenAI uses Bearer, Anthropic uses `x-api-key` and Gemini uses `x-goog-api-key`. |
 | `include_usage` | boolean         | `true`  | Send `stream_options.include_usage` for streamed Chat Completions. Off does not change options from a native client request. The Proxy still reads final usage. Presets can select a different default. |
 | `api_key`      | string           | none    | One Provider Key, in the file. The Proxy encrypts it when it seeds. Do not use it in a repository that you commit. |
 | `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. A non-empty variable takes precedence over `api_key`.         |
 | `api_keys`     | array of strings | `[]`    | More Provider Keys, in the file. The Proxy encrypts them when it seeds.                                          |
 | `api_keys_env` | array of strings | `[]`    | Names of variables. Each variable holds one Provider Key.                                                        |
+
+### Google Gemini native API
+
+Select the **Google Gemini (native)** preset, or use this seed configuration:
+
+```toml
+[[providers]]
+name = "gemini"
+kind = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+api_key_env = "GEMINI_API_KEY"
+```
+
+The base can end with `/v1beta`. The default key header is `x-goog-api-key`.
+This adapter uses API keys, not a Google sign-in. Chat Completions and Messages
+clients use their normal paths. The Deployment model is a single model ID,
+such as `gemini-2.5-flash`; the `models/` prefix is also accepted.
+The Proxy builds the native model path. It does not forward client query
+parameters to Gemini. **Test** and Provider model search use `/v1beta/models`.
+The stream-usage switch does not apply to this native API.
+
+See [Gemini native Translation](usage.md#gemini-native-translation) for limits
+and token accounting. The [Google API reference](https://ai.google.dev/api)
+defines the base URL, key header and request format.
 
 ### Key Pool
 

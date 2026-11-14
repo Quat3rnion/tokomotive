@@ -29,6 +29,36 @@ fn sse(events: Vec<String>, delay_ms: u64) -> Response {
         .into_response()
 }
 
+async fn mock_gemini(
+    axum::extract::State(seen): axum::extract::State<Seen>,
+    uri: axum::http::Uri,
+    mut headers: HeaderMap,
+    Json(b): Json<Value>,
+) -> Response {
+    headers.insert("x-seen-uri", uri.to_string().parse().unwrap());
+    seen.0.lock().unwrap().push((headers.clone(), b));
+    if headers.contains_key("x-mock-invalid-json") {
+        return "not JSON".into_response();
+    }
+    if headers.contains_key("x-mock-error") {
+        return (axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":400,"message":"bad Gemini request","status":"INVALID_ARGUMENT"}}))).into_response();
+    }
+    let reply = json!({"responseId":"gemini-1","modelVersion":"gemini-2.5-flash-001",
+        "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+        "usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":40,"candidatesTokenCount":12,"thoughtsTokenCount":8}});
+    if uri.path().ends_with(":streamGenerateContent") {
+        let wire = format!("data: {reply}\n\n");
+        return sse(
+            wire.as_bytes()
+                .chunks(3)
+                .map(|b| String::from_utf8(b.to_vec()).unwrap())
+                .collect(),
+            0,
+        );
+    }
+    Json(reply).into_response()
+}
+
 async fn mock_openai(
     axum::extract::State(seen): axum::extract::State<Seen>,
     uri: axum::http::Uri,
@@ -523,10 +553,176 @@ async fn env_with_routes(routes: &str) -> Env {
     env_with_config(routes, true).await
 }
 
+#[tokio::test]
+async fn gemini_native_routes_both_client_formats_json_stream_and_errors() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name = "gemini"
+kind = "gemini"
+base_url = "http://$UPSTREAM/v1beta"
+api_key = "gemini-key"
+[[routes]]
+name = "native-gemini"
+deployments = [{provider="gemini", model="gemini-2.5-flash"}]
+"#,
+    )
+    .await;
+    for endpoint in ["chat/completions", "messages"] {
+        for stream in [false, true] {
+            let r = e.http.post(format!("{}/v1/{endpoint}?key=client-must-not-leak",e.proxy))
+                .bearer_auth("sk-carol").header("x-goog-api-key","client-key")
+                .header("anthropic-version","2023-06-01")
+                .json(&json!({"model":"native-gemini","messages":[{"role":"user","content":"hello"}],"stream":stream,
+                    "stream_options":{"include_usage":true},"max_tokens":64})).send().await.unwrap();
+            assert_eq!(r.status(), 200);
+            let body = r.text().await.unwrap();
+            if stream {
+                assert!(body.contains(if endpoint == "messages" {
+                    "message_stop"
+                } else {
+                    "[DONE]"
+                }));
+            } else {
+                let v: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(v["model"], "gemini-2.5-flash-001");
+                if endpoint == "messages" {
+                    assert_eq!(v["content"][0]["text"], "hi");
+                } else {
+                    assert_eq!(v["choices"][0]["message"]["content"], "hi");
+                }
+            }
+            let row = last_entry(&e.st).await;
+            assert_eq!(
+                (i(&row, "input"), i(&row, "cache_read"), i(&row, "output")),
+                (60, 40, 20)
+            );
+            assert_eq!(i(&row, "estimated"), 0);
+            let seen = e.seen.0.lock().unwrap();
+            let (headers, body) = seen.last().unwrap();
+            assert_eq!(headers["x-goog-api-key"], "gemini-key");
+            assert!(!headers.contains_key("authorization"));
+            assert!(!headers.contains_key("anthropic-version"));
+            assert_eq!(
+                headers["x-seen-uri"],
+                if stream {
+                    "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+                } else {
+                    "/v1beta/models/gemini-2.5-flash:generateContent"
+                }
+            );
+            assert_eq!(body["contents"][0]["parts"][0]["text"], "hello");
+            assert!(body.get("model").is_none());
+        }
+        let r = e
+            .http
+            .post(format!("{}/v1/{endpoint}", e.proxy))
+            .bearer_auth("sk-carol")
+            .header("x-mock-error", "1")
+            .json(&json!({"model":"native-gemini","messages":[],"max_tokens":32}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400);
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["error"]["type"], "invalid_request_error");
+        assert_eq!(v["error"]["message"], "bad Gemini request");
+        if endpoint == "messages" {
+            assert_eq!(v["type"], "error");
+        }
+        let r = e
+            .http
+            .post(format!("{}/v1/{endpoint}", e.proxy))
+            .bearer_auth("sk-carol")
+            .header("x-mock-invalid-json", "1")
+            .json(&json!({"model":"native-gemini","messages":[],"max_tokens":32}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 502);
+    }
+}
+
+#[tokio::test]
+async fn gemini_reservation_uses_the_native_generation_limit() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name = "gemini"
+kind = "gemini"
+base_url = "http://$UPSTREAM"
+api_key = "gemini-key"
+[[models]]
+name = "gemini-2.5-flash"
+provider = "gemini"
+cost = {output=1}
+"#,
+    )
+    .await;
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-bob")
+        .json(&json!({"model":"gemini-2.5-flash","messages":[],"max_tokens":20000}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 402);
+    assert!(e.seen.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn gemini_rejects_noncanonical_client_paths_and_unsafe_model_ids() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name = "gemini"
+kind = "gemini"
+base_url = "http://$UPSTREAM"
+api_key = "gemini-key"
+[[routes]]
+name = "unsafe-gemini"
+deployments = [{provider="gemini",model="../escape"}]
+[[routes]]
+name = "native-gemini"
+deployments = [{provider="gemini",model="gemini-2.5-flash"}]
+"#,
+    )
+    .await;
+    for (path, model) in [
+        ("chat/completions", "unsafe-gemini"),
+        ("prefix/chat/completions", "native-gemini"),
+        ("files", "native-gemini"),
+        ("responses", "native-gemini"),
+        ("embeddings", "native-gemini"),
+    ] {
+        let r = e
+            .http
+            .post(format!("{}/v1/{path}", e.proxy))
+            .bearer_auth("sk-carol")
+            .json(&json!({"model":model,"messages":[]}))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_client_error() || r.status().is_server_error());
+    }
+    let r = e
+        .http
+        .get(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-carol")
+        .json(&json!({"model":"native-gemini","messages":[]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert!(e.seen.0.lock().unwrap().is_empty());
+}
+
 async fn env_with_config(routes: &str, with_models: bool) -> Env {
     let seen = Seen::default();
     let upstream = axum::Router::new()
         .route("/v1/chat/completions", post(mock_openai))
+        .route("/v1beta/models/{model}", post(mock_gemini))
         .route("/v1/messages", post(mock_anthropic))
         .route("/v1/embeddings", post(mock_embeddings))
         .route("/v1/images/generations", post(mock_images))

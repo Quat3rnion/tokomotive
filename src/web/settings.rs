@@ -862,6 +862,7 @@ async fn providers(
             kind: match kind {
                 ProviderKind::Openai => "openai",
                 ProviderKind::Anthropic => "anthropic",
+                ProviderKind::Gemini => "gemini",
             }
             .into(),
             base_url: row.get("base_url"),
@@ -1192,7 +1193,7 @@ async fn test_provider(_: Admin, State(st): State<AppState>, Path(name): Path<St
     let Some(p) = table.providers.iter().find(|p| p.name == name) else {
         return form_error("Provider not found.");
     };
-    let url = crate::provider::upstream_url(&p.base_url, "/v1/models");
+    let url = crate::provider::upstream_url(&p.base_url, p.kind.models_path());
     if p.auth != crate::provider::ProviderAuth::ApiKey {
         return form_error(
             "Use Sign in for this Subscription Provider. API-key tests do not apply.",

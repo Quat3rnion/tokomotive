@@ -89,6 +89,7 @@ fn roster_has_all_verified_region_and_protocol_variants() {
         vec![
             "openai",
             "anthropic",
+            "gemini",
             "deepseek",
             "kimi",
             "zai",

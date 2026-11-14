@@ -83,6 +83,83 @@ async fn preset_fills_editable_provider_fields_without_javascript() {
 }
 
 #[tokio::test]
+async fn gemini_preset_forms_model_list_and_test_use_native_api() {
+    let (_dir, st, url, task) = app().await;
+    let c = client();
+    let cookie = authenticate(&c, &url).await;
+    let page = c
+        .get(format!("{url}/admin/providers?preset=gemini"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("value=\"gemini\" selected>Gemini"));
+    assert!(page.contains("value=\"x-goog-api-key\" selected"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+    let upstream = axum::Router::new().route("/v1beta/models",axum::routing::get(|headers:axum::http::HeaderMap|async move {
+        assert_eq!(headers["x-goog-api-key"],"private-gemini-key");
+        axum::Json(serde_json::json!({"models":[{"name":"models/gemini-2.5-flash","displayName":"Gemini Flash","inputTokenLimit":1048576}]}))
+    }));
+    let upstream_task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let r = c
+        .post(format!("{url}/admin/providers"))
+        .header("cookie", &cookie)
+        .form(&[
+            ("name", "gemini"),
+            ("kind", "gemini"),
+            ("base_url", &base),
+            ("api_key", "private-gemini-key"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let page = c
+        .get(format!("{url}/admin/providers"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!page.contains("private-gemini-key"));
+    assert!(page.contains("value=\"gemini\" selected>Gemini"));
+    let test = c
+        .post(format!("{url}/admin/providers/gemini/test"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(test.contains("OK"), "{test}");
+    let list: serde_json::Value = c
+        .get(format!(
+            "{url}/admin/search/models?provider=gemini&src=provider&q=gemini"
+        ))
+        .header("cookie", &cookie)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list[0]["id"], "models/gemini-2.5-flash");
+    assert_eq!(list[0]["label"], "Gemini Flash");
+    assert_eq!(list[0]["context"], 1048576);
+    st.db.close().await;
+    task.abort();
+    upstream_task.abort();
+}
+
+#[tokio::test]
 async fn provider_key_headers_replace_all_client_credentials() {
     use std::sync::{Arc, Mutex};
     let (_dir, st, url, task) = app().await;

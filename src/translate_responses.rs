@@ -385,24 +385,28 @@ impl ResponseStream {
 pub enum ProxyStream {
     Chat(StreamTranslator),
     Responses(ResponseStream),
+    Gemini(crate::translate_gemini::GeminiStream),
 }
 impl ProxyStream {
     pub fn failed(&self) -> bool {
         match self {
             Self::Chat(s) => s.failed,
             Self::Responses(s) => s.failed,
+            Self::Gemini(s) => s.failed,
         }
     }
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         match self {
             Self::Chat(s) => s.feed(chunk),
             Self::Responses(s) => s.feed(chunk),
+            Self::Gemini(s) => s.feed(chunk),
         }
     }
     pub fn finish(&mut self) -> Vec<u8> {
         match self {
             Self::Chat(s) => s.finish(),
             Self::Responses(s) => s.finish(),
+            Self::Gemini(s) => s.finish(),
         }
     }
 }

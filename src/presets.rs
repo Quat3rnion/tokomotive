@@ -17,6 +17,7 @@ impl Preset {
         match self.kind {
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Gemini => "gemini",
         }
     }
 }
@@ -59,6 +60,16 @@ pub static PRESETS: &[Preset] = &[
         false,
         "https://docs.anthropic.com/en/api/overview",
         "Use an Anthropic Console API key."
+    ),
+    preset!(
+        "gemini",
+        "Google Gemini (native)",
+        Gemini,
+        "https://generativelanguage.googleapis.com",
+        XGoogApiKey,
+        false,
+        "https://ai.google.dev/api",
+        "Use a Gemini API key from Google AI Studio. Chat Completions and Messages are translated."
     ),
     preset!(
         "deepseek",
@@ -303,6 +314,7 @@ impl PresetChoice {
         match self.kind {
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Gemini => "gemini",
         }
     }
 }

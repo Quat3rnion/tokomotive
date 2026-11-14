@@ -60,6 +60,8 @@ pub enum ProviderKind {
     Openai,
     /// Anthropic: `/v1/messages`.
     Anthropic,
+    /// Google native `generateContent` API.
+    Gemini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,8 @@ pub enum KeyHeader {
     Bearer,
     XApiKey,
     ApiKey,
+    /// Native Gemini authentication: https://ai.google.dev/api#authentication
+    XGoogApiKey,
 }
 
 impl KeyHeader {
@@ -75,6 +79,7 @@ impl KeyHeader {
         match kind {
             ProviderKind::Openai => Self::Bearer,
             ProviderKind::Anthropic => Self::XApiKey,
+            ProviderKind::Gemini => Self::XGoogApiKey,
         }
     }
 
@@ -83,6 +88,7 @@ impl KeyHeader {
             Self::Bearer => "bearer",
             Self::XApiKey => "x-api-key",
             Self::ApiKey => "api-key",
+            Self::XGoogApiKey => "x-goog-api-key",
         }
     }
 
@@ -91,6 +97,7 @@ impl KeyHeader {
             Self::Bearer => request.bearer_auth(key),
             Self::XApiKey => request.header("x-api-key", key),
             Self::ApiKey => request.header("api-key", key),
+            Self::XGoogApiKey => request.header("x-goog-api-key", key),
         }
     }
 }
@@ -104,6 +111,11 @@ pub fn default_include_usage() -> bool {
 pub fn upstream_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let base = base.strip_suffix("/messages").unwrap_or(base);
+    if base.ends_with("/v1beta")
+        && let Some(suffix) = path.strip_prefix("/v1beta/")
+    {
+        return format!("{base}/{suffix}");
+    }
     let versioned = base.ends_with("/v1") || base.ends_with("/v4") || base.ends_with("/v1/openai");
     let suffix = if versioned {
         path.strip_prefix("/v1/").map(|p| format!("/{p}"))
@@ -173,6 +185,14 @@ impl Endpoint {
 }
 
 impl ProviderKind {
+    pub fn models_path(self) -> &'static str {
+        if self == Self::Gemini {
+            "/v1beta/models"
+        } else {
+            "/v1/models"
+        }
+    }
+
     /// Mutate the request body before it goes upstream.
     /// For streamed Chat Completions, ask the Provider to report usage.
     /// Returns true when the Proxy turned on `include_usage` itself; the
@@ -202,6 +222,7 @@ impl ProviderKind {
             (ProviderKind::Openai, Endpoint::Images) => image_usage(v.get("usage")?),
             (ProviderKind::Openai, _) => openai_usage(usage_object(v)?),
             (ProviderKind::Anthropic, _) => anthropic_usage(v.get("usage")?, None),
+            (ProviderKind::Gemini, _) => gemini_usage(v.get("usageMetadata")?),
         }
     }
 
@@ -221,8 +242,31 @@ pub fn is_stream(body: &Value) -> bool {
     body.get("stream").and_then(Value::as_bool).unwrap_or(false)
 }
 
+/// Google counts cached input inside promptTokenCount, but thoughts separately
+/// from candidatesTokenCount: https://ai.google.dev/api/generate-content#UsageMetadata
+pub fn gemini_usage(v: &Value) -> Option<Usage> {
+    let prompt = v.get("promptTokenCount")?.as_i64()?.max(0);
+    let cached = v["cachedContentTokenCount"]
+        .as_i64()
+        .unwrap_or(0)
+        .clamp(0, prompt);
+    Some(Usage {
+        input: prompt.saturating_sub(cached),
+        cache_read: cached,
+        output: v["candidatesTokenCount"]
+            .as_i64()
+            .unwrap_or(0)
+            .max(0)
+            .saturating_add(v["thoughtsTokenCount"].as_i64().unwrap_or(0).max(0)),
+        ..Default::default()
+    })
+}
+
 pub fn model_of(body: &Value) -> Option<String> {
-    body.get("model").and_then(Value::as_str).map(str::to_owned)
+    body.get("model")
+        .or_else(|| body.get("modelVersion"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn int(v: &Value, k: &str) -> i64 {
@@ -353,6 +397,7 @@ pub struct StreamTracker {
     pub model: Option<String>,
     /// True when the Provider sent its final usage report.
     pub usage_final: bool,
+    gemini_finished: bool,
     pub saw_content: bool,
 }
 
@@ -418,6 +463,26 @@ impl StreamTracker {
             ProviderKind::Openai => self.handle_openai(&v),
             ProviderKind::Anthropic => {
                 self.handle_anthropic(&v);
+                true
+            }
+            ProviderKind::Gemini => {
+                if let Some(model) = v["modelVersion"].as_str() {
+                    self.model = Some(model.into());
+                }
+                if v["candidates"].as_array().is_some_and(|c| !c.is_empty()) {
+                    self.saw_content = true;
+                }
+                self.gemini_finished |= v["candidates"].as_array().is_some_and(|candidates| {
+                    candidates.iter().any(|c| {
+                        c["finishReason"]
+                            .as_str()
+                            .is_some_and(|s| !s.is_empty() && s != "FINISH_REASON_UNSPECIFIED")
+                    })
+                }) || v["promptFeedback"]["blockReason"].is_string();
+                if let Some(usage) = v.get("usageMetadata").and_then(gemini_usage) {
+                    self.usage = Some(usage);
+                    self.usage_final = self.gemini_finished;
+                }
                 true
             }
         }

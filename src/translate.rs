@@ -182,12 +182,20 @@ fn tool_use(call: &Value) -> Result<Value, TranslateError> {
     if !input.is_object() {
         return Err(invalid("tool call arguments must be a JSON object"));
     }
-    Ok(json!({"type":"tool_use","id":call["id"],"name":function["name"],"input":input}))
+    let mut tool = json!({"type":"tool_use","id":call["id"],"name":function["name"],"input":input});
+    if let Some(signature) = call.get("thought_signature") {
+        tool["thought_signature"] = signature.clone();
+    }
+    Ok(tool)
 }
 
 fn tool_call(block: &Value) -> Value {
-    json!({"id":block["id"],"type":"function","function":{
-        "name":block["name"],"arguments":block.get("input").unwrap_or(&json!({})).to_string()}})
+    let mut call = json!({"id":block["id"],"type":"function","function":{
+        "name":block["name"],"arguments":block.get("input").unwrap_or(&json!({})).to_string()}});
+    if let Some(signature) = block.get("thought_signature") {
+        call["thought_signature"] = signature.clone();
+    }
+    call
 }
 
 fn choice_to_messages(choice: &Value) -> Value {
@@ -510,6 +518,7 @@ pub fn translate_error(dir: Direction, status: u16, body: &[u8]) -> Vec<u8> {
 struct PendingTool {
     id: String,
     name: String,
+    thought_signature: Option<String>,
     arguments: Vec<String>,
 }
 
@@ -815,6 +824,7 @@ impl StreamTranslator {
             let bytes = text(call, "id").len()
                 + text(&call["function"], "name").len()
                 + text(&call["function"], "arguments").len()
+                + text(call, "thought_signature").len()
                 + std::mem::size_of::<String>();
             if (self.tools.len() >= 128 && !self.tools.contains_key(&index))
                 || bytes > (16 * 1024 * 1024usize).saturating_sub(self.tool_bytes)
@@ -829,6 +839,9 @@ impl StreamTranslator {
             let tool = self.tools.entry(number(call, "index")).or_default();
             tool.id.push_str(text(call, "id"));
             tool.name.push_str(text(&call["function"], "name"));
+            if let Some(signature) = call["thought_signature"].as_str() {
+                tool.thought_signature = Some(signature.into());
+            }
             if let Some(arguments) = call["function"]["arguments"].as_str() {
                 tool.arguments.push(arguments.into());
             }
@@ -875,11 +888,16 @@ impl StreamTranslator {
                 for tool in self.tools.values() {
                     let index = self.next_block;
                     self.next_block += 1;
+                    let mut block =
+                        json!({"type":"tool_use","id":tool.id,"name":tool.name,"input":{}});
+                    if let Some(signature) = &tool.thought_signature {
+                        block["thought_signature"] = json!(signature);
+                    }
                     emit(
                         out,
                         Some("content_block_start"),
                         &json!({"type":"content_block_start","index":index,
-                        "content_block":{"type":"tool_use","id":tool.id,"name":tool.name,"input":{}}}),
+                        "content_block":block}),
                     );
                     for args in &tool.arguments {
                         emit(

@@ -374,6 +374,7 @@ fn parse_list(body: &[u8]) -> Option<Vec<Listed>> {
         };
         let label = item
             .get("display_name")
+            .or_else(|| item.get("displayName"))
             .or_else(|| item.get("name"))
             .and_then(|x| x.as_str())
             .filter(|s| s.len() <= 200)
@@ -383,6 +384,7 @@ fn parse_list(body: &[u8]) -> Option<Vec<Listed>> {
             "context_window",
             "max_context_length",
             "max_input_tokens",
+            "inputTokenLimit",
         ]
         .iter()
         .find_map(|k| item.get(*k).and_then(|x| x.as_u64()));
@@ -402,10 +404,10 @@ async fn fetch_list(
 ) -> Option<Vec<Listed>> {
     let key = p.keys.first()?.clone();
     let deadline = Instant::now() + timeout;
-    let first = crate::provider::upstream_url(&p.base_url, "/v1/models");
+    let first = crate::provider::upstream_url(&p.base_url, p.kind.models_path());
     let second = format!("{}/models", p.base_url.trim_end_matches('/'));
     let mut urls = vec![first];
-    if urls[0] != second {
+    if p.kind != ProviderKind::Gemini && urls[0] != second {
         urls.push(second);
     }
     for url in urls {
