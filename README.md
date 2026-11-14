@@ -91,7 +91,9 @@ The screenshots show demo data from a local test server. The keys are not real.
 | Page | What it shows |
 | ---- | ------------- |
 | [Ledger](docs/images/ledger.png) | The newest Ledger Entries with the filters. Each row shows the User, the Model and Provider, the status, the flags, the tokens, the amounts and the latency. |
-| [Providers](docs/images/providers.png) | Two API-key Providers and three Subscription Providers. The page shows only the last 4 characters of each key, or the name of its environment variable. |
+| [Add a Provider](docs/images/add-provider.png) | The searchable Provider picker. The search "kimi" finds verified presets, the Kimi Code sign-in and entries from models.dev. |
+| [Add a Provider form](docs/images/add-provider-form.png) | The guided form for DeepSeek. It shows only the fields that this Provider needs and a summary of the result. |
+| [Providers](docs/images/providers.png) | Two API-key Providers and four Subscription Providers. The page shows only the last 4 characters of each key, or the name of its environment variable. |
 | [Sign-in](docs/images/signin.png) | The sign-in panel of a Codex Provider. Paste the redirect URL here when device sign-in is not available. |
 | [Models](docs/images/models.png) | The Models with their Cost Card rates, Price Cards, Team overrides and the Default Markup. |
 | [Model page](docs/images/model.png) | The cards of one Model, a Team override and the Card history. |
