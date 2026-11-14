@@ -185,6 +185,7 @@ pub struct ResponseStream {
     id: String,
     buf: Vec<u8>,
     tools: std::collections::BTreeMap<u64, usize>,
+    tool_bytes: usize,
     include_usage: bool,
     started: bool,
     ended: bool,
@@ -199,6 +200,7 @@ impl ResponseStream {
             id: "translated".into(),
             buf: Vec::new(),
             tools: Default::default(),
+            tool_bytes: 0,
             include_usage: false,
             started: false,
             ended: false,
@@ -219,6 +221,10 @@ impl ResponseStream {
         let bytes = format!("data: {value}\n\n");
         if let Some(messages) = self.messages.as_mut() {
             out.extend(messages.feed(bytes.as_bytes()));
+            if messages.failed {
+                self.failed = true;
+                self.ended = true;
+            }
         } else {
             out.extend(bytes.as_bytes());
         }
@@ -298,6 +304,9 @@ impl ResponseStream {
         let Ok(mut v) = serde_json::from_str::<Value>(&data) else {
             return;
         };
+        if !v.is_object() {
+            return;
+        }
         if v.get("type").is_none()
             && let Some(name) = text.lines().find_map(|l| l.strip_prefix("event:"))
         {
@@ -315,11 +324,30 @@ impl ResponseStream {
             self.started = true;
             self.emit(self.chunk(json!({"role":"assistant"}), Value::Null), out);
         }
-        match v["type"].as_str().unwrap_or("") {
+        let kind = v["type"].as_str().unwrap_or("");
+        if matches!(
+            kind,
+            "response.output_item.added" | "response.function_call_arguments.delta"
+        ) {
+            if raw.len() > (16 * 1024 * 1024usize).saturating_sub(self.tool_bytes) {
+                self.error(out);
+                return;
+            }
+            self.tool_bytes += raw.len();
+        }
+        match kind {
             "response.output_text.delta" => {
                 self.emit(self.chunk(json!({"content":v["delta"]}), Value::Null), out)
             }
             "response.output_item.added" if v["item"]["type"] == "function_call" => {
+                if self.tools.len() >= 128
+                    && !self
+                        .tools
+                        .contains_key(&v["output_index"].as_u64().unwrap_or(0))
+                {
+                    self.error(out);
+                    return;
+                }
                 let index = self.tools.len();
                 self.tools
                     .insert(v["output_index"].as_u64().unwrap_or(0), index);
@@ -359,6 +387,12 @@ pub enum ProxyStream {
     Responses(ResponseStream),
 }
 impl ProxyStream {
+    pub fn failed(&self) -> bool {
+        match self {
+            Self::Chat(s) => s.failed,
+            Self::Responses(s) => s.failed,
+        }
+    }
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         match self {
             Self::Chat(s) => s.feed(chunk),

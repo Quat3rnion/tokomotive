@@ -239,6 +239,92 @@ fn malformed_tools_return_a_translation_error() {
 }
 
 #[test]
+fn responses_sse_ignores_non_object_data() {
+    for data in ["[1]", "3", "null"] {
+        for named in [true, false] {
+            let mut decoder = translate_responses::ResponseStream::new("gpt-test", false);
+            let event = if named {
+                format!("event: x\ndata: {data}\n\n")
+            } else {
+                format!("data: {data}\n\n")
+            };
+            assert!(decoder.feed(event.as_bytes()).is_empty());
+        }
+    }
+}
+
+#[test]
+fn responses_tool_count_is_capped() {
+    for messages in [false, true] {
+        let mut decoder = translate_responses::ResponseStream::new("gpt-test", messages);
+        for index in 0..128 {
+            let event = json!({"type":"response.output_item.added","output_index":index,"item":{"type":"function_call","call_id":"c","name":"f","arguments":""}});
+            assert!(
+                !String::from_utf8(decoder.feed(format!("data: {event}\n\n").as_bytes()))
+                    .unwrap()
+                    .contains("error")
+            );
+        }
+        let event = json!({"type":"response.output_item.added","output_index":128,"item":{"type":"function_call","call_id":"c","name":"f","arguments":""}});
+        let out = String::from_utf8(decoder.feed(format!("data: {event}\n\n").as_bytes())).unwrap();
+        assert!(
+            out.contains("error"),
+            "129th tool must terminate with an error"
+        );
+        assert!(decoder.failed);
+        assert!(decoder.finish().is_empty());
+    }
+}
+
+#[test]
+fn messages_tool_buffers_are_capped_across_events() {
+    use tokomotive::translate::{Direction, StreamTranslator};
+    for count_limit in [false, true] {
+        let mut decoder = StreamTranslator::new(Direction::MessagesToChat, "gpt-test");
+        let mut failed = false;
+        for index in 0..129 {
+            let args = if count_limit {
+                "".into()
+            } else {
+                "x".repeat(1024 * 1024)
+            };
+            let event = json!({"choices":[{"delta":{"tool_calls":[{"index":if count_limit {index} else {0},"id":"c","function":{"name":"f","arguments":args}}]}}]});
+            let out =
+                String::from_utf8(decoder.feed(format!("data: {event}\n\n").as_bytes())).unwrap();
+            if out.contains("error") {
+                failed = true;
+                break;
+            }
+        }
+        assert!(
+            failed,
+            "response-wide tool buffer limit must emit an error (count={count_limit})"
+        );
+        assert!(decoder.finish().is_empty());
+    }
+}
+
+#[test]
+fn responses_tool_arguments_are_capped_across_events() {
+    for messages in [false, true] {
+        let mut decoder = translate_responses::ResponseStream::new("gpt-test", messages);
+        decoder.feed(b"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"f\"}}\n\n");
+        let event = json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"x".repeat(1024 * 1024)});
+        let event = format!("data: {event}\n\n");
+        let mut failed = false;
+        for _ in 0..17 {
+            let out = String::from_utf8(decoder.feed(event.as_bytes())).unwrap();
+            if out.contains("error") {
+                failed = true;
+                break;
+            }
+        }
+        assert!(failed, "response-wide tool arguments must be capped");
+        assert!(decoder.failed);
+    }
+}
+
+#[test]
 fn complete_responses_events_have_the_same_size_limit_as_partial_events() {
     let event = json!({"type":"response.output_text.delta","delta":"x".repeat(4*1024*1024)});
     let mut decoder = translate_responses::ResponseStream::new("gpt-test", false);

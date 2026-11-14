@@ -529,6 +529,8 @@ pub struct StreamTranslator {
     stop: String,
     tool_indices: BTreeMap<u64, (usize, bool)>,
     tools: BTreeMap<u64, PendingTool>,
+    tool_bytes: usize,
+    pub failed: bool,
     next_block: usize,
     text_block: Option<usize>,
 }
@@ -548,6 +550,8 @@ impl StreamTranslator {
             stop: String::new(),
             tool_indices: BTreeMap::new(),
             tools: BTreeMap::new(),
+            tool_bytes: 0,
+            failed: false,
             next_block: 0,
             text_block: None,
         }
@@ -632,6 +636,7 @@ impl StreamTranslator {
     }
 
     fn stream_error(&mut self, value: &Value, out: &mut Vec<u8>) {
+        self.failed = true;
         let translated = translate_error(self.dir, 502, value.to_string().as_bytes());
         let error = serde_json::from_slice(&translated).expect("serialized error is JSON");
         emit(
@@ -806,6 +811,21 @@ impl StreamTranslator {
             );
         }
         for call in array(&delta["tool_calls"]) {
+            let index = number(call, "index");
+            let bytes = text(call, "id").len()
+                + text(&call["function"], "name").len()
+                + text(&call["function"], "arguments").len()
+                + std::mem::size_of::<String>();
+            if (self.tools.len() >= 128 && !self.tools.contains_key(&index))
+                || bytes > (16 * 1024 * 1024usize).saturating_sub(self.tool_bytes)
+            {
+                self.stream_error(
+                    &json!({"error":{"message":"upstream tool buffer limit exceeded"}}),
+                    out,
+                );
+                return;
+            }
+            self.tool_bytes += bytes;
             let tool = self.tools.entry(number(call, "index")).or_default();
             tool.id.push_str(text(call, "id"));
             tool.name.push_str(text(&call["function"], "name"));
