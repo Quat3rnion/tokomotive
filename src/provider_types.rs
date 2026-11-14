@@ -24,6 +24,9 @@ pub enum Category {
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Verified,
+    /// A sign-in flow (subscription or cloud OAuth). Not a verified preset:
+    /// unofficial ones carry their own warning.
+    SignIn,
     ModelsDev,
     Custom,
 }
@@ -32,6 +35,7 @@ impl Source {
     pub fn label(self) -> &'static str {
         match self {
             Self::Verified => "Verified",
+            Self::SignIn => "Sign-in",
             Self::ModelsDev => "from models.dev",
             Self::Custom => "Custom",
         }
@@ -169,7 +173,7 @@ impl ProviderType {
     fn group(&self) -> u8 {
         match (self.source, self.category) {
             (Source::Verified, Category::ApiKey | Category::Local | Category::Bedrock) => 0,
-            (Source::Verified, _) => 1,
+            (Source::Verified | Source::SignIn, _) => 1,
             (Source::Custom, _) => 2,
             (Source::ModelsDev, _) => 3,
         }
@@ -564,7 +568,7 @@ pub fn catalog(presets: &[PresetChoice]) -> Vec<ProviderType> {
             id: s.id.into(),
             label: s.label.into(),
             tagline: s.tagline,
-            source: Source::Verified,
+            source: Source::SignIn,
             category: s.category,
             auth: s.auth,
             kind: s.kind,
@@ -677,7 +681,7 @@ pub fn groups(types: &[ProviderType]) -> Vec<(&'static str, Vec<&ProviderType>)>
         (
             "Subscriptions and sign-in",
             pick(&|t| {
-                t.source == Source::Verified
+                matches!(t.source, Source::Verified | Source::SignIn)
                     && !matches!(
                         t.category,
                         Category::ApiKey | Category::Local | Category::Bedrock

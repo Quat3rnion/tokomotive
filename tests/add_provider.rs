@@ -712,3 +712,30 @@ async fn serve_for_screenshots() {
         .await
         .unwrap();
 }
+
+/// A sign-in is not a "Verified" preset: unofficial sign-ins must not carry a
+/// trust tag that contradicts the "Unofficial" warning.
+#[tokio::test]
+async fn sign_ins_are_tagged_sign_in_not_verified() {
+    let a = app().await;
+    for (q, id) in [
+        ("copilot", "github-copilot"),
+        ("chatgpt", "chatgpt"),
+        ("hugging", "hf-oauth"),
+    ] {
+        let hits = a.types(q).await;
+        let t = hits
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap_or_else(|| panic!("{id}: {hits:?}"));
+        assert_eq!(t["source"], "sign_in", "{id}");
+    }
+    let html = a.page("/admin/providers?add=github-copilot").await;
+    assert!(!html.contains(">Verified<"), "Copilot form shows Verified");
+    assert!(html.contains(">Unofficial<"));
+    let html = a.page("/admin/search/provider-types?q=copilot").await;
+    assert!(
+        !html.contains(">Verified<"),
+        "Copilot option shows Verified"
+    );
+}

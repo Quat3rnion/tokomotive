@@ -24,7 +24,7 @@ GET /admin/provider-form?type=ID&name= returns it for the picker.
   <div class="np-head">
     <div class="np-title">
       <h3 id="np-form-h" tabindex="-1">{{ form.t.label }}</h3>
-      <span class="tag{% if form.t.source_label() == "Verified" %} good{% else if form.t.source_label() == "Custom" %} info{% endif %}">{{ form.t.source_label() }}</span>{% if form.t.unofficial %}<span class="tag warn">Unofficial</span>{% endif %}
+      {% if !form.t.unofficial %}<span class="tag{% if form.t.source_label() == "Verified" %} good{% else if form.t.source_label() == "Custom" || form.t.source_label() == "Sign-in" %} info{% endif %}">{{ form.t.source_label() }}</span>{% endif %}{% if form.t.unofficial %}<span class="tag warn">Unofficial</span>{% endif %}
       <span class="np-tagline">{{ form.t.tagline }}</span>
     </div>
     <a class="np-change" href="/admin/providers?add=#add-provider-h" data-np-change>Change provider</a>
