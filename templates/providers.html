@@ -69,7 +69,7 @@
   </form>
   {% else %}
   <h3>Subscription</h3>
-  {% if p.auth == "codex" %}<p class="hint">Legacy Codex OAuth uses a private ChatGPT route. It can change without notice and can break the service terms. ChatGPT token sharing is recommended.</p>{% endif %}
+  {% if p.auth == "codex" %}<p class="hint warn-note">Legacy Codex OAuth uses a private ChatGPT route. It can change without notice and can break the service terms. ChatGPT token sharing is recommended.</p>{% endif %}
   {% if let Some(s) = p.status %}
   {% call status_list(s) %}
   <div class="row">

@@ -1,5 +1,5 @@
-<nav class="pager" aria-label="{{ pager.label }}">
+{% if pager.prev.is_some() || pager.next.is_some() %}<nav class="pager" aria-label="{{ pager.label }}">
   <span class="muted">Showing {{ pager.shown }}</span>
   {% if let Some(p) = pager.prev %}<a href="{{ p }}" rel="prev">Previous</a>{% endif %}
   {% if let Some(n) = pager.next %}<a href="{{ n }}" rel="next">Next</a>{% endif %}
-</nav>
+</nav>{% endif %}

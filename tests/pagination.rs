@@ -1049,3 +1049,19 @@ async fn legacy_list_is_bounded() {
     }
     assert!(db::list_users(&st.db).await.unwrap().len() <= 200);
 }
+
+/// A list that fits on one page has no pager: "Showing N" alone is noise.
+#[tokio::test]
+async fn single_page_lists_render_no_pager() {
+    let a = App::large().await;
+    // One matching User: one page, no Previous and no Next.
+    let html = a.page("/admin/users?q=User%20001").await;
+    assert!(
+        !html.contains("<nav class=\"pager\""),
+        "pager on a one-page list"
+    );
+    // A full page with a next page keeps the pager.
+    let html = a.page("/admin/users?limit=10").await;
+    assert!(html.contains("<nav class=\"pager\""));
+    assert!(html.contains("rel=\"next\""));
+}

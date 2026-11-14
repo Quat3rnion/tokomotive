@@ -17,7 +17,7 @@
 {% macro deployments_editor(providers, deployments, spare) %}
 <fieldset class="deployments">
   <legend>Deployments</legend>
-  <p class="muted">The Proxy tries them in this order with the Priority strategy. A row with no Provider and no model is ignored.</p>
+  <p class="muted">With the Priority strategy, the Proxy tries them in this order. Weight is used only by the Weighted strategy. A row with no Provider and no model is ignored.</p>
   <div data-rows>
   {% for d in deployments.iter() %}{% call deployment_row(providers, d.provider.as_str(), d.model, d.weight) %}{% endfor %}
   {% if spare %}{% call deployment_row(providers, "", "", 1) %}{% else %}<noscript>{% call deployment_row(providers, "", "", 1) %}</noscript>{% endif %}
