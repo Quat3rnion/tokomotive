@@ -656,6 +656,64 @@ async fn storage_expiry_encryption_caps_and_oldest_eviction() {
 }
 
 #[tokio::test]
+async fn store_enforces_byte_cap_when_more_than_500_evictions_are_needed() {
+    use tokomotive::cache::{self, Entry, Limits, Plan};
+    let e = env("key", "openai").await;
+    let limits = Limits {
+        max_entries: 2000,
+        max_bytes: 1024 * 1024,
+        max_entry_bytes: 1024 * 1024,
+        ..Default::default()
+    };
+    sqlx::query("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO response_cache(key,body,body_bytes,created_ms,expires_ms) SELECT 'old-'||x,zeroblob(1024),1024,0,9223372036854775807 FROM n")
+        .execute(&e.st.db).await.unwrap();
+    let plan = Plan {
+        key: "large-new".into(),
+        ttl_secs: 60,
+        lookup: true,
+    };
+    let mut entry = Entry {
+        body: String::new(),
+        content_type: "application/json".into(),
+        provider: "p".into(),
+        upstream_model: Some("m".into()),
+        model: Some("m".into()),
+        usage: Default::default(),
+        estimated: false,
+    };
+    // The encrypted envelope includes two base64 layers: about 900 KiB.
+    let bytes = vec![b'x'; 506 * 1024];
+    entry.set_body(&bytes);
+    cache::store(&e.st.db, &e.st.secret_key, &plan, &limits, &entry)
+        .await
+        .unwrap();
+    let size: i64 =
+        sqlx::query_scalar("SELECT body_bytes FROM response_cache WHERE key='large-new'")
+            .fetch_one(&e.st.db)
+            .await
+            .unwrap();
+    assert!((890 * 1024..910 * 1024).contains(&size), "{size}");
+    let total: i64 = sqlx::query_scalar("SELECT SUM(body_bytes) FROM response_cache")
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
+    assert!(
+        total <= limits.max_bytes as i64,
+        "stored {total} bytes, cap {}",
+        limits.max_bytes
+    );
+    assert_eq!(
+        cache::lookup(&e.st.db, &e.st.secret_key, &plan, &limits)
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes()
+            .unwrap(),
+        bytes
+    );
+}
+
+#[tokio::test]
 async fn responses_embeddings_tools_errors_and_disabled_route() {
     let e = env("key", "openai").await;
     for (endpoint, b) in [

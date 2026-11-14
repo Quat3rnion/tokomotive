@@ -1023,10 +1023,13 @@ in the runtime settings object's `cache` field:
 | `cache.hit_price_micros` | `0` | Fixed Price per hit, in microdollars. Must be non-negative. Cost is always zero. |
 
 The cache table is `response_cache`. Bodies use the existing Master Key.
-Expiry checks apply at lookup. A tracked maintenance task removes expired
-entries and enforces limits every 60 seconds. Stores and saved limit changes
-also enforce the limits. Eviction removes the oldest entry first, not the least
-recently used entry. These limits apply to stored bodies, not to SQLite file overhead.
+Expiry checks apply at lookup. Every 60 seconds, a tracked maintenance task
+removes up to 500 expired or oversized entries and up to 500 excess entries.
+Saved limit changes also run one maintenance batch. A store repeats eviction
+in batches of up to 500 rows in the same transaction until the entry count and
+total encrypted bytes fit the limits. Only then does it commit. Eviction keeps
+the newest entries, not the most recently used entries. These limits apply to
+stored bodies, not to SQLite file overhead.
 See [cache use and accounting](usage.md#exact-response-cache) for normalization,
 client bypass headers, SSE variants and Rate Limits.
 

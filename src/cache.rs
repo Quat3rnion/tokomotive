@@ -231,7 +231,9 @@ pub async fn store(
     let mut tx = db::begin_purge(db, "cache_store").await?;
     sqlx::query("INSERT OR REPLACE INTO response_cache(key,body,body_bytes,created_ms,expires_ms) VALUES(?,?,?,?,?)")
         .bind(&plan.key).bind(body).bind(size as i64).bind(now).bind(expires).execute(&mut *tx).await?;
-    prune(&mut tx, limits).await?;
+    // Store must enforce the cap before commit, even if it takes several
+    // bounded eviction batches. Maintenance still runs only one batch.
+    while prune(&mut tx, limits).await? == 500 {}
     tx.commit().await?;
     metrics::counter!("llm_cache_stored_bytes_total").increment(size);
     Ok(())
@@ -245,16 +247,16 @@ pub async fn purge(db: &Db) -> Result<()> {
     tx.commit().await?;
     Ok(())
 }
-async fn prune(conn: &mut sqlx::SqliteConnection, limits: &Limits) -> Result<()> {
+async fn prune(conn: &mut sqlx::SqliteConnection, limits: &Limits) -> Result<u64> {
     sqlx::query("DELETE FROM response_cache WHERE rowid IN (SELECT rowid FROM response_cache WHERE expires_ms<=? OR body_bytes>? LIMIT 500)")
         .bind(db::now_ms())
         .bind(limits.max_entry_bytes.min(i64::MAX as u64) as i64)
         .execute(&mut *conn)
         .await?;
     // Newest entries survive. rowid breaks ties within the same millisecond.
-    sqlx::query("DELETE FROM response_cache WHERE rowid IN (SELECT rowid FROM (SELECT rowid,ROW_NUMBER() OVER (ORDER BY created_ms DESC,rowid DESC) AS n,SUM(body_bytes) OVER (ORDER BY created_ms DESC,rowid DESC) AS bytes FROM response_cache) WHERE n>? OR bytes>? LIMIT 500)")
+    let deleted = sqlx::query("DELETE FROM response_cache WHERE rowid IN (SELECT rowid FROM (SELECT rowid,ROW_NUMBER() OVER (ORDER BY created_ms DESC,rowid DESC) AS n,SUM(body_bytes) OVER (ORDER BY created_ms DESC,rowid DESC) AS bytes FROM response_cache) WHERE n>? OR bytes>? LIMIT 500)")
         .bind(limits.max_entries.min(i64::MAX as u64) as i64).bind(limits.max_bytes.min(i64::MAX as u64) as i64).execute(conn).await?;
-    Ok(())
+    Ok(deleted.rows_affected())
 }
 pub async fn maintain(db: &Db, limits: &Limits) -> Result<()> {
     let mut tx = db::begin_purge(db, "cache_maintenance").await?;
