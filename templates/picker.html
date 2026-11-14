@@ -1,5 +1,5 @@
 {#
-Model picker (base.html header, item 13). Arguments:
+Model picker (base.html header, item 13). Arguments of model(...):
 - id: input id ("" when a <label> wraps the picker; single only).
 - name, value: the form field. For multi, value is comma-separated.
 - mode: "single", "multi" (unordered chips) or "ordered" (chips with Up/Down).
@@ -12,4 +12,29 @@ Without JavaScript this is the plain text input (comma-separated for multi).
 #}
 {% macro model(id, name, value, mode, src, scope, placeholder, help, class, required) %}
 <span class="cb" data-picker="{% if mode == "single" %}single{% else %}multi{% endif %}"{% if mode == "ordered" %} data-ordered{% endif %} data-src="{{ src }}"{% if !scope.is_empty() %} data-scope="{{ scope }}"{% endif %}><input{% if !id.is_empty() %} id="{{ id }}"{% endif %} name="{{ name }}" value="{{ value }}"{% if !class.is_empty() %} class="{{ class }}"{% endif %}{% if required %} required{% endif %} autocomplete="off" autocapitalize="off" spellcheck="false"{% if !placeholder.is_empty() %} placeholder="{{ placeholder }}"{% endif %}{% if !help.is_empty() %} aria-describedby="{{ help }}"{% endif %}></span>
+{%- endmacro %}
+
+{#
+Entity picker (base.html header, item 12): a User, Team, Provider, Route or
+models.dev field. The JS makes a strict combobox that lists the first 20
+choices on focus or click and searches GET /admin/search/{kind}.
+- id: control id ("" when a <label> wraps the picker).
+- name, value: the form field. The form submits the name, as before.
+- kind: users, teams, providers, routes, models-dev-providers or
+  models-dev-models.
+- choices: db::small_choices (Some for at most 30). Without JS, Some is a
+  select and None is a text input for the exact name.
+- empty_label: the empty select option and the placeholder ("No Team",
+  "All Providers"; "" = no empty option).
+- required: true adds `required`.
+entity_text is the same picker without a select (large lists such as
+models.dev). scope: the name of a field in the same form whose value limits
+the results (`&provider=`); "" = none.
+For several values (chips), see provider_access in control_options.html.
+#}
+{% macro entity(id, name, value, kind, choices, empty_label, required) %}
+<span class="cb" data-picker="single" data-strict data-kind="{{ kind }}" data-endpoint="/admin/search/{{ kind }}">{% if let Some(options) = choices %}<select{% if !id.is_empty() %} id="{{ id }}"{% endif %} name="{{ name }}"{% if required %} required{% endif %}>{% if !empty_label.is_empty() %}<option value="">{{ empty_label }}</option>{% endif %}{% if !value.is_empty() %}<option value="{{ value }}" selected>{{ value }}</option>{% endif %}{% for c in options %}{% if c.name.as_str() != value %}<option value="{{ c.name }}">{{ c.name }}</option>{% endif %}{% endfor %}</select>{% else %}<input{% if !id.is_empty() %} id="{{ id }}"{% endif %} name="{{ name }}" value="{{ value }}"{% if required %} required{% endif %}{% if !empty_label.is_empty() %} placeholder="{{ empty_label }}"{% endif %} autocomplete="off" autocapitalize="off" spellcheck="false">{% endif %}</span>
+{%- endmacro %}
+{% macro entity_text(id, name, value, kind, scope, placeholder) %}
+<span class="cb" data-picker="single" data-strict data-kind="{{ kind }}" data-endpoint="/admin/search/{{ kind }}"{% if !scope.is_empty() %} data-scope="{{ scope }}"{% endif %}><input id="{{ id }}" name="{{ name }}" value="{{ value }}"{% if !placeholder.is_empty() %} placeholder="{{ placeholder }}"{% endif %} autocomplete="off" autocapitalize="off" spellcheck="false"></span>
 {%- endmacro %}

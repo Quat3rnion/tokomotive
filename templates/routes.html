@@ -5,7 +5,7 @@
 {% block nav_routes %}aria-current="page"{% endblock %}
 {% macro deployment_row(providers, provider, model, weight) %}
 <div class="row deployment">
-  <label>Provider {% if let Some(options) = providers %}<select name="deployment_provider">{% call controls::options(options, provider, "Choose a Provider") %}</select>{% else %}<input name="deployment_provider" value="{{ provider }}" data-search="providers" placeholder="Exact Provider name" autocomplete="off">{% endif %}</label>
+  <label>Provider {% call picker::entity("", "deployment_provider", provider, "providers", providers, "Choose a Provider", false) %}</label>
   <label>Upstream model {% call picker::model("", "deployment_model", model, "single", "provider,model,models.dev", "deployment_provider", "", "", "wide", false) %}</label>
   <label data-weight>Weight <input name="deployment_weight" type="number" min="1" step="1" value="{{ weight }}" inputmode="numeric"></label>
   <span class="row-tools" data-tools hidden>

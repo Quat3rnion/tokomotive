@@ -184,7 +184,7 @@ async fn provider_access_uses_checkboxes_through_thirty_and_accepts_both_forms()
     );
     let html = a.page("/admin/keys").await;
     assert!(!html.contains("type=\"checkbox\" name=\"allowed_providers\""));
-    assert!(html.contains("name=\"allowed_providers\" data-search=\"providers\" data-csv"));
+    assert!(html.contains("data-picker=\"multi\" data-strict data-kind=\"providers\" data-endpoint=\"/admin/search/providers\"><input name=\"allowed_providers\""));
     assert_eq!(
         a.post(
             &format!("/admin/keys/{id}"),
@@ -254,14 +254,14 @@ async fn small_team_and_provider_sets_use_selects_with_a_bounded_fallback() {
     );
     db::create_team(&a.st.db, "Team 31").await.unwrap();
     assert!(
-        a.page("/admin/users")
-            .await
-            .contains("<input id=\"new-team\" name=\"team_name\" data-search=\"teams\"")
+        a.page("/admin/users").await.contains(
+            "<input id=\"new-team\" name=\"team_name\" value=\"\" placeholder=\"No Team\""
+        )
     );
     assert!(
         a.page(&format!("/admin/models/{model}"))
             .await
-            .contains("<input id=\"t-team\" name=\"team_name\" data-search=\"teams\"")
+            .contains("<input id=\"t-team\" name=\"team_name\" value=\"\" required")
     );
     // Selects submit exact names, just like the large-set input.
     assert_eq!(
@@ -390,6 +390,6 @@ async fn user_filter_lists_their_keys_and_preselects_them() {
     let html = a.page(&format!("/admin/keys?user={jonas}")).await;
     assert!(html.contains("jonas-laptop"));
     assert!(!html.contains("maria-laptop"));
-    assert!(html.contains("name=\"user_name\" value=\"jonas\" data-search=\"users\""));
+    assert!(html.contains("<select id=\"key-user\" name=\"user_name\" required><option value=\"\">Choose a User</option><option value=\"jonas\" selected>jonas</option>"));
     assert!(html.contains("href=\"/admin/keys\""), "link to all keys");
 }

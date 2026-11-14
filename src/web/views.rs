@@ -843,6 +843,7 @@ pub struct KeyView {
 #[template(path = "keys.html")]
 pub struct KeysPage {
     pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
+    pub user_choices: Option<Vec<crate::db::ControlChoice>>,
     pub revoked_open: bool,
     pub has_users: bool,
     pub pager: crate::pagination::Pager,
@@ -917,6 +918,7 @@ impl KeysPage {
         }
         KeysPage {
             provider_choices: None,
+            user_choices: None,
             revoked_open: false,
             has_users: true,
             pager: Default::default(),
@@ -1319,6 +1321,7 @@ pub struct LedgerView {
 #[derive(Default)]
 pub struct LedgerFilterView {
     pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
+    pub user_choices: Option<Vec<crate::db::ControlChoice>>,
     pub provider: String,
     pub user: String,
     pub model: String,

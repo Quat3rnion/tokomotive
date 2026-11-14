@@ -48,6 +48,7 @@ macro_rules! tryform {
 
 mod models_dev;
 mod oauth;
+mod pickers;
 mod quota;
 mod settings;
 
@@ -78,7 +79,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/ledger", get(ledger))
         .route("/admin/usage", get(usage))
         .route("/admin/search/models", get(search_models))
-        .route("/admin/search/{kind}", get(search))
+        .route("/admin/search/{kind}", get(pickers::search))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
         .merge(models_dev::router())
@@ -922,20 +923,6 @@ struct ListQ {
     provider: Option<String>,
 }
 
-async fn search(
-    _: Admin,
-    State(st): State<AppState>,
-    Path(kind): Path<String>,
-    Query(q): Query<PageQuery>,
-) -> Response {
-    // Models have their own endpoint: `search_models`.
-    if !matches!(kind.as_str(), "users" | "teams" | "routes" | "providers") {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let names = tryr!(db::search_names(&st.db, &kind, &q.q).await);
-    axum::Json(names).into_response()
-}
-
 #[derive(Deserialize, Default)]
 struct ModelSearchQ {
     #[serde(default)]
@@ -1411,6 +1398,7 @@ async fn keys_page(st: &AppState, new_key: Option<String>, q: ListQ, uri: &str) 
             .unwrap_or_default();
     }
     page.provider_choices = tryr!(db::small_choices(&st.db, "providers").await);
+    page.user_choices = tryr!(db::small_choices(&st.db, "users").await);
     page.revoked_pager = revoked_pager;
     page.pager.label = "Active key pages".into();
     page.revoked_pager.label = "Revoked key pages".into();
@@ -2427,6 +2415,7 @@ async fn ledger(
     };
     let filters = LedgerFilterView {
         provider_choices: tryr!(db::small_choices(&st.db, "providers").await),
+        user_choices: tryr!(db::small_choices(&st.db, "users").await),
         user: q.user.clone().unwrap_or_default(),
         provider: query.provider.clone().unwrap_or_default(),
         model: query.model.clone().unwrap_or_default(),

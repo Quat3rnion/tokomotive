@@ -1,0 +1,2 @@
+{% for h in hits %}<li role="option" aria-selected="false" class="cb-opt" data-value="{{ h.name }}"{% if !h.scope.is_empty() %} data-scope-value="{{ h.scope }}"{% endif %}><span class="cb-main"><span class="cb-name">{{ h.name }}</span>{% if !h.tag.is_empty() %}<span class="tag{% if h.tag == "subscription" %} info{% else %} warn{% endif %}">{{ h.tag }}</span>{% endif %}</span>{% if !h.detail.is_empty() %}<span class="cb-meta">{{ h.detail }}</span>{% endif %}</li>
+{% endfor %}

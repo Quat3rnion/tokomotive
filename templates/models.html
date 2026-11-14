@@ -1,6 +1,5 @@
 {% extends "base.html" %}
 {% import "rates_fields.html" as f %}
-{% import "control_options.html" as controls %}
 {% import "picker.html" as picker %}
 {% block title %}Models - Tokomotive{% endblock %}
 {% block nav_models %}aria-current="page"{% endblock %}
@@ -75,7 +74,7 @@
   <form method="post" action="/admin/models" class="stack">
     <div class="row fill">
       <div class="field"><label for="new-name">Name</label>{% call picker::model("new-name", "name", "", "single", "provider,models.dev", "provider", "gpt-4o", "new-name-help", "", true) %}<p class="hint" id="new-name-help">The model name that clients send. Choose a Provider to see its models, or type a name.</p></div>
-      <div class="field"><label for="new-provider">Provider</label>{% if let Some(options) = provider_choices %}<select id="new-provider" name="provider" required>{% call controls::options(options, new_provider, "Choose a Provider") %}</select>{% else %}<input id="new-provider" name="provider" value="{{ new_provider }}" data-search="providers" required placeholder="Exact Provider name" autocomplete="off">{% endif %}</div>
+      <div class="field"><label for="new-provider">Provider</label>{% call picker::entity("new-provider", "provider", new_provider, "providers", provider_choices, "Choose a Provider", true) %}</div>
       <div class="field grow"><label for="new-aliases">Aliases</label>{% call picker::model("new-aliases", "aliases", "", "multi", "-", "", "4o, gpt-4o-latest", "new-aliases-help", "", false) %}<p class="hint" id="new-aliases-help">Optional. Other names for this Model. Without JavaScript, enter comma-separated names.</p></div>
     </div>
     {% if !base.simple %}

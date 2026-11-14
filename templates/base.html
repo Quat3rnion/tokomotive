@@ -66,14 +66,27 @@ COPY SHEET (GLOSSARY.md)
   "ChatGPT subscription", "Claude Pro/Max".
 - Times are UTC and say so.
 12. Paging: include pager.html with a `pager` from pagination::Pager. Include
-    search.html for name search. Inputs with data-search="users|teams|routes|
-    providers" get at most 20 suggestions; without JS, exact names work.
-    Add data-csv for comma-separated names.
-    Use db::small_choices for Teams and Providers: at most 30 choices use
-    selects or Provider Access checkboxes from control_options.html.
+    search.html for name search.
+    Entity fields: every field that names a User, Team, Provider, Route or
+    models.dev entry uses `picker::entity(...)` (or `entity_text` for
+    models.dev) from picker.html. Never ask for a typed exact name, and do
+    not add datalists. The guard test tests/entity_pickers.rs fails on a
+    plain text input for such a field.
+    - Pass db::small_choices (Teams, Providers, Users): without JS, at most
+      30 choices are a select, more are a text input for the exact name.
+    - The JS makes both a strict combobox (item 13, data-kind): it lists
+      the first 20 choices on focus or click, the note says how many more
+      a search finds, and typed text filters. Only a listed name is valid;
+      the form submits the name, as before.
+    - GET /admin/search/{users|teams|providers|routes|models-dev-providers|
+      models-dev-models}?q=&provider= (pickers.rs): at most 20 rows, names
+      that start with q first, X-Total-Count, context (Team and keys,
+      members, API format and sign-in, strategy). HTML options, or JSON.
+    - Several values: chips, see provider_access in control_options.html
+      (checkboxes for at most 30 Providers).
 13. Model picker: every model field uses `picker::model(...)` from
     picker.html (`{% import "picker.html" as picker %}`; the arguments are
-    in that file). Do not use data-search="models".
+    in that file). Do not use a datalist.
     - Without JS it is the plain text input (comma-separated for multi). The
       server joins repeated `fallbacks`, `allowed_models` and `aliases`
       fields with ", " (web::MULTI_FIELDS), so chips and text both work.
@@ -94,7 +107,10 @@ COPY SHEET (GLOSSARY.md)
       the model search URL (it gets `?q=` only). `data-strict` allows only
       listed options: no "Use '<text>'" row, Enter is never a form submit,
       and the first result of a typed search is active. `data-empty-note`
-      is the note for an empty query. An option with `data-label` shows that
+      is the note for an empty query, `data-none-note` for no matches. With
+      an X-Total-Count response header the note counts the other matches.
+      `data-scope` also works with an endpoint (`&provider=`). An option
+      with `data-scope-value` fills an empty scope field (models.dev). An option with `data-label` shows that
       label in the input. Each choice sends a bubbling `toko-pick` event with
       `detail.value` and `detail.label` (see providers.html).
 #}<!doctype html>
@@ -384,6 +400,9 @@ nav.pager { margin-top:var(--sp-2); }
 .cb-opt[aria-selected=true] { background:var(--info-bg); box-shadow:inset 3px 0 0 var(--link); }
 .cb-main { display:flex; align-items:baseline; justify-content:space-between; gap:var(--sp-3); }
 .cb-id { font:13px/1.4 ui-monospace, monospace; overflow-wrap:anywhere; min-width:0; }
+/* 12. Entity pickers: names in the text font; a Provider field in a row is as wide as its select was. */
+.cb-name { font-weight:500; overflow-wrap:anywhere; min-width:0; }
+.row label .cb[data-kind] > input { width:14em; }
 .cb-main .tag { flex:none; }
 .cb-meta { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .cb-custom .cb-id { color:var(--link); }
@@ -646,18 +665,21 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
 <script>
 (() => {
   // 13. Model picker: a WAI-ARIA 1.2 combobox over a plain text input.
+  // 12. Entity pickers (data-kind) use the same code in strict mode.
   if (!window.toko || window.toko.pickers) { return; }
   const toko = window.toko;
   let serial = 0;
   const svg = d => `<svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const ICON = { up: svg('M4 10l4-4 4 4'), down: svg('M4 6l4 4 4-4'), x: svg('M4.5 4.5l7 7M11.5 4.5l-7 7') };
-  const helpFor = (multi, strict) => {
-    const id = strict ? 'cb-help-strict' : multi ? 'cb-help-multi' : 'cb-help';
+  const helpFor = (multi, strict, entity) => {
+    const id = entity ? (multi ? 'cb-help-pick-multi' : 'cb-help-pick') : strict ? 'cb-help-strict' : multi ? 'cb-help-multi' : 'cb-help';
     if (!document.getElementById(id)) {
       const h = document.createElement('span');
       h.id = id;
       h.className = 'vh';
-      h.textContent = strict
+      h.textContent = entity
+        ? `The list opens on focus. Type to search. Down and Up move through the list, Enter ${multi ? 'adds' : 'selects'} one, Escape closes it.`
+        : strict
         ? 'Type to search. Down and Up move through the results, Enter selects one.'
         : multi
         ? 'Type to search. Down and Up move through the results, Enter adds one. Enter or a comma adds the typed name.'
@@ -667,6 +689,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
     return id;
   };
   const labelOf = input => {
+    if (input.hasAttribute('aria-label')) { return input.getAttribute('aria-label'); }
     if (input.id) {
       const l = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
       if (l) { return l.textContent.trim(); }
@@ -677,9 +700,26 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
   };
   const split = text => text.split(',').map(x => x.trim()).filter(Boolean);
 
+  // 12. Without JS a small list is a select. Make it the same text input.
+  const fromSelect = sel => {
+    const input = document.createElement('input');
+    ['id', 'name', 'aria-describedby'].forEach(a => { if (sel.hasAttribute(a)) { input.setAttribute(a, sel.getAttribute(a)); } });
+    input.required = sel.required;
+    input.value = sel.value;
+    const empty = [...sel.options].find(o => o.value === '');
+    if (empty) { input.placeholder = empty.textContent; }
+    input.autocomplete = 'off';
+    input.setAttribute('autocapitalize', 'off');
+    input.spellcheck = false;
+    sel.replaceWith(input);
+    return input;
+  };
+
   const setup = cb => {
-    const input = cb.querySelector(':scope > input');
-    if (!input || cb.dataset.ready) { return; }
+    if (cb.dataset.ready) { return; }
+    const sel = cb.querySelector(':scope > select');
+    const input = sel ? fromSelect(sel) : cb.querySelector(':scope > input');
+    if (!input) { return; }
     cb.dataset.ready = 'true';
     const multi = cb.dataset.picker === 'multi';
     const ordered = cb.hasAttribute('data-ordered');
@@ -687,7 +727,11 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
     const free = src === '-';
     const endpoint = cb.dataset.endpoint || '';
     const strict = cb.hasAttribute('data-strict');
+    // Entity pickers (Users, Teams, Providers): the list opens on focus and
+    // the field accepts only a listed name.
+    const entity = cb.hasAttribute('data-kind');
     const name = labelOf(input) || 'Model';
+    const field = input.name;
     const n = ++serial;
     if (!input.id && input.closest('label')) { input.setAttribute('aria-label', name); }
 
@@ -706,7 +750,14 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
     input.setAttribute('aria-autocomplete', 'list');
     input.setAttribute('aria-expanded', 'false');
     input.setAttribute('aria-controls', list.id);
-    input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), helpFor(multi, strict)].filter(Boolean).join(' '));
+    input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), helpFor(multi, strict, entity)].filter(Boolean).join(' '));
+    // Single entity: the last chosen (or loaded) name. Other text is not valid.
+    let committed = input.value.trim();
+    const wrong = `Choose a ${name} from the list.`;
+    const check = () => {
+      const v = input.value.trim();
+      input.setCustomValidity(entity && v && (multi || v !== committed) ? (multi ? `${wrong} Or clear the text.` : wrong) : '');
+    };
 
     // Multi: one chip (hidden field + buttons) per value.
     let chips = null;
@@ -732,7 +783,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       t.textContent = v;
       const h = document.createElement('input');
       h.type = 'hidden';
-      h.name = input.name;
+      h.name = field;
       h.value = v;
       chip.append(t, h);
       const button = (act, html) => {
@@ -756,6 +807,8 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       cb.insertBefore(chips, input);
       split(input.value).forEach(addChip);
       input.value = '';
+      // Strict lists: only the chips are sent, never the search text.
+      if (strict) { input.removeAttribute('name'); }
       chips.addEventListener('click', e => {
         const b = e.target.closest('button[data-act]');
         if (!b) { return; }
@@ -766,7 +819,9 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
           chip.remove();
           renumber();
           const f = next && next.querySelector('.chip-x');
+          quiet = true;
           (f || input).focus();
+          quiet = false;
           toko.say(`Removed ${v}.`);
           return;
         }
@@ -782,6 +837,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
 
     let items = [];
     let active = -1;
+    let quiet = false;
     let timer = null;
     let ctrl = null;
     let want = 0;
@@ -791,6 +847,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       const host = cb.closest('.deployment') || cb.closest('form') || document;
       return host.querySelector(`[name="${s}"]`);
     };
+    let total = null;
     const setActive = i => {
       items.forEach((o, j) => o.setAttribute('aria-selected', String(j === i)));
       active = i;
@@ -813,6 +870,9 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       place();
     };
     const close = () => {
+      // A late result must not open the list again.
+      clearTimeout(timer);
+      if (ctrl) { ctrl.abort(); ctrl = null; }
       pop.hidden = true;
       input.setAttribute('aria-expanded', 'false');
       setActive(-1);
@@ -827,7 +887,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       li.innerHTML = html;
       return li;
     };
-    const show = (found, q, scope, failed) => {
+    const show = (found, q, scope, failed, current) => {
       const taken = values();
       const opts = found.filter(o => !taken.includes(o.dataset.value));
       const custom = !strict && q && !opts.some(o => o.dataset.value === q) && !taken.includes(q);
@@ -844,8 +904,18 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       let text = '';
       if (failed) {
         text = strict ? 'Suggestions are not available now. Reload the page and try again.' : 'Suggestions are not available now. You can type the exact name.';
+      } else if (strict && total !== null) {
+        // 12. The endpoint sends the number of all matches.
+        const more = total - found.length;
+        if (!opts.length) {
+          text = q ? 'No matches. Try another name.' : (taken.length ? 'All choices are in the list.' : 'Nothing to choose yet.');
+        } else if (more > 0) {
+          text = `Showing ${found.length} of ${total}. Type to search ${more} more.`;
+        } else {
+          text = `${opts.length} ${q ? 'result' : 'choice'}${opts.length === 1 ? '' : 's'}.`;
+        }
       } else if (strict) {
-        text = q ? (opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}.` : 'No matches. Try another name, or choose Custom OpenAI-compatible.') : (cb.dataset.emptyNote || '');
+        text = q ? (opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}.` : (cb.dataset.noneNote || 'No matches. Try another name.')) : (cb.dataset.emptyNote || '');
       } else if (!free) {
         const where = scope ? ` for Provider ${scope}` : '';
         text = opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}${where}.` : (q ? `No matches${where}. You can use the typed name.` : `No suggestions${where}. Type a name.`);
@@ -853,31 +923,46 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       note.textContent = text;
       if (!rows.length && !text) { close(); return; }
       open();
-      setActive(want > 0 || (strict && q && want === 0 && items.length) ? 0 : want < 0 ? items.length - 1 : -1);
+      // Browsing an entity list: the current choice is active.
+      const at = current ? items.findIndex(o => o.dataset.value === current) : -1;
+      setActive(at >= 0 && want >= 0 ? at : want > 0 || (strict && q && want === 0 && items.length) ? 0 : want < 0 ? items.length - 1 : -1);
       want = 0;
+      // A typed name that is in the list is a choice.
+      if (entity && !multi && q) {
+        const same = opts.find(o => o.dataset.value === q);
+        if (same && input.value.trim() === q) { committed = q; check(); }
+      }
       if (text) { toko.say(text); }
     };
     const load = () => {
       clearTimeout(timer);
-      const q = input.value.trim();
+      const raw = input.value;
+      // An unchanged single choice browses the whole list.
+      const current = entity && !multi ? committed : '';
+      const q = current && raw.trim() === current ? '' : raw.trim();
       if (free) { show([], q, '', false); return; }
       const sf = scopeField();
       const scope = sf ? sf.value.trim() : '';
       let s = src.split(',').filter(Boolean);
       // A scoped field with no Provider yet: no provider/model ids.
       if (sf && !scope) { s = s.filter(x => x !== 'provider'); }
-      const url = endpoint ? `${endpoint}?q=${encodeURIComponent(q)}` : `/admin/search/models?q=${encodeURIComponent(q)}&provider=${encodeURIComponent(scope)}&src=${encodeURIComponent(s.join(','))}&limit=20`;
+      const url = endpoint ? `${endpoint}?q=${encodeURIComponent(q)}${sf ? `&provider=${encodeURIComponent(scope)}` : ''}` : `/admin/search/models?q=${encodeURIComponent(q)}&provider=${encodeURIComponent(scope)}&src=${encodeURIComponent(s.join(','))}&limit=20`;
       if (ctrl) { ctrl.abort(); }
       ctrl = new AbortController();
       note.textContent = 'Loading...';
       if (!items.length) { open(); }
       fetch(url, { headers: { Accept: 'text/html' }, signal: ctrl.signal, credentials: 'same-origin' })
-        .then(r => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+        .then(r => {
+          if (!r.ok) { return Promise.reject(new Error(String(r.status))); }
+          const t = parseInt(r.headers.get('X-Total-Count') || '', 10);
+          total = Number.isNaN(t) ? null : t;
+          return r.text();
+        })
         .then(html => {
-          if (input.value.trim() !== q || document.activeElement !== input) { return; }
+          if (input.value !== raw || document.activeElement !== input) { return; }
           const t = document.createElement('template');
           t.innerHTML = html;
-          show([...t.content.querySelectorAll('li[role=option]')], q, scope, false);
+          show([...t.content.querySelectorAll('li[role=option]')], q, scope, false, current);
         })
         .catch(e => { if (e.name !== 'AbortError' && document.activeElement === input) { show([], q, scope, true); } });
     };
@@ -888,24 +973,39 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       if (added.length) { toko.say(`Added ${added.join(', ')}.`); }
       close();
     };
+    const setValue = v => {
+      input.value = v;
+      committed = v;
+      check();
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
     const choose = o => {
       const v = o.dataset.value;
       if (multi) {
         if (addChip(v)) { toko.say(`Added ${v}.`); }
         input.value = '';
+        check();
         close();
       } else {
-        input.value = o.dataset.label || v;
         close();
-        input.dispatchEvent(new Event('change', { bubbles: true }));
+        setValue(o.dataset.label || v);
         toko.say(`${o.dataset.label || v} selected.`);
       }
+      // A model chosen without its provider fills the empty provider field.
+      const sf = scopeField();
+      if (o.dataset.scopeValue && sf && !sf.value.trim()) {
+        const other = sf.closest('.cb');
+        if (other && other.toko) { other.toko.set(o.dataset.scopeValue); } else { sf.value = o.dataset.scopeValue; }
+      }
+      quiet = true;
       input.focus();
+      quiet = false;
       cb.dispatchEvent(new CustomEvent('toko-pick', { bubbles: true, detail: { value: v, label: o.dataset.label || v } }));
     };
 
     input.addEventListener('input', () => {
-      if (multi && input.value.includes(',')) {
+      check();
+      if (multi && !strict && input.value.includes(',')) {
         const parts = input.value.split(',');
         const rest = parts.pop();
         parts.map(x => x.trim()).filter(Boolean).forEach(addChip);
@@ -933,7 +1033,10 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
         setActive(e.key === 'Home' ? 0 : items.length - 1);
       } else if (e.key === 'Enter') {
         if (shown && active >= 0) { e.preventDefault(); choose(items[active]); }
-        else if (multi && input.value.trim()) { e.preventDefault(); commitText(); }
+        else if (multi && !strict && input.value.trim()) { e.preventDefault(); commitText(); }
+        // An entity field with a valid choice submits its form as usual.
+        else if (entity && input.checkValidity()) { close(); }
+        else if (entity) { e.preventDefault(); want = 1; load(); }
         else { if (strict) { e.preventDefault(); } close(); }
       } else if (e.key === 'Escape') {
         if (!pop.hidden) { e.preventDefault(); e.stopPropagation(); close(); }
@@ -942,7 +1045,17 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       }
     });
     input.addEventListener('click', () => { if (pop.hidden) { load(); } });
-    cb.addEventListener('focusout', e => { if (!cb.contains(e.relatedTarget)) { close(); } });
+    if (entity) { input.addEventListener('focus', () => { if (pop.hidden && !quiet) { load(); } }); }
+    cb.addEventListener('focusout', e => {
+      if (cb.contains(e.relatedTarget)) { return; }
+      // A typed name in another case becomes the listed name.
+      if (entity && !multi) {
+        const v = input.value.trim().toLowerCase();
+        const same = v && items.find(o => o.dataset.value.toLowerCase() === v);
+        if (same && same.dataset.value !== committed) { setValue(same.dataset.value); }
+      }
+      close();
+    });
     // Keep focus in the input; a click on an option selects it.
     list.addEventListener('mousedown', e => e.preventDefault());
     list.addEventListener('click', e => {
@@ -950,7 +1063,7 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       const o = e.target.closest('li[role=option]');
       if (o) { choose(o); }
     });
-    cb.toko = { rescope: () => { if (!pop.hidden) { load(); } } };
+    cb.toko = { rescope: () => { if (!pop.hidden) { load(); } }, set: v => { if (!multi) { setValue(v); } } };
   };
 
   const scan = root => {
@@ -971,44 +1084,5 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
 })();
 </script>
 {% block scripts %}{% endblock %}
-<script>
-(() => {
-  let serial = 0;
-  const attach = input => {
-    if (input.dataset.suggestions) return;
-    input.dataset.suggestions = 'true';
-    const list = document.createElement('datalist');
-    list.id = `suggestions-${++serial}`;
-    input.setAttribute('list', list.id);
-    input.after(list);
-    let timer, request;
-    input.addEventListener('input', () => {
-      clearTimeout(timer);
-      if (request) request.abort();
-      const value = input.value;
-      const parts = input.hasAttribute('data-csv') ? value.split(',') : [value];
-      const term = parts.pop().trim();
-      timer = setTimeout(async () => {
-        request = new AbortController();
-        try {
-          const response = await fetch(`/admin/search/${input.dataset.search}?q=${encodeURIComponent(term)}`, {signal:request.signal});
-          if (!response.ok) return;
-          const rows = await response.json();
-          if (input.value !== value) return;
-          list.replaceChildren(...rows.slice(0,20).map(row => {
-            const option = document.createElement('option');
-            option.value = [...parts, row.name].join(', ');
-            return option;
-          }));
-        } catch (e) { if (e.name !== 'AbortError') list.replaceChildren(); }
-      }, 180);
-    });
-  };
-  const scan = () => document.querySelectorAll('input[data-search]').forEach(attach);
-  scan();
-  document.addEventListener('focusin', e => { if (e.target.matches('input[data-search]')) attach(e.target); });
-  document.addEventListener('htmx:load', scan);
-})();
-</script>
 </body>
 </html>

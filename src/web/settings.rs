@@ -912,7 +912,7 @@ fn status_view(status: crate::oauth::Status) -> StatusView {
     }
 }
 
-fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
+pub(super) fn auth_label(auth: crate::provider::ProviderAuth) -> &'static str {
     match auth {
         crate::provider::ProviderAuth::ApiKey => "API key",
         crate::provider::ProviderAuth::Chatgpt => "ChatGPT subscription",

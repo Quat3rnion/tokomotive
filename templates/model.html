@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% import "control_options.html" as controls %}
 {% import "picker.html" as picker %}
 {% import "rates_fields.html" as f %}
 {% block title %}{{ name }} - Models - Tokomotive{% endblock %}
@@ -18,7 +17,7 @@
   <h2 id="model-h">Model</h2>
   <form method="post" action="/admin/models/{{ id }}" class="stack">
     <div class="row fill">
-      <div class="field"><label for="m-provider">Provider</label>{% if let Some(options) = provider_choices %}<select id="m-provider" name="provider" required>{% call controls::options(options, provider_name.as_str(), "") %}</select>{% else %}<input id="m-provider" name="provider" value="{{ provider_name }}" data-search="providers" required autocomplete="off">{% endif %}</div>
+      <div class="field"><label for="m-provider">Provider</label>{% call picker::entity("m-provider", "provider", provider_name.as_str(), "providers", provider_choices, "Choose a Provider", true) %}</div>
       <div class="field grow"><label for="m-aliases">Aliases</label>{% call picker::model("m-aliases", "aliases", aliases, "multi", "-", "", "", "m-aliases-help", "", false) %}</div>
       <button>Save Model</button>
     </div>
@@ -35,8 +34,8 @@
   {% else %}<p>Not in models.dev</p>{% endif %}
   <form method="post" action="/admin/models/{{ id }}/models-dev" class="stack">
     <div class="row fill">
-      <div class="field"><label for="md-provider">models.dev Provider override</label><input id="md-provider" name="models_dev_provider" value="{{ models_dev.provider_override }}" autocomplete="off" spellcheck="false"></div>
-      <div class="field grow"><label for="md-model">models.dev Model override</label><input id="md-model" name="models_dev_model" value="{{ models_dev.model_override }}" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label for="md-provider">models.dev Provider override</label>{% call picker::entity_text("md-provider", "models_dev_provider", models_dev.provider_override.as_str(), "models-dev-providers", "", "No override") %}</div>
+      <div class="field grow"><label for="md-model">models.dev Model override</label>{% call picker::entity_text("md-model", "models_dev_model", models_dev.model_override.as_str(), "models-dev-models", "models_dev_provider", "No override") %}</div>
     </div>
     <p class="hint">Leave overrides blank to match the Provider preset or API URL, then the exact Model ID, canonical ID or longest dated prefix.</p>
     <label class="check"><input type="checkbox" name="cost_pinned" {% if models_dev.pinned %}checked{% endif %}> Pinned: models.dev sync does not change this card</label>
@@ -108,7 +107,7 @@
   {% let pager = self.override_pager %}{% include "pager.html" %}
   <h3 id="team-add-h">Add or change an override</h3>
   <form method="post" action="/admin/models/{{ id }}/team-price" class="stack" data-modes aria-labelledby="team-add-h">
-    <div class="field"><label for="t-team">Team</label>{% if let Some(options) = team_choices %}<select id="t-team" name="team_name" required>{% call controls::options(options, "", "Choose a Team") %}</select>{% else %}<input id="t-team" name="team_name" data-search="teams" required placeholder="Exact Team name" autocomplete="off">{% endif %}</div>
+    <div class="field"><label for="t-team">Team</label>{% call picker::entity("t-team", "team_name", "", "teams", team_choices, "Choose a Team", true) %}</div>
     <fieldset class="choices">
       <legend>How to set the Team Price</legend>
       <div class="opt" data-mode="markup">

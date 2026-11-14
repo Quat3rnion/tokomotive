@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Users - Tokomotive{% endblock %}
 {% block nav_users %}aria-current="page"{% endblock %}
-{% import "control_options.html" as controls %}
+{% import "picker.html" as picker %}
 {% block content %}
 <h1>Users</h1>
 <p class="muted">A User holds Virtual Keys. Usage is recorded per User.{% if !base.simple %} The Budget is a limit on Price: when the User reaches it, the Proxy refuses requests with HTTP 402.{% endif %}</p>
@@ -12,7 +12,7 @@
   <form method="post" action="/admin/users" class="stack">
     <div class="row">
       <div class="field"><label for="new-name">Name</label><input id="new-name" name="name" required autocomplete="off" spellcheck="false"></div>
-      <div class="field"><label for="new-team">Team</label>{% if let Some(options) = team_choices %}<select id="new-team" name="team_name">{% call controls::options(options, "", "No Team") %}</select>{% else %}<input id="new-team" name="team_name" data-search="teams" placeholder="Exact Team name (optional)" autocomplete="off">{% endif %}</div>
+      <div class="field"><label for="new-team">Team</label>{% call picker::entity("new-team", "team_name", "", "teams", team_choices, "No Team", false) %}</div>
       {% if !base.simple %}
       <div class="field"><label for="new-budget">Budget (USD)</label><input id="new-budget" name="budget_usd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="No Budget" aria-describedby="budget-help"><p class="hint" id="budget-help">Blank for no Budget.</p></div>
       <label>Budget period (UTC) <select name="budget_period"><option value="none">None (lifetime)</option><option value="daily">Daily</option><option value="weekly">Weekly (Monday)</option><option value="monthly">Monthly</option></select></label>
@@ -57,7 +57,7 @@
       <form method="post" action="/admin/users/{{ u.id }}" class="stack" aria-label="Edit User {{ u.name }}">
         <div class="row">
           <div class="field"><label for="u{{ u.id }}-name">Name</label><input id="u{{ u.id }}-name" name="name" value="{{ u.name }}" required autocomplete="off" spellcheck="false"></div>
-          <div class="field"><label for="u{{ u.id }}-team">Team</label>{% if let Some(options) = team_choices %}<select id="u{{ u.id }}-team" name="team_name">{% call controls::options(options, u.team_name.as_str(), "No Team") %}</select>{% else %}<input id="u{{ u.id }}-team" name="team_name" value="{{ u.team_name }}" data-search="teams" placeholder="Exact Team name (optional)" autocomplete="off">{% endif %}</div>
+          <div class="field"><label for="u{{ u.id }}-team">Team</label>{% let team_id = format!("u{}-team", u.id) %}{% call picker::entity(team_id, "team_name", u.team_name.as_str(), "teams", team_choices, "No Team", false) %}</div>
           {% if !base.simple %}
           <div class="field"><label for="u{{ u.id }}-budget">Budget (USD)</label><input id="u{{ u.id }}-budget" name="budget_usd" type="number" min="0" step="0.01" inputmode="decimal" value="{{ u.budget }}" placeholder="No Budget"></div>
           <label>Budget period (UTC) <select name="budget_period"><option value="none"{% if u.budget_view.period == "none" %} selected{% endif %}>None (lifetime)</option><option value="daily"{% if u.budget_view.period == "daily" %} selected{% endif %}>Daily</option><option value="weekly"{% if u.budget_view.period == "weekly" %} selected{% endif %}>Weekly (Monday)</option><option value="monthly"{% if u.budget_view.period == "monthly" %} selected{% endif %}>Monthly</option></select></label>

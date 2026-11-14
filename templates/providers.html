@@ -28,7 +28,7 @@
     {% if !add_error.is_empty() %}<p class="np-error" role="alert">{{ add_error }}</p>{% endif %}
     <div class="field np-search" data-js hidden>
       <label for="np-search">Provider</label>
-      <span class="cb" data-picker="single" data-endpoint="/admin/search/provider-types" data-strict data-empty-note="Popular choices. Type to search names, aliases such as glm, or API hosts."><input id="np-search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="For example DeepSeek, glm, copilot or ollama" aria-describedby="np-search-help"></span>
+      <span class="cb" data-picker="single" data-endpoint="/admin/search/provider-types" data-strict data-empty-note="Popular choices. Type to search names, aliases such as glm, or API hosts." data-none-note="No matches. Try another name, or choose Custom OpenAI-compatible."><input id="np-search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="For example DeepSeek, glm, copilot or ollama" aria-describedby="np-search-help"></span>
       <p class="hint" id="np-search-help">Press Down or click for popular choices.</p>
     </div>
     <form method="get" action="/admin/providers#add-provider-h" class="row np-nojs" data-nojs aria-label="Choose a Provider">

@@ -9,7 +9,7 @@
 <div class="checks">{% for p in options %}<label class="check"><input type="checkbox" name="allowed_providers" value="{{ p.name }}"{% if p.selected(selected) %} checked{% endif %}> {{ p.name }}{% if p.subscription %} <span class="tag info">subscription</span>{% endif %}</label>{% endfor %}</div>
 <p class="hint"{% if !help_id.is_empty() %} id="{{ help_id }}"{% endif %}>No check allows all API-key Providers. A Subscription Provider needs a check. With checks, only the checked Providers are allowed.</p>
 {% else %}
-<label>Allowed Providers <input name="allowed_providers"{% if !selected.is_empty() %} value="{{ selected }}"{% endif %} data-search="providers" data-csv autocomplete="off"></label>
-<p class="hint"{% if !help_id.is_empty() %} id="{{ help_id }}"{% endif %}>Comma-separated exact Provider names. Blank allows all API-key Providers. A Subscription Provider needs explicit access.</p>
+<span class="cb" data-picker="multi" data-strict data-kind="providers" data-endpoint="/admin/search/providers"><input name="allowed_providers" value="{{ selected }}" aria-label="Allowed Providers" placeholder="Search Providers" autocomplete="off" autocapitalize="off" spellcheck="false"></span>
+<p class="hint"{% if !help_id.is_empty() %} id="{{ help_id }}"{% endif %}>Choose Providers from the list. No Provider allows all API-key Providers. A Subscription Provider needs explicit access. Without JavaScript, enter comma-separated Provider names.</p>
 {% endif %}
 {% endmacro %}

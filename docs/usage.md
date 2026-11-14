@@ -526,7 +526,7 @@ Routes in your dashboard, or a `provider/model` name.
 | `/v1/*`                                 | any      | The Proxy. Needs a Virtual Key.                                   |
 | `/admin`                                | GET      | Overview page.                                                    |
 | `/admin/usage`                          | GET      | Paged usage groups with column sorting. `model` filters by name.  |
-| `/admin/search/{kind}`                  | GET      | At most 20 name suggestions. See "Pages and name search".          |
+| `/admin/search/{kind}`                  | GET      | At most 20 choices for a picker. See "User, Team, Provider and Route fields". |
 | `/admin/search/models`                  | GET      | Model picker results. See "Model fields".                         |
 | `/admin/login`                          | GET, POST | Login page and login form (field `password`).                    |
 | `/admin/logout`                         | POST     | Ends the session.                                                 |
@@ -595,19 +595,71 @@ for older IDs and `after` for newer IDs. New Ledger Entries do not move the
 older pages. Routes and Providers use `page=1`, `page=2` and so on. These are
 small configuration lists; an edit can change their name order.
 
-Team and Provider controls use selects when there are 30 or fewer choices.
+### User, Team, Provider and Route fields
+
+Each field that names a User, Team, Provider, Route or models.dev entry is a
+searchable list. You do not type the name:
+
+1. Click the field, or move the focus to it. The list opens and shows the
+   first 20 choices in name order. A note shows how many more choices a
+   search finds.
+2. Optional: type a part of the name to filter the list. Names that start
+   with the text come first.
+3. Click a choice, or use Down and Up and then press Enter.
+
+Each choice shows more data:
+
+| Choice     | Data                                                    |
+| ---------- | ------------------------------------------------------- |
+| User       | The Team and the number of active Virtual Keys. A disabled User has a **disabled** tag. |
+| Team       | The number of Users.                                    |
+| Provider   | The API format and the sign-in type. A Subscription Provider has a **subscription** tag. |
+| Route      | The strategy and the number of Deployments.             |
+| models.dev | The name, the API host or the context window.           |
+
+The field accepts only a name from the list. If you type a name that is not
+in the list, the form shows "Choose a ... from the list." Escape closes the
+list. Tab leaves the field.
+
+| Field                                    | Values  |
+| ---------------------------------------- | ------- |
+| Keys: **User**                           | one     |
+| Keys: **Allowed Providers** (more than 30 Providers) | several |
+| Ledger: **User** and **Provider** filters | one    |
+| Users: **Team** (new and edit)           | one     |
+| Models: **Provider** of a new Model      | one     |
+| Model: **Provider**, Team override **Team** | one  |
+| Model: **models.dev Provider override** and **models.dev Model override** | one |
+| Routes: Deployment **Provider**          | one     |
+
+The models.dev Model list shows only the models of the models.dev Provider
+override. If that field is empty, the list shows all models, and a choice
+also sets the models.dev Provider override.
+
 Provider Access uses checkboxes, with a **subscription** tag for Subscription
-Providers, when there are 30 or fewer Providers. With larger sets, these
-controls use text inputs. User, Team, Route and Provider text inputs
-get at most 20 name suggestions.
-Enter the exact name. Suggestions need JavaScript, but exact-name input does
-not. A User or Team name that does not match shows an error; it does not
-silently select another item. The search endpoints are
-`/admin/search/users?q=`, `/admin/search/teams?q=`,
-`/admin/search/routes?q=` and `/admin/search/providers?q=`. They require an
-Operator login and return JSON with `id` and `name`. Comma-separated inputs
-search the name after the last comma. Model fields use the model picker. See
-"Model fields".
+Providers, when there are 30 or fewer Providers. With more Providers,
+**Allowed Providers** shows each chosen Provider as a chip. Select the X
+button on a chip to remove it.
+
+Without JavaScript, a list of 30 or fewer Users, Teams or Providers is a
+select. A larger list is a text input: enter the exact name, or
+comma-separated names for Allowed Providers. A User or Team name that does
+not match shows an error; it does not silently select another item.
+
+The search endpoints need an Operator login. They return at most 20 results:
+
+- `/admin/search/users?q=`
+- `/admin/search/teams?q=`
+- `/admin/search/providers?q=`
+- `/admin/search/routes?q=`
+- `/admin/search/models-dev-providers?q=`
+- `/admin/search/models-dev-models?q=&provider=`
+
+An empty `q` returns the first results in name order. The `X-Total-Count`
+response header gives the number of all matches. The response is HTML
+`<li role="option">` items for `Accept: text/html`. Other requests get a JSON
+array of objects with `name`, `detail`, and for Users and Teams also `id`.
+Model fields use the model picker. See "Model fields".
 
 ### Model fields
 
@@ -927,7 +979,7 @@ Rate Limit state is local to one process and resets when the process restarts.
 
 To create a Virtual Key:
 
-1. Enter the exact User name.
+1. Select the User from the list. Click the field to see the Users.
 2. Enter a label (optional).
 3. Enter the allowed Models as a comma list, for example
    `gpt-4o, claude-sonnet-5-5`. Leave the field empty to allow all Models.
@@ -966,7 +1018,7 @@ Tasks on the list page:
   Settings page shows the value and links here.
 - **Add a Model**: enter the name, the Provider and the aliases
   (comma-separated). In Full Mode, you can also enter the Cost Card rates and the
-   Context Tiers. Then select **Add Model**. Enter the exact Provider name.
+   Context Tiers. Then select **Add Model**. Select the Provider from the list.
    If there are no Providers, the page shows a
   link to the Providers page instead of the form.
 
@@ -1015,7 +1067,7 @@ Markup field shows the resulting Input and Output Price.
 
 Team overrides:
 
-1. Enter the exact Team name.
+1. Select the Team from the list.
 2. Select **Markup** and enter a percentage, or select **Explicit rates** and
    enter the rates. The fields start empty.
 3. Select **Save Team override**.
@@ -1072,7 +1124,7 @@ save the address:
 | Parameter  | Value                                                    |
 | ---------- | -------------------------------------------------------- |
 | `filter`   | `unpriced`, `estimated` or `errors`.                     |
-| `user`     | The exact User name, or a valid User ID.                  |
+| `user`     | The User name, or a valid User ID.                       |
 | `provider` | The name of the Provider.                                |
 | `model`    | The upstream or the requested Model name.                |
 | `from`     | The first day, `YYYY-MM-DD`.                             |
@@ -1471,8 +1523,9 @@ new Provider.
 ### Provider Access
 
 Create or edit Provider Access on **Keys**. With 30 or fewer Providers, use
-the checkboxes. With more Providers, enter comma-separated exact Provider
-names in **Allowed Providers**. The server accepts both forms:
+the checkboxes. With more Providers, select the Providers from the list in
+**Allowed Providers**. Each Provider shows as a chip. Without JavaScript,
+enter comma-separated Provider names. The server accepts both forms:
 
 - No checks, or a blank field, means all API-key Providers, but no Subscription Providers.
 - A list of names permits only those Providers. Include API-key Providers
