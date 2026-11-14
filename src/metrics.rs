@@ -9,9 +9,12 @@ pub fn install() -> anyhow::Result<PrometheusHandle> {
     let buckets = [
         0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
     ];
-    Ok(PrometheusBuilder::new()
+    let handle = PrometheusBuilder::new()
         .set_buckets_for_metric(Matcher::Suffix("_seconds".into()), &buckets)?
-        .install_recorder()?)
+        .install_recorder()?;
+    counter!("tokomotive_trace_export_queue_drops_total").increment(0);
+    counter!("tokomotive_captured_bodies_total").increment(0);
+    Ok(handle)
 }
 
 pub fn record(user: &str, e: &NewEntry) {

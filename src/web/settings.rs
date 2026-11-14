@@ -35,6 +35,9 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/settings/alerts", post(save_alert))
         .route("/admin/settings/alerts/{id}/test", post(test_alert))
         .route("/admin/settings/alerts/{id}/delete", post(delete_alert))
+        .route("/admin/settings/observability", post(save_observability))
+        .route("/admin/routes/{name}/capture", post(route_capture))
+        .route("/admin/keys/{id}/capture", post(key_capture))
 }
 
 #[derive(Deserialize)]
@@ -45,6 +48,83 @@ struct AlertForm {
     format: String,
     enabled: Option<String>,
     thresholds: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ObservabilityForm {
+    enabled: Option<String>,
+    endpoint: String,
+    headers: String,
+    clear_headers: Option<String>,
+    service_name: String,
+    sample_ratio: f64,
+    body_cap: usize,
+    retention_days: i64,
+}
+async fn save_observability(
+    _: Admin,
+    State(st): State<AppState>,
+    Form(f): Form<ObservabilityForm>,
+) -> Response {
+    let _guard = st.settings_write.lock().await;
+    let old = st.observability.settings();
+    let s = crate::observability::Settings {
+        enabled: f.enabled.is_some(),
+        endpoint: f.endpoint.trim().into(),
+        headers: if f.clear_headers.is_some() {
+            String::new()
+        } else if f.headers.is_empty() {
+            old.headers.clone()
+        } else {
+            f.headers
+        },
+        service_name: f.service_name.trim().into(),
+        sample_ratio: f.sample_ratio,
+        body_cap: f.body_cap,
+        retention_days: f.retention_days,
+    };
+    if let Err(e) = crate::observability::save(&st.db, &st.secret_key, &s).await {
+        return form_error(e);
+    }
+    st.observability.configure(s);
+    saved(
+        "/admin/settings#observability",
+        "Observability settings saved.",
+    )
+}
+#[derive(Deserialize)]
+struct CaptureForm {
+    enabled: Option<String>,
+}
+async fn route_capture(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Form(f): Form<CaptureForm>,
+) -> Response {
+    tryr!(
+        sqlx::query("UPDATE routes SET capture_bodies=? WHERE name=?")
+            .bind(f.enabled.is_some())
+            .bind(name)
+            .execute(&st.db)
+            .await
+    );
+    saved("/admin/routes", "Body capture setting saved.")
+}
+async fn key_capture(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Form(f): Form<CaptureForm>,
+) -> Response {
+    tryr!(
+        sqlx::query("UPDATE virtual_keys SET capture_bodies=? WHERE id=?")
+            .bind(f.enabled.is_some())
+            .bind(id)
+            .execute(&st.db)
+            .await
+    );
+    saved("/admin/keys", "Body capture setting saved.")
 }
 async fn save_alert(_: Admin, State(st): State<AppState>, Form(f): Form<AlertForm>) -> Response {
     let _guard = st.settings_write.lock().await;
@@ -85,6 +165,8 @@ async fn delete_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    observability: std::sync::Arc<crate::observability::Settings>,
+    export_headers_set: bool,
     webhooks: Vec<crate::alerts::Webhook>,
     alert_thresholds: String,
     models_dev_url: String,
@@ -99,6 +181,8 @@ struct SettingsPage {
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
     render(SettingsPage {
+        observability: st.observability.settings(),
+        export_headers_set: !st.observability.settings().headers.is_empty(),
         webhooks: tryr!(crate::alerts::list(&st.db).await),
         alert_thresholds: tryr!(crate::alerts::thresholds(&st.db).await),
         models_dev_url: tryr!(store::value(&st.db, "models_dev_url").await).unwrap_or_default(),
@@ -333,6 +417,7 @@ impl RoutesPage {
     }
 }
 struct RouteView {
+    capture_bodies: bool,
     skips: Vec<String>,
     session_affinity: bool,
     active_sessions: usize,
@@ -426,6 +511,7 @@ async fn routes(
                 .collect::<Result<Vec<_>, _>>()
         );
         routes.push(RouteView {
+            capture_bodies: tryr!(sqlx::query_scalar("SELECT capture_bodies FROM routes WHERE name=?").bind(&r.name).fetch_one(&st.db).await),
             skips: deployments
                 .iter()
                 .flat_map(|d| {
@@ -663,20 +749,23 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         }
     }
     let mut tx = tryr!(st.db.begin().await);
-    if let Some(name) = old {
-        tryr!(
-            sqlx::query("DELETE FROM routes WHERE name=?")
-                .bind(name)
-                .execute(&mut *tx)
-                .await
-        );
-    }
-    if let Err(e) = sqlx::query("INSERT INTO routes(name,config_json) VALUES(?,?)")
-        .bind(&route.name)
-        .bind(tryr!(serde_json::to_string(&route)))
-        .execute(&mut *tx)
-        .await
-    {
+    let config_json = tryr!(serde_json::to_string(&route));
+    // Keep independent Route controls when the configuration or name changes.
+    let written = if let Some(name) = old {
+        sqlx::query("UPDATE routes SET name=?,config_json=? WHERE name=?")
+            .bind(&route.name)
+            .bind(config_json)
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+    } else {
+        sqlx::query("INSERT INTO routes(name,config_json) VALUES(?,?)")
+            .bind(&route.name)
+            .bind(config_json)
+            .execute(&mut *tx)
+            .await
+    };
+    if let Err(e) = written {
         let e = anyhow::Error::from(e);
         if is_unique_violation(&e) {
             return form_error(format!("A Route named {} already exists.", route.name));

@@ -1,5 +1,36 @@
 # Configuration reference
 
+## Traces and body capture
+
+Use **Settings > Traces and body capture**. These settings are stored in the
+database. They do not use the seed file.
+
+| Setting | Default | Accepted value |
+| --- | --- | --- |
+| Export traces | Off | On or off |
+| Collector endpoint | Empty | Full HTTP or HTTPS OTLP/HTTP JSON URL, including `/v1/traces` |
+| Collector headers | Empty | One `Header: value` per line; encrypted and masked |
+| Service name | `tokomotive` | At most 256 characters |
+| Sample ratio | `1` | Number from 0 to 1 |
+| Body size cap | `65536` | 1 to 1048576 bytes per body |
+| Body retention | `7` | 1 to 3650 days |
+
+The collector URL must not contain a user name or password. Export does not
+follow redirects. Collector headers cannot override Host, Content-Length,
+Content-Type or Transfer-Encoding. Headers have a 16 KiB total limit. The
+queue holds 128 requests. Each batch holds at most 16 requests. The batch
+window is 25 ms and the HTTP timeout is 5 seconds. A full queue drops traces.
+Export does not block Proxy requests. Queued traces are best effort and can
+be lost at shutdown.
+
+Each Route and Virtual Key has a separate **Capture request and response
+bodies** control. Both are off by default. Either can enable capture. Captures
+are encrypted with the Master Key. They are not part of trace export. The
+background retention job runs each minute and deletes at most 500 captures
+per pass. Only Admins can read captures through the Ledger entry timeline.
+See [Request diagnostics](usage.md#request-diagnostics) for the limits and
+privacy controls.
+
 ## Google Vertex AI
 
 ```toml

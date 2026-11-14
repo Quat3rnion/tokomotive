@@ -850,12 +850,15 @@ key_allowed_providers=['sub']
     st.flush().await;
     assert_eq!(*tokens.lock().unwrap(), 2);
     assert_eq!(seen.lock().unwrap().len(), 2);
-    let row: (i64, i64, i64, i64, String) =
-        sqlx::query_as("SELECT input,output,cost_micros,price_micros,provider FROM ledger")
-            .fetch_one(&st.db)
-            .await
-            .unwrap();
+    let row: (i64, i64, i64, i64, String) = sqlx::query_as(
+        "SELECT input,output,cost_micros,price_micros,provider FROM ledger WHERE status=200",
+    )
+    .fetch_one(&st.db)
+    .await
+    .unwrap();
     assert_eq!(row, (10, 3, 0, 32, "sub".into()));
+    let rejected:i64=sqlx::query_scalar("SELECT COUNT(*) FROM ledger l JOIN request_attempts a ON a.ledger_id=l.id WHERE l.status=400 AND l.attempts=0 AND l.input=0 AND l.output=0 AND l.price_micros=0 AND a.error_class='translation'").fetch_one(&st.db).await.unwrap();
+    assert_eq!(rejected, 1);
     let r=reqwest::Client::new().post(format!("{url}/v1/chat/completions")).bearer_auth("vk-test")
         .json(&json!({"model":"unknown","messages":[{"role":"system","content":"original system"},{"role":"user","content":"abcdHello world, this is a test"}]})).send().await.unwrap();
     assert_eq!(r.status(), 200);

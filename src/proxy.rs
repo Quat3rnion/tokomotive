@@ -449,6 +449,7 @@ struct Ctx {
     ts_ms: i64,
     provider_key: Option<i64>,
     attempts: i64,
+    trace: crate::observability::RequestTrace,
     session_affinity: Option<&'static str>,
     rate_scopes: Vec<Scope>,
     /// Released after the Ledger Entry is written, so the amount is always
@@ -481,7 +482,8 @@ impl Outcome {
 }
 
 impl Ctx {
-    fn finish(self, mut o: Outcome) {
+    fn finish(mut self, mut o: Outcome) {
+        self.trace.finish(o.status, o.ttft_ms, self.ts_ms);
         if self.endpoint == Endpoint::CountTokens {
             o.usage = Usage::default();
         }
@@ -533,6 +535,12 @@ impl Ctx {
             session_affinity: self.session_affinity.map(str::to_owned),
         };
         crate::metrics::record(&self.auth.user_name, &entry);
+        self.st.observability.export(
+            &entry,
+            &self.trace,
+            &self.auth.user_name,
+            &self.auth.key_name,
+        );
         let db = self.st.db.clone();
         let alerts_st = self.st.clone();
         let alerts_auth = self.auth;
@@ -544,7 +552,14 @@ impl Ctx {
             drop(guard);
             match written {
                 Err(e) => tracing::error!(error = %e, "ledger write failed"),
-                Ok(_) => {
+                Ok(id) => {
+                    if let Err(e) = self
+                        .trace
+                        .store(&db, &alerts_st.secret_key, id, entry.ts_ms)
+                        .await
+                    {
+                        tracing::error!(error=%e,"request diagnostics write failed");
+                    }
                     if let Err(e) =
                         crate::alerts::check_budgets(&alerts_st, &alerts_auth, entry.ts_ms / 1000)
                             .await
@@ -934,6 +949,14 @@ pub async fn handle(
 
     let streamed = endpoint == Endpoint::AudioSpeech || json_body.as_ref().is_some_and(is_stream);
     let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let trace = crate::observability::RequestTrace::new(
+        &st,
+        requested_model.as_deref(),
+        auth.key_id,
+        &body,
+        table.settings.max_attempts,
+    )
+    .await;
     let mut ctx = Ctx {
         st: st.clone(),
         auth,
@@ -946,6 +969,7 @@ pub async fn handle(
         ts_ms,
         provider_key: None,
         attempts: 0,
+        trace,
         session_affinity: None,
         rate_scopes: scopes.into_iter().map(|(scope, _)| scope).collect(),
         reservation,
@@ -969,6 +993,7 @@ pub async fn handle(
             break;
         }
         let Some(permit) = st.acquire_deployment(candidate, &table.settings, degraded) else {
+            ctx.trace.skip(candidate, None, "circuit_open");
             continue;
         };
         let provider = &candidate.provider;
@@ -983,12 +1008,14 @@ pub async fn handle(
             match prepare_body(candidate, endpoint, json_body.as_ref()) {
                 Ok(v) => v,
                 Err(e) => {
+                    ctx.trace.skip(candidate, None, "translation");
                     translation_error = Some(e);
                     continue;
                 }
             };
         let prepared = if provider.auth == crate::provider::ProviderAuth::GeminiCli {
             let Ok(project) = st.oauth.code_assist_project(&provider.name).await else {
+                ctx.trace.skip(candidate, None, "credentials_invalid");
                 continue;
             };
             Some(json!({"model":candidate.model,"project":project,"request":prepared}))
@@ -1030,6 +1057,7 @@ pub async fn handle(
             translation_error = Some(translate::TranslateError {
                 message: "This subscription accepts only canonical model request paths".into(),
             });
+            ctx.trace.skip(candidate, None, "translation");
             continue;
         }
         let vertex = provider.auth == crate::provider::ProviderAuth::GoogleVertex;
@@ -1043,6 +1071,7 @@ pub async fn handle(
                         "Vertex accepts only canonical Chat Completions and Messages POST paths"
                             .into(),
                 });
+                ctx.trace.skip(candidate, None, "translation");
                 continue;
             }
             path = match crate::vertex::model_path(
@@ -1056,6 +1085,7 @@ pub async fn handle(
                     translation_error = Some(translate::TranslateError {
                         message: e.to_string(),
                     });
+                    ctx.trace.skip(candidate, None, "translation");
                     continue;
                 }
             };
@@ -1066,6 +1096,7 @@ pub async fn handle(
                         "Gemini accepts only canonical Chat Completions and Messages POST paths"
                             .into(),
                 });
+                ctx.trace.skip(candidate, None, "translation");
                 continue;
             }
             path = match (if provider.kind == ProviderKind::Bedrock {
@@ -1077,6 +1108,7 @@ pub async fn handle(
                 Ok(path) => path,
                 Err(error) => {
                     translation_error = Some(error);
+                    ctx.trace.skip(candidate, None, "translation");
                     continue;
                 }
             };
@@ -1096,6 +1128,7 @@ pub async fn handle(
                         "Cohere accepts only canonical Chat Completions and Messages POST paths"
                             .into(),
                 });
+                ctx.trace.skip(candidate, None, "translation");
                 continue;
             }
             path = if endpoint == Endpoint::Rerank {
@@ -1109,6 +1142,7 @@ pub async fn handle(
             translation_error = Some(translate::TranslateError {
                 message: "Codex accepts only canonical model request paths".into(),
             });
+            ctx.trace.skip(candidate, None, "translation");
             continue;
         }
         if codex {
@@ -1126,6 +1160,7 @@ pub async fn handle(
                     provider.name
                 ),
             });
+            ctx.trace.skip(candidate, None, "translation");
             continue;
         }
         if provider.auth == crate::provider::ProviderAuth::GithubCopilot
@@ -1150,6 +1185,7 @@ pub async fn handle(
                 st.settings().router.quota_exhausted_percent,
                 table.settings.cooldown_secs,
             ) {
+                ctx.trace.skip(candidate, idx, skip.reason);
                 metrics::counter!("tokomotive_account_skips_total", "reason" => skip.reason)
                     .increment(1);
                 skipped_accounts = true;
@@ -1174,6 +1210,8 @@ pub async fn handle(
             ctx.upstream_model = candidate.model.clone();
             ctx.attempts += 1;
             ctx.provider_key = idx.map(|i| i as i64);
+            let mut attempt = ctx.trace.begin(candidate, idx);
+            let mut attempt_started = Instant::now();
             strip_usage_chunk = strip;
             direction = dir;
             upstream_endpoint = target_endpoint;
@@ -1185,6 +1223,7 @@ pub async fn handle(
                         Some(token)
                     }
                     Err(_) => {
+                        ctx.trace.result(attempt, Some(401), attempt_started);
                         permit.record(false);
                         upstream = None;
                         break;
@@ -1242,6 +1281,11 @@ pub async fn handle(
                 }
             };
             let mut result = send(req).send().await;
+            ctx.trace.result(
+                attempt,
+                result.as_ref().ok().map(|r| r.status().as_u16()),
+                attempt_started,
+            );
             crate::quota::observe(&st, provider, idx, &result).await;
             if let Some(flow) = flow
                 && result
@@ -1253,6 +1297,8 @@ pub async fn handle(
                     Ok(token) => {
                         crate::quota::emit_health_events(&st).await;
                         ctx.attempts += 1;
+                        attempt = ctx.trace.begin(candidate, idx);
+                        attempt_started = Instant::now();
                         metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
                         let Ok(base) = st
                             .oauth
@@ -1289,6 +1335,11 @@ pub async fn handle(
                             break;
                         };
                         result = send(req).send().await;
+                        ctx.trace.result(
+                            attempt,
+                            result.as_ref().ok().map(|r| r.status().as_u16()),
+                            attempt_started,
+                        );
                         crate::quota::observe(&st, provider, idx, &result).await;
                         if result
                             .as_ref()
@@ -1361,6 +1412,7 @@ pub async fn handle(
         if ctx.attempts == 0
             && let Some(e) = translation_error
         {
+            ctx.finish(Outcome::failed(400));
             return error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.message);
         }
         ctx.finish(Outcome::failed(502));
@@ -1503,6 +1555,7 @@ pub async fn handle(
             );
         }
     };
+    ctx.trace.response(&bytes);
     let parsed: Option<Value> = serde_json::from_slice::<Value>(&bytes).ok().map(|v| {
         if ctx.provider.auth == crate::provider::ProviderAuth::GeminiCli && status.is_success() {
             v.get("response").cloned().unwrap_or(Value::Null)
@@ -1899,7 +1952,11 @@ async fn build_request(
 
 /// The Codex backend only streams. Collect the final Response for JSON clients
 /// with the same usage accounting as streaming clients, without buffering deltas.
-async fn collect_codex(ctx: Ctx, upstream: reqwest::Response, mut headers: HeaderMap) -> Response {
+async fn collect_codex(
+    mut ctx: Ctx,
+    upstream: reqwest::Response,
+    mut headers: HeaderMap,
+) -> Response {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let st = ctx.st.clone();
     let anthropic = ctx.endpoint == Endpoint::Messages;
@@ -1917,6 +1974,7 @@ async fn collect_codex(ctx: Ctx, upstream: reqwest::Response, mut headers: Heade
             };
             tracker.feed(&chunk);
             decoder.feed(&chunk);
+            ctx.trace.response(&chunk);
         }
         tracker.finish();
         decoder.finish();
@@ -1977,7 +2035,7 @@ async fn collect_codex(ctx: Ctx, upstream: reqwest::Response, mut headers: Heade
 /// Forward an SSE stream. If the client disconnects, keep reading the
 /// upstream stream to get the final usage (ADR 0001).
 fn stream_response(
-    ctx: Ctx,
+    mut ctx: Ctx,
     upstream: reqwest::Response,
     status: StatusCode,
     headers: HeaderMap,
@@ -2009,6 +2067,7 @@ fn stream_response(
                     if ttft.is_none() && tracker.saw_content {
                         ttft = Some(started.elapsed().as_millis() as i64);
                     }
+                    ctx.trace.response(&out);
                     if !client_gone
                         && !out.is_empty()
                         && tx.send(Ok(Bytes::from(out))).await.is_err()
@@ -2035,6 +2094,7 @@ fn stream_response(
         } else {
             rest
         };
+        ctx.trace.response(&rest);
         if !client_gone && !rest.is_empty() {
             let _ = tx.send(Ok(Bytes::from(rest))).await;
         }

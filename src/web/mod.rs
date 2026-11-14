@@ -2278,6 +2278,11 @@ async fn set_settings(
 
 #[derive(Deserialize, Default)]
 struct LedgerQ {
+    status: Option<String>,
+    error_class: Option<String>,
+    provider_key: Option<String>,
+    has_retries: Option<String>,
+    entry: Option<i64>,
     filter: Option<String>,
     user: Option<String>,
     provider: Option<String>,
@@ -2307,6 +2312,10 @@ impl LedgerQ {
             }
             for (k, v) in [
                 ("user", &self.user),
+                ("status", &self.status),
+                ("error_class", &self.error_class),
+                ("provider_key", &self.provider_key),
+                ("has_retries", &self.has_retries),
                 ("provider", &self.provider),
                 ("model", &self.model),
                 ("from", &self.from),
@@ -2381,6 +2390,13 @@ async fn ledger(
     };
     let limit = q.limit.unwrap_or(LEDGER_PAGE).clamp(1, 200);
     let query = db::LedgerQuery {
+        status: some_text(&q.status).and_then(|s| s.parse().ok()),
+        error_class: some_text(&q.error_class).map(str::to_owned),
+        provider_key: some_text(&q.provider_key)
+            .and_then(|s| s.parse::<i64>().ok())
+            .filter(|i| *i > 0)
+            .map(|i| i - 1),
+        has_retries: some_text(&q.has_retries).map(|s| s == "true"),
         filter,
         user_id,
         provider: some_text(&q.provider).map(str::to_owned),
@@ -2432,6 +2448,10 @@ async fn ledger(
         vec![]
     };
     let filters = LedgerFilterView {
+        status: q.status.clone().unwrap_or_default(),
+        error_class: q.error_class.clone().unwrap_or_default(),
+        provider_key: q.provider_key.clone().unwrap_or_default(),
+        has_retries: q.has_retries.clone().unwrap_or_default(),
         provider_choices: tryr!(db::small_choices(&st.db, "providers").await),
         user_choices: tryr!(db::small_choices(&st.db, "users").await),
         user: q.user.clone().unwrap_or_default(),
@@ -2440,12 +2460,27 @@ async fn ledger(
         from: some_text(&q.from).unwrap_or_default().to_owned(),
         to: some_text(&q.to).unwrap_or_default().to_owned(),
         active: user_id.is_some()
+            || query.status.is_some()
+            || query.error_class.is_some()
+            || query.provider_key.is_some()
+            || query.has_retries.is_some()
             || query.provider.is_some()
             || query.model.is_some()
             || some_text(&q.from).is_some()
             || some_text(&q.to).is_some(),
     };
     render(LedgerPage {
+        detail_id: q.entry,
+        attempts: if let Some(id) = q.entry {
+            tryr!(crate::observability::attempts(&st.db, id).await)
+        } else {
+            vec![]
+        },
+        bodies: if let Some(id) = q.entry {
+            tryr!(crate::observability::bodies(&st.db, &st.secret_key, id).await)
+        } else {
+            None
+        },
         pager,
         rows: rows
             .iter()

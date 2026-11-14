@@ -1,5 +1,46 @@
 # Operator guide
 
+## Request diagnostics
+
+Use **Ledger** as the request log. Filter by User, Provider, Model, UTC dates,
+status, attempt error class, Provider Key number or retries. Provider Key
+numbers start at 1 in the dashboard. Filters apply to each page. Open an
+entry's **Details**, then **Attempt timeline** to see the ordered attempts.
+Each attempt shows its Route, Deployment, Provider, key last 4, status,
+error class, skip reason, latency and time to first token. Old entries have
+no attempt records. Diagnostics keep at most 100 records per request and no
+more than `max_attempts`. Actual attempts take priority over skip records.
+
+To export traces, open **Settings > Traces and body capture**. Enter the full
+OTLP/HTTP endpoint, such as `http://collector:4318/v1/traces`. Set the service
+name and sample ratio, then select **Export traces**. Export is off by
+default. Headers use one `Header: value` per line. Saved headers are encrypted
+and masked. An empty field keeps them; select **Clear saved headers** to
+remove them. Export uses JSON, not protobuf. It does not follow redirects.
+One request span contains the GenAI model and token attributes, User, Team ID
+and Virtual Key name. Each recorded attempt has a child span. Bodies and
+credentials are not exported.
+
+Body capture is separate from trace export. It is off by default. Enable it
+on a **Route** or in a **Virtual Key** edit panel. Either setting enables
+capture for that request. The Ledger timeline shows the captured bodies to
+Admins only. Non-streaming requests capture the upstream response body.
+Streaming requests capture text events, up to the same size cap. Secrets in
+known token patterns and credential fields are redacted before encryption.
+Request headers are not captured. Redaction does not remove all personal
+data. Enable capture only when you need it and protect database backups.
+
+The default cap is 64 KiB per body. A clipped body is marked **truncated**.
+The default retention is 7 days. The background purge removes up to 500 old
+captures each minute. A large backlog can take more than one pass. The Master
+Key is required to read captures. Keep it with your database backup.
+
+Export uses a 128-request queue and batches up to 16 requests. A full queue
+drops traces without delaying requests. Each export has a 5-second timeout.
+Use `/metrics` to monitor `tokomotive_trace_export_queue_drops_total`,
+`tokomotive_trace_export_failures_total` and `tokomotive_captured_bodies_total`.
+The capture counter counts two bodies for each captured request.
+
 ## Gemini CLI (Code Assist)
 
 Select the Gemini CLI preset. Save the Provider. Select **Sign in**, allow

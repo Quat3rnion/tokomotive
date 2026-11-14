@@ -78,6 +78,7 @@
   </tr>
   <tr id="edit-k{{ k.id }}" class="edit-row" data-collapse>
     <td colspan="{% if base.simple %}7{% else %}8{% endif %}"><div class="edit-panel">
+      <form method="post" action="/admin/keys/{{ k.id }}/capture" class="stack"><label><input type="checkbox" name="enabled"{% if k.capture_bodies %} checked{% endif %}> Capture request and response bodies for this Virtual Key</label><p class="hint">Captured bodies are redacted and encrypted. They can contain personal data. A Route can also enable capture.</p><div class="form-error" role="alert" tabindex="-1"></div><button class="ghost">Save body capture</button></form>
       <form method="post" action="/admin/keys/{{ k.id }}" class="stack" aria-label="Edit key {{ k.prefix }}">
         <fieldset>
           <legend>Provider Access for {{ k.prefix }}…</legend>

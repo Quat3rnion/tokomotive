@@ -175,12 +175,20 @@ keys=['vk-denied']
     }
     st.flush().await;
     let rows: Vec<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT input,output,cache_read,cost_micros,price_micros,subscription FROM ledger",
+        "SELECT input,output,cache_read,cost_micros,price_micros,subscription FROM ledger WHERE status=200",
     )
     .fetch_all(&st.db)
     .await
     .unwrap();
     assert_eq!(rows.len(), 6);
+    let rejected: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger l JOIN request_attempts a ON a.ledger_id=l.id WHERE l.status=400 AND l.attempts=0 AND a.error_class='translation'")
+        .fetch_one(&st.db).await.unwrap();
+    assert_eq!(rejected, 3);
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger")
+        .fetch_one(&st.db)
+        .await
+        .unwrap();
+    assert_eq!(total, 9);
     assert!(
         rows.iter()
             .all(|r| r.0 == 6 && r.1 == 3 && r.2 == 4 && r.3 == 0 && r.4 > 0 && r.5 == 1),

@@ -133,7 +133,7 @@ pub(super) fn native_count(provider: &Provider) -> bool {
 }
 
 pub(super) fn speech_response(
-    ctx: Ctx,
+    mut ctx: Ctx,
     upstream: reqwest::Response,
     headers: HeaderMap,
     characters: i64,
@@ -150,6 +150,7 @@ pub(super) fn speech_response(
         while let Some(item) = stream.next().await {
             let item = match item {
                 Ok(chunk) if received.saturating_add(chunk.len()) <= MAX_UPSTREAM_BODY => {
+                    ctx.trace.response(&chunk);
                     received += chunk.len();
                     if ttft.is_none() && !chunk.is_empty() {
                         ttft = Some(ctx.started.elapsed().as_millis() as i64);

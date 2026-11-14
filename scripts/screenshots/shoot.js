@@ -59,7 +59,14 @@ async function capture() {
         await go(entry.page);
         return overview();
       },
-      ledger: async () => [0, 840],
+      // Include the extended request-log filter bar and the first entry.
+      ledger: async () => [0, Math.max(840, (await box('form.ledger-filters')).bottom + 320)],
+      // Existing image: include the new trace export and body retention controls.
+      observability: async () => [0, await full()],
+      'keys-capture': async () => {
+        await page.locator('table.keys button[data-toggle^="edit-k"]').first().click();
+        return [0, (await box('nav.pager', null, null, true)).bottom + 24];
+      },
       routes: async () => [0, (await box('h2', 'smart', 'section')).bottom + 10],
       providers: async () => [0, (await box('h2', 'codex-cli', 'section')).bottom + 10],
       models: async () => [0, (await box('h2', 'Default Markup', 'section')).bottom + 10],

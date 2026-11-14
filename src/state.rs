@@ -99,6 +99,7 @@ pub struct Inner {
     pub(crate) route_next: Mutex<HashMap<String, usize>>,
     pub(crate) affinity: Mutex<crate::affinity::AffinityTable>,
     pub metrics: Option<PrometheusHandle>,
+    pub observability: crate::observability::Observer,
     reservations: Mutex<HashMap<(crate::budgets::Subject, i64), i64>>,
     catalog: RwLock<Arc<Catalog>>,
     /// The model picker sources. Register more with `model_sources.register`.
@@ -139,6 +140,9 @@ impl AppState {
         let catalog = db::load_catalog(&db).await?;
         let oauth = crate::oauth::OAuthManager::new(db.clone(), secret_key.clone(), endpoints)?;
         oauth.check_storage().await?;
+        let observability = crate::observability::Observer::new(
+            crate::observability::load(&db, &secret_key).await?,
+        )?;
         Ok(AppState(Arc::new(Inner {
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
@@ -153,6 +157,7 @@ impl AppState {
             route_next: Mutex::new(HashMap::new()),
             affinity: Mutex::new(crate::affinity::AffinityTable::default()),
             metrics,
+            observability,
             reservations: Mutex::new(HashMap::new()),
             catalog: RwLock::new(Arc::new(catalog)),
             model_sources: crate::model_search::Registry::with_builtin(),

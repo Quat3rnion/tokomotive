@@ -818,6 +818,7 @@ impl TeamsPage {
 // -------------------------------------------------------------------- keys
 
 pub struct KeyView {
+    pub capture_bodies: bool,
     pub budget_view: BudgetView,
     pub expires: String,
     pub expired: bool,
@@ -875,6 +876,7 @@ impl KeysPage {
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
             let view = KeyView {
+                capture_bodies: k.capture_bodies,
                 budget_view: Default::default(),
                 expires: String::new(),
                 expired: false,
@@ -1290,6 +1292,7 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub captured: bool,
     pub service_units: String,
     pub id: i64,
     pub time: Stamp,
@@ -1325,6 +1328,10 @@ pub struct LedgerView {
 /// The values of the Ledger filter bar.
 #[derive(Default)]
 pub struct LedgerFilterView {
+    pub status: String,
+    pub error_class: String,
+    pub provider_key: String,
+    pub has_retries: String,
     pub provider_choices: Option<Vec<crate::db::ControlChoice>>,
     pub user_choices: Option<Vec<crate::db::ControlChoice>>,
     pub provider: String,
@@ -1339,6 +1346,9 @@ pub struct LedgerFilterView {
 #[derive(Template)]
 #[template(path = "ledger.html")]
 pub struct LedgerPage {
+    pub detail_id: Option<i64>,
+    pub attempts: Vec<crate::observability::Attempt>,
+    pub bodies: Option<crate::observability::Bodies>,
     pub pager: crate::pagination::Pager,
     pub base: Base,
     pub rows: Vec<LedgerView>,
@@ -1379,6 +1389,7 @@ impl LedgerView {
             })
             .unwrap_or_default();
         LedgerView {
+            captured: r.captured,
             service_units: int(r.service_units),
             id: r.id,
             time,

@@ -11,6 +11,7 @@ pub mod metrics;
 pub mod model_search;
 pub mod models_dev;
 pub mod oauth;
+pub mod observability;
 pub mod pagination;
 pub mod presets;
 pub mod pricing;

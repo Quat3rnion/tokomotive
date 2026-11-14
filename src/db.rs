@@ -489,6 +489,7 @@ pub async fn revoke_key(db: &Db, id: i64) -> Result<()> {
 
 #[derive(Debug, Clone)]
 pub struct KeyAuth {
+    pub key_name: String,
     pub key_id: i64,
     pub user_id: i64,
     pub user_name: String,
@@ -506,7 +507,7 @@ pub struct KeyAuth {
 
 pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
     let row = sqlx::query(
-        "SELECT k.id, k.user_id, k.allowed_models, k.allowed_providers, k.revoked_at, k.expires_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
+        "SELECT k.label, k.id, k.user_id, k.allowed_models, k.allowed_providers, k.revoked_at, k.expires_at, u.name, u.team_id, u.disabled, u.budget_micros, u.budget_monthly,
             k.rpm_limit AS key_rpm, k.tpm_limit AS key_tpm, u.rpm_limit AS user_rpm, u.tpm_limit AS user_tpm
          FROM virtual_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?",
     )
@@ -521,6 +522,7 @@ pub async fn lookup_key(db: &Db, key: &str) -> Result<Option<KeyAuth>> {
         None => Vec::new(),
     };
     Ok(row.map(|r| KeyAuth {
+        key_name: r.get("label"),
         key_id: r.get("id"),
         user_id: r.get("user_id"),
         user_name: r.get("name"),
@@ -1032,6 +1034,7 @@ pub async fn list_teams(db: &Db) -> Result<Vec<TeamRow>> {
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct KeyRow {
+    pub capture_bodies: bool,
     pub id: i64,
     pub user: String,
     pub prefix: String,
@@ -1047,7 +1050,7 @@ pub struct KeyRow {
 
 pub async fn list_keys(db: &Db) -> Result<Vec<KeyRow>> {
     Ok(sqlx::query_as(
-        "SELECT k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.allowed_providers, k.revoked_at, k.last_used_at, k.created_at, k.rpm_limit, k.tpm_limit
+        "SELECT k.capture_bodies, k.id, u.name AS user, k.prefix, k.label, k.allowed_models, k.allowed_providers, k.revoked_at, k.last_used_at, k.created_at, k.rpm_limit, k.tpm_limit
          FROM virtual_keys k JOIN users u ON u.id = k.user_id ORDER BY k.revoked_at IS NOT NULL, u.name, k.id LIMIT 200",
     )
     .fetch_all(db)
@@ -1065,6 +1068,7 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub captured: bool,
     pub service_units: i64,
     pub id: i64,
     pub ts_ms: i64,
@@ -1119,6 +1123,10 @@ pub async fn recent_ledger(db: &Db, filter: LedgerFilter, limit: i64) -> Result<
 /// One page of the Ledger, newest first. All conditions are optional.
 #[derive(Debug, Clone)]
 pub struct LedgerQuery {
+    pub status: Option<i64>,
+    pub error_class: Option<String>,
+    pub provider_key: Option<i64>,
+    pub has_retries: Option<bool>,
     pub filter: LedgerFilter,
     pub user_id: Option<i64>,
     pub provider: Option<String>,
@@ -1138,6 +1146,10 @@ impl Default for LedgerQuery {
     fn default() -> Self {
         Self {
             filter: LedgerFilter::All,
+            status: None,
+            error_class: None,
+            provider_key: None,
+            has_retries: None,
             user_id: None,
             provider: None,
             model: None,
@@ -1159,7 +1171,7 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
 /// One extra row is private lookahead, never rendered or returned in an API list.
 pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
     let mut b = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "SELECT l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
+        "SELECT EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
             l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity
@@ -1173,6 +1185,22 @@ pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<Ledger
     });
     if let Some(v) = q.user_id {
         b.push(" AND l.user_id = ").push_bind(v);
+    }
+    if let Some(v) = q.status {
+        b.push(" AND l.status = ").push_bind(v);
+    }
+    if let Some(v) = &q.error_class {
+        b.push(" AND EXISTS(SELECT 1 FROM request_attempts a WHERE a.ledger_id=l.id AND a.error_class=").push_bind(v.clone()).push(")");
+    }
+    if let Some(v) = q.provider_key {
+        b.push(" AND EXISTS(SELECT 1 FROM request_attempts a WHERE a.ledger_id=l.id AND a.provider_key=").push_bind(v).push(")");
+    }
+    if let Some(v) = q.has_retries {
+        b.push(if v {
+            " AND l.attempts > 1"
+        } else {
+            " AND l.attempts <= 1"
+        });
     }
     if let Some(v) = &q.provider {
         b.push(" AND l.provider = ").push_bind(v.clone());
@@ -1297,7 +1325,7 @@ pub async fn keys_page(
     revoked: bool,
 ) -> Result<Page<KeyRow>> {
     let mut b = sqlx::QueryBuilder::new(
-        "SELECT k.id,u.name AS user,k.prefix,k.label,k.allowed_models,k.allowed_providers,k.revoked_at,k.last_used_at,k.created_at,k.rpm_limit,k.tpm_limit FROM virtual_keys k JOIN users u ON u.id=k.user_id WHERE ",
+        "SELECT k.capture_bodies,k.id,u.name AS user,k.prefix,k.label,k.allowed_models,k.allowed_providers,k.revoked_at,k.last_used_at,k.created_at,k.rpm_limit,k.tpm_limit FROM virtual_keys k JOIN users u ON u.id=k.user_id WHERE ",
     );
     b.push(if revoked {
         "k.revoked_at IS NOT NULL"

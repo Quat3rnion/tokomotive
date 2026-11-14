@@ -15,6 +15,15 @@
   </nav>
 </div>
 <p class="muted">Each Ledger Entry is one request. Newest first, {{ page_size }} per page. Times are UTC.</p>
+{% if let Some(id) = detail_id %}
+<section class="panel" id="trace" aria-labelledby="trace-h">
+<h2 id="trace-h">Entry #{{ id }}: attempt timeline</h2>
+<div class="scroll"><table><thead><tr><th>Attempt</th><th>Route / Deployment</th><th>Provider / Key</th><th>Status</th><th>Error class / skip reason</th><th>Latency</th><th>TTFT</th></tr></thead><tbody>
+{% for a in attempts %}<tr><td>{{ a.attempt_index }}</td><td>{{ a.route }} / {{ a.deployment }}</td><td>{{ a.provider }}{% if let Some(k) = a.provider_key %} / Key {{ k + 1 }}{% endif %}{% if let Some(k) = a.key_last4 %} (...{{ k }}){% endif %}</td><td>{% if let Some(s) = a.status %}{{ s }}{% else if !a.skip_reason.is_empty() %}Skipped{% else %}No response{% endif %}</td><td>{{ a.error_class }}{% if !a.skip_reason.is_empty() %} / {{ a.skip_reason }}{% endif %}</td><td>{{ a.latency_ms }} ms</td><td>{% if let Some(t) = a.ttft_ms %}{{ t }} ms{% else %}-{% endif %}</td></tr>{% else %}<tr><td colspan="7">No attempt records.</td></tr>{% endfor %}
+</tbody></table></div>
+{% if let Some(b) = bodies %}<h3>Captured bodies (Admin only)</h3><p>Secrets are redacted. Content can still contain personal data.</p><h4>Request{% if b.request_truncated %} (truncated){% endif %}</h4><pre>{{ b.request }}</pre><h4>Response{% if b.response_truncated %} (truncated){% endif %}</h4><pre>{{ b.response }}</pre>{% else %}<p>No captured bodies.</p>{% endif %}
+</section>
+{% endif %}
 
 {% if !base.simple && filter == "unpriced" %}
 <section class="panel" aria-labelledby="reprice-h">
@@ -33,6 +42,10 @@
     <div class="field"><label for="lf-model">Model</label>{% call picker::model("lf-model", "model", filters.model, "single", "model,route", "", "Any Model", "", "", false) %}</div>
     <div class="field"><label for="lf-from">From (UTC)</label><input id="lf-from" name="from" type="date" value="{{ filters.from }}"></div>
     <div class="field"><label for="lf-to">To (UTC)</label><input id="lf-to" name="to" type="date" value="{{ filters.to }}"></div>
+    <div class="field"><label for="lf-status">Status</label><input id="lf-status" name="status" type="number" min="100" max="599" value="{{ filters.status }}"></div>
+    <div class="field"><label for="lf-class">Attempt error class</label><input id="lf-class" name="error_class" value="{{ filters.error_class }}" placeholder="credentials_invalid"></div>
+    <div class="field"><label for="lf-key">Provider Key number</label><input id="lf-key" name="provider_key" type="number" min="1" value="{{ filters.provider_key }}"></div>
+    <div class="field"><label for="lf-retries">Retries</label><select id="lf-retries" name="has_retries"><option value="">All</option><option value="true"{% if filters.has_retries == "true" %} selected{% endif %}>Has retries</option><option value="false"{% if filters.has_retries == "false" %} selected{% endif %}>No retries</option></select></div>
     <div class="row"><button>Apply filters</button>{% if filters.active %}<a class="pad" href="{% if filter == "all" %}/admin/ledger{% else %}/admin/ledger?filter={{ filter }}{% endif %}">Clear filters</a>{% endif %}</div>
   </div>
   {% if let Some(e) = error %}<div class="form-error" role="alert"><p>{{ e }}</p></div>{% endif %}
@@ -48,7 +61,7 @@
     <td data-label="User"><span class="trunc" title="{{ r.user }}">{{ r.user }}</span></td>
     <td data-label="Model">{{ r.model }}<span class="sub">{{ r.provider }}</span></td>
     <td data-label="Status" class="n{% if r.status >= 400 %} bad{% endif %}">{{ r.status }}</td>
-    <td data-label="Flags" class="flags">{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
+    <td data-label="Flags" class="flags">{% if r.captured %}<span class="tag warn">captured</span>{% endif %}{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
     <td data-label="Tokens in / out" class="n" title="{{ r.tokens_title }}">{{ r.tokens }}</td>
     {% if !base.simple %}<td data-label="Price" class="n"><span title="{{ r.price.exact }}">{{ r.price }}</span></td><td data-label="Cost" class="n"><span title="{{ r.cost.exact }}">{{ r.cost }}</span></td>{% endif %}
     <td data-label="Latency" class="n">{{ r.latency }}</td>
@@ -57,7 +70,7 @@
   <tr id="d{{ r.id }}" class="edit-row" data-collapse>
     <td colspan="{{ self.columns() }}"><div class="edit-panel">
       <dl class="kv">
-        <div><dt>Entry</dt><dd>#{{ r.id }}</dd></div>
+        <div><dt>Entry</dt><dd>#{{ r.id }} <a href="/admin/ledger?entry={{ r.id }}#trace">Attempt timeline{% if r.captured %} (captured){% endif %}</a></dd></div>
         <div><dt>Endpoint</dt><dd>{{ r.endpoint }}</dd></div>
         {% if !base.simple %}
         <div><dt>Cost</dt><dd><span title="{{ r.cost.exact }}">{{ r.cost }}</span></dd></div>

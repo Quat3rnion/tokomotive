@@ -272,7 +272,7 @@ fallbacks = ["claude"]
 }
 
 #[tokio::test]
-async fn translation_error_without_upstream_attempts_is_400_without_ledger() {
+async fn translation_error_without_upstream_attempts_has_a_zero_usage_audit_entry() {
     let e = env("").await;
     let response = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", e.url))
@@ -287,7 +287,19 @@ async fn translation_error_without_upstream_attempts_is_400_without_ledger() {
         .fetch_one(&e.st.db)
         .await
         .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(count, 1);
+    let row: (i64, i64, i64, i64, i64, i64) =
+        sqlx::query_as("SELECT status,attempts,input,output,cost_micros,price_micros FROM ledger")
+            .fetch_one(&e.st.db)
+            .await
+            .unwrap();
+    assert_eq!(row, (400, 0, 0, 0, 0, 0));
+    let a = tokomotive::observability::attempts(&e.st.db, 1)
+        .await
+        .unwrap();
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].error_class, "translation");
+    assert_eq!(a[0].skip_reason, "translation");
 }
 
 #[tokio::test]

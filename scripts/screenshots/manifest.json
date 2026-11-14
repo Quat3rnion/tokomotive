@@ -11,11 +11,11 @@
     {"image":"models.png", "page":"/admin/models", "route":"/admin/models", "recipe":"models", "caption":"Models", "alt":"The Models with their Cost Card rates, Price Cards, Team overrides and the Default Markup.", "kind":"table"},
     {"image":"model.png", "page":"/admin/models/6", "route":"/admin/models/{id}", "recipe":"full", "caption":"Model page", "alt":"The cards of one Model, a Team override and the Card history.", "kind":"table"},
     {"image":"users.png", "page":"/admin/users?limit=10", "route":"/admin/users", "recipe":"pager", "caption":"Users", "alt":"The name search, the Users with their Teams, Budgets, Rate Limits and spend, and the pager.", "kind":"table"},
-    {"image":"keys.png", "page":"/admin/keys?limit=10", "route":"/admin/keys", "recipe":"pager", "caption":"Keys", "alt":"The form to add a Virtual Key with Provider Access and Rate Limits, the active keys and the pager.", "kind":"table"},
+    {"image":"keys.png", "page":"/admin/keys?limit=10", "route":"/admin/keys", "recipe":"keys-capture", "caption":"Keys", "alt":"The form to add a Virtual Key with Provider Access and Rate Limits, the active keys and the pager.", "kind":"table"},
     {"image":"usage.png", "page":"/admin/usage?group=user&range=24h&limit=10", "route":"/admin/usage", "recipe":"pager", "caption":"Usage", "alt":"The \"Show all\" view of the Overview: usage by User, sorted by requests, one page at a time.", "kind":"table"},
     {"image":"overview-simple.png", "page":"/admin", "route":"/admin", "recipe":"overview-simple", "caption":"Overview in Simple Mode", "alt":"The Overview without money data: requests, tokens, latency, errors and attempts.", "kind":"table"},
     {"image":"teams.png", "page":"/admin/teams", "route":"/admin/teams", "recipe":"full", "caption":"Teams", "alt":"Teams with their Budgets, spend and member counts.", "kind":"table"},
-    {"image":"settings.png", "page":"/admin/settings", "route":"/admin/settings", "recipe":"full", "caption":"Settings", "alt":"The operating mode, routing settings, metrics and alert controls.", "kind":"table"}
+    {"image":"settings.png", "page":"/admin/settings", "route":"/admin/settings", "recipe":"observability", "caption":"Settings", "alt":"The operating mode, routing settings, metrics and alert controls.", "kind":"table"}
   ],
   "exclusions": [
     {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page."},

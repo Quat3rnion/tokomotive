@@ -76,6 +76,13 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ### Operations
 
+- Shows ordered attempt timelines and request-log filters in the Ledger.
+- Exports request and attempt spans with GenAI attributes through OTLP/HTTP
+  JSON. Export is off by default and uses a bounded background queue.
+- Captures bodies only when a Route or Virtual Key enables capture. Captures
+  are redacted, size-capped, encrypted and retained for 7 days by default.
+  Only Admins can read them. See [Request diagnostics](docs/usage.md#request-diagnostics).
+
 - Stores Providers, Provider Keys, Routes and settings in the database. The
   Operator changes them on the **Providers**, **Routes** and **Settings** pages.
   Changes apply without a restart.

@@ -3,6 +3,22 @@
 {% block nav_settings %}aria-current="page"{% endblock %}
 {% block content %}
 <h1>Settings</h1>
+<section class="panel" id="observability" aria-labelledby="observability-h">
+<h2 id="observability-h">Traces and body capture</h2>
+<p>OTLP/HTTP JSON export is off by default. Export uses a bounded queue. A full queue drops traces, not requests. Body capture is off by default. Enable it on a Route or Virtual Key. Only Admins can read captured bodies.</p>
+<form method="post" action="/admin/settings/observability" class="stack">
+<label><input type="checkbox" name="enabled"{% if observability.enabled %} checked{% endif %}> Export traces</label>
+<label>Collector endpoint <input name="endpoint" type="url" value="{{ observability.endpoint }}" placeholder="http://collector:4318/v1/traces"></label>
+<label>Collector headers <textarea name="headers" autocomplete="off" placeholder="Blank keeps saved headers. One Header: value per line."></textarea></label>
+<p class="hint">Headers: {% if export_headers_set %}******** (saved, encrypted){% else %}Not set{% endif %}</p>
+<label><input type="checkbox" name="clear_headers"> Clear saved headers</label>
+<label>Service name <input name="service_name" value="{{ observability.service_name }}" required maxlength="256"></label>
+<label>Sample ratio <input name="sample_ratio" type="number" min="0" max="1" step="any" value="{{ observability.sample_ratio }}" required></label>
+<label>Body size cap (bytes) <input name="body_cap" type="number" min="1" max="1048576" value="{{ observability.body_cap }}" required></label>
+<label>Body retention (days) <input name="retention_days" type="number" min="1" max="3650" value="{{ observability.retention_days }}" required></label>
+<p class="hint">Bodies are redacted and encrypted with the Master Key. Redaction cannot remove all personal data. The size cap applies to each body. The purge runs once per minute, up to 500 bodies per pass.</p>
+<div class="form-error" role="alert" tabindex="-1"></div><button>Save observability settings</button>
+</form></section>
 {% if !base.simple %}
 <section class="panel" id="alerts" aria-labelledby="alerts-h">
 <h2 id="alerts-h">Usage alerts and webhooks</h2>
