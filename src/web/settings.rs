@@ -685,6 +685,7 @@ struct AddedSignin {
     panel: String,
 }
 struct ProviderView {
+    quota: Vec<super::quota::AccountView>,
     /// Just added: the card shows the next steps and takes focus.
     added: bool,
     added_message: String,
@@ -714,6 +715,7 @@ impl ProviderView {
 }
 /// One entry of a Key Pool. Never more than the last 4 characters.
 struct KeyView {
+    quota_id: Option<String>,
     index: i64,
     /// `env:NAME` or `****abcd`.
     label: String,
@@ -756,15 +758,20 @@ fn env_value(name: &str) -> Option<String> {
 fn key_view(st: &AppState, stored: &str, index: i64) -> anyhow::Result<KeyView> {
     Ok(match stored.strip_prefix("env:") {
         Some(env) => KeyView {
+            quota_id: env_value(env).as_deref().map(crate::quota::key_id),
             index,
             label: stored.into(),
             env_set: Some(env_value(env).is_some()),
         },
-        None => KeyView {
-            index,
-            label: last4(&st.secret_key.decrypt(stored)?),
-            env_set: None,
-        },
+        None => {
+            let plain = st.secret_key.decrypt(stored)?;
+            KeyView {
+                quota_id: Some(crate::quota::key_id(&plain)),
+                index,
+                label: last4(&plain),
+                env_set: None,
+            }
+        }
     })
 }
 
@@ -1026,28 +1033,48 @@ async fn providers(
         } else {
             None
         };
-        let usage = if chatgpt {
-            st.oauth
-                .usage(&name)
+        let plan = if matches!(
+            auth,
+            crate::provider::ProviderAuth::Chatgpt
+                | crate::provider::ProviderAuth::Codex
+                | crate::provider::ProviderAuth::GithubCopilot
+        ) {
+            st.oauth.usage(&name).await
+        } else {
+            None
+        };
+        if let Some(plan) = &plan {
+            tryr!(
+                crate::quota::save_plan(
+                    &st.db,
+                    &name,
+                    if chatgpt { "usage-signin" } else { "signin" },
+                    plan,
+                    plan.observed_at.div_euclid(1000)
+                )
                 .await
-                .map(|u| {
-                    u.windows
-                        .iter()
-                        .map(|w| UsageView {
-                            label: w.label.clone(),
-                            percent: w.used_percent.clamp(0.0, 100.0),
-                            percent_text: format!("{:.0}%", w.used_percent),
-                            resets: w
-                                .resets_at
-                                .and_then(|ms| super::views::stamp_opt(ms.div_euclid(1000))),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
+            );
+        }
+        let usage = if chatgpt {
+            plan.map(|u| {
+                u.windows
+                    .iter()
+                    .map(|w| UsageView {
+                        label: w.label.clone(),
+                        percent: w.used_percent.clamp(0.0, 100.0),
+                        percent_text: format!("{:.0}%", w.used_percent),
+                        resets: w
+                            .resets_at
+                            .and_then(|ms| super::views::stamp_opt(ms.div_euclid(1000))),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
         } else {
             vec![]
         };
         providers.push(ProviderView {
+            quota: tryr!(super::quota::views(&st, Some(&name), 50).await),
             added: false,
             added_message: String::new(),
             aws_region: crate::sigv4::region_from_base(row.get::<&str, _>("base_url"))

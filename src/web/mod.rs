@@ -48,6 +48,7 @@ macro_rules! tryform {
 
 mod models_dev;
 mod oauth;
+mod quota;
 mod settings;
 
 pub fn router() -> Router<AppState> {
@@ -777,6 +778,7 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
         .await
     );
     page.model_price_alerts = tryr!(models_dev::alerts(&st).await);
+    page.quota = tryr!(quota::views(&st, None, 10).await);
     for (label, value) in &mut page.more {
         if *label == "Attempts" {
             *value = int(attempts);

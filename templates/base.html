@@ -359,6 +359,7 @@ details.usage[open] { padding:var(--sp-3); border:1px solid var(--line); border-
 details.usage > summary { margin-bottom:var(--sp-2); }
 ul.meters { list-style:none; padding:0; margin:0 0 var(--sp-3); display:grid; gap:var(--sp-2); }
 ul.meters meter { width:12em; vertical-align:middle; }
+.quota-account { width:100%; overflow-wrap:anywhere; }
 .route-form .row.deployment label input[name=deployment_model] { width:18em; }
 .route-form .row.deployment label input[name=deployment_weight] { width:6em; }
 .row-tools { display:inline-flex; gap:var(--sp-1); align-self:flex-end; }
@@ -556,7 +557,15 @@ details.np-adv[open] > summary { margin-bottom:var(--sp-3); }
       kept = { id: t.id, scroll: [...t.querySelectorAll('.scroll')].map(s => s.scrollLeft), open: [...t.querySelectorAll('details[open][id]')].map(x => x.id) };
     } else { kept = null; }
   });
+  function localQuotaTimes() {
+    document.querySelectorAll('time[data-local-title]').forEach(t => {
+      const date = new Date(t.dateTime);
+      if (!Number.isNaN(date.getTime())) { t.title = date.toLocaleString(); }
+    });
+  }
+  localQuotaTimes();
   document.addEventListener('htmx:afterSettle', e => {
+    localQuotaTimes();
     const t = e.detail.target;
     if (kept) {
       const el = document.getElementById(kept.id);

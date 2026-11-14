@@ -443,6 +443,7 @@ impl SetupState {
 #[derive(Template)]
 #[template(path = "overview.html")]
 pub struct OverviewPage {
+    pub quota: Vec<super::quota::AccountView>,
     pub model_price_alerts: Vec<super::models_dev::AlertView>,
     pub base: Base,
     pub range: &'static str,
@@ -647,6 +648,7 @@ impl OverviewPage {
             rows: rows.iter().map(GroupView::new).collect(),
         };
         OverviewPage {
+            quota: vec![],
             model_price_alerts: vec![],
             range: range.name(),
             range_words: words,

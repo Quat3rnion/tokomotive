@@ -16,6 +16,7 @@ pub mod pricing;
 pub mod provider;
 pub mod provider_types;
 pub mod proxy;
+pub mod quota;
 pub mod ratelimit;
 pub mod routing;
 pub mod settings;
@@ -76,7 +77,11 @@ async fn metrics_endpoint(State(st): State<AppState>, headers: axum::http::Heade
     match &st.metrics {
         Some(h) => (
             [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-            h.render(),
+            format!(
+                "{}{}",
+                h.render(),
+                crate::quota::metrics(&st.db).await.unwrap_or_default()
+            ),
         )
             .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),

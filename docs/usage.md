@@ -1248,6 +1248,51 @@ At or after that time, both API formats return HTTP 401 with the message
 `Virtual Key expired`. The Keys page shows the expiry and an `expired` badge.
 Expiry also applies in Simple Mode. It does not stop a request already admitted.
 
+## Subscription quota and account health
+
+Open **Providers** to see the last quota snapshot for each observed account.
+Each window shows the used percent, the remaining count when available, the
+reset time, and the observation time. Point to a reset time to see local time.
+Without JavaScript, the tooltip shows UTC. A missing percent means that the
+upstream did not report it. A reset time in the past does not refresh the data.
+
+The Proxy reads OpenAI `x-ratelimit-*`, Anthropic `anthropic-ratelimit-*`, Claude
+unified subscription headers, and Codex `x-codex-*` response headers. The
+**Providers** page also reads Codex plan usage and Copilot `quota_snapshots`
+with existing sign-ins. Plan requests use a 60-second cache. They are optional
+and do not affect inference. Claude has no separate plan reader here. Its
+windows need response headers. The Proxy does not scrape account pages or
+request new scopes. Private usage endpoints can change or be unavailable.
+
+An upstream 401 or 403 sets `credentials_invalid`. A 429 sets `rate_limited`.
+Its end time comes from `retry-after` or a reported reset header. If neither
+is available, the end time is unknown. A successful response sets `ok`.
+The last failure reason and time remain visible after success. Reasons are
+fixed text, not upstream response bodies. These states record observations
+only. They do not change routing, retries, or the Circuit Breaker.
+The card shows **Disabled** when the subscription sign-in is disconnected.
+This is the current sign-in status, not a new upstream observation.
+
+**Overview** shows at most 10 observed accounts. Each Provider card shows at
+most 50. Stored snapshots have one row per account and window, not a history.
+Provider Keys use a stable opaque ID, also shown beside the masked Key in
+the Key Pool. A subscription uses `signin`; the
+separate ChatGPT usage login uses `usage-signin`. No credential is shown.
+Data remains until a new observation or Provider deletion.
+
+The `/metrics` endpoint exports these persisted gauges:
+
+- `tokomotive_provider_quota_used_ratio{provider,key,window}`: used percent
+  divided by 100. It is absent when the upstream does not report usage.
+- `tokomotive_provider_quota_reset_seconds{provider,key,window}`: reset time
+  as Unix seconds, not a countdown. It is absent when the reset is unknown.
+- `tokomotive_provider_health{provider,key,state}`: 1 for the last observed
+  state and 0 for the other states. An unobserved account has no gauge.
+
+The `key` label is an opaque Key ID or a sign-in slot, never the credential.
+The metrics survive a Proxy restart. Protect this endpoint with the metrics
+token when it is accessible outside a trusted network.
+
 ## Subscription Providers
 
 Read [ADR 0003](adr/0003-subscription-providers.md) before you connect an

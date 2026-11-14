@@ -213,12 +213,16 @@ struct DeviceAttempt {
 }
 #[derive(Clone)]
 pub struct UsageWindow {
+    pub window: String,
     pub label: String,
     pub used_percent: f64,
     pub resets_at: Option<i64>,
+    pub remaining: Option<f64>,
+    pub limit: Option<f64>,
 }
 #[derive(Clone)]
 pub struct PlanUsage {
+    pub observed_at: i64,
     pub windows: Vec<UsageWindow>,
 }
 struct Attempt {
@@ -1507,6 +1511,34 @@ impl OAuthManager {
         usage
     }
     async fn fetch_usage(&self, name: &str) -> Result<Option<PlanUsage>> {
+        let auth: String = sqlx::query_scalar("SELECT auth FROM providers WHERE name=?")
+            .bind(name)
+            .fetch_one(&self.db)
+            .await?;
+        if auth == "github_copilot" {
+            let saved = self.load(name, Flow::GithubCopilot).await?;
+            let config = self.config(Flow::GithubCopilot, &saved)?;
+            let InferenceBase::UserResource { url, headers, .. } = config.inference_base else {
+                return Ok(None);
+            };
+            let token = self.token(name, Flow::GithubCopilot, None).await?;
+            let mut request = self
+                .http
+                .get(url)
+                .bearer_auth(token)
+                .header("accept", "application/json");
+            for (key, value) in headers {
+                request = request.header(key, value);
+            }
+            let response = request.send().await?;
+            if !response.status().is_success() {
+                return Ok(None);
+            }
+            return Ok(parse_copilot_usage(
+                &bounded_json(response).await?,
+                self.now(),
+            ));
+        }
         let token = self.token(name, Flow::Codex, None).await?;
         let s = self.load(name, Flow::Codex).await?;
         let account = s
@@ -1558,10 +1590,63 @@ pub fn parse_codex_usage(value: &Value, now: i64) -> Option<PlanUsage> {
             })
             .filter(|ms| chrono::DateTime::from_timestamp_millis(*ms).is_some());
         windows.push(UsageWindow {
+            window: if name == "primary_window" {
+                "codex-primary"
+            } else {
+                "codex-secondary"
+            }
+            .into(),
             label: label.into(),
             used_percent: used.clamp(0.0, 100.0),
             resets_at: reset,
+            remaining: None,
+            limit: None,
         });
     }
-    (!windows.is_empty()).then_some(PlanUsage { windows })
+    (!windows.is_empty()).then_some(PlanUsage {
+        observed_at: now,
+        windows,
+    })
+}
+
+/// Existing GitHub sign-in token; no extra scope, credential or scraping.
+/// https://github.com/ericc-ch/copilot-api/blob/master/src/services/github/get-copilot-usage.ts
+pub fn parse_copilot_usage(value: &Value, now: i64) -> Option<PlanUsage> {
+    let reset = value["quota_reset_date"]
+        .as_str()
+        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|d| d.and_utc().timestamp_millis());
+    let mut windows = Vec::new();
+    let number = |v: &Value| v.as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+    for name in ["chat", "completions", "premium_interactions"] {
+        let w = &value["quota_snapshots"][name];
+        if w["unlimited"].as_bool() == Some(true) {
+            continue;
+        }
+        let remaining = number(&w["remaining"]).or_else(|| number(&w["quota_remaining"]));
+        let limit = number(&w["entitlement"]);
+        let used = number(&w["percent_remaining"])
+            .map(|p| 100.0 - p)
+            .or_else(|| {
+                limit
+                    .zip(remaining)
+                    .filter(|(l, _)| *l > 0.0)
+                    .map(|(l, r)| (l - r) / l * 100.0)
+            });
+        if let Some(used) = used {
+            windows.push(UsageWindow {
+                window: format!("copilot-{name}"),
+                label: name.replace('_', " "),
+                used_percent: used.clamp(0.0, 100.0),
+                resets_at: reset,
+                remaining,
+                limit,
+            });
+        }
+    }
+    (!windows.is_empty()).then_some(PlanUsage {
+        observed_at: now,
+        windows,
+    })
 }

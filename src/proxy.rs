@@ -1011,6 +1011,7 @@ pub async fn handle(
             };
             upstream = None;
             let mut result = req.body(upstream_body.clone()).send().await;
+            crate::quota::observe(&st.db, provider, idx, &result).await;
             if let Some(flow) = flow
                 && result
                     .as_ref()
@@ -1056,6 +1057,7 @@ pub async fn handle(
                             break;
                         };
                         result = req.body(upstream_body.clone()).send().await;
+                        crate::quota::observe(&st.db, provider, idx, &result).await;
                         if result
                             .as_ref()
                             .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)

@@ -63,6 +63,12 @@
     </form>{% endif %}
   </div>{% endif %}
 
+  <details open><summary>Subscription quota and account health</summary>
+    {% if let Some(s) = p.status %}{% if !s.connected %}<p><span class="tag warn">Disabled</span> - No active subscription sign-in. Saved observations below do not show current access.</p>{% endif %}{% endif %}
+    {% let quota = p.quota %}{% include "quota.html" %}
+    <p class="hint">At most 50 observed accounts. Quota data does not change routing.</p>
+  </details>
+
   <form method="post" action="/admin/providers/{{ p.name }}" class="stack" aria-label="Edit Provider {{ p.name }}">
     <input type="hidden" name="auth" value="{{ p.auth }}">
     <div class="row">
@@ -112,7 +118,7 @@
   <ul class="key-list">
     {% for key in p.keys %}
     <li>
-      <span><code>{{ key.label }}</code>{% if let Some(set) = key.env_set %}{% if set %} <span class="tag good">set</span>{% else %} <span class="tag warn">not set</span>{% endif %}{% endif %}</span>
+      <span><code>{{ key.label }}</code>{% if let Some(id) = key.quota_id %} <code data-quota-key-id="{{ id }}">{{ id }}</code>{% endif %}{% if let Some(set) = key.env_set %}{% if set %} <span class="tag good">set</span>{% else %} <span class="tag warn">not set</span>{% endif %}{% endif %}</span>
       <form class="inline" method="post" action="/admin/providers/{{ p.name }}/keys/{{ key.index }}/delete" data-confirm="Delete Provider Key {{ key.label }} from {{ p.name }}? Requests stop using it at once."><button class="danger" aria-label="Delete Provider Key {{ key.label }} from {{ p.name }}">Delete key</button></form>
     </li>
     {% endfor %}
