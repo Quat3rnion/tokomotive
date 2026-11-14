@@ -153,7 +153,9 @@ async fn mock_anthropic(
             json!({"type": "message_delta", "delta":{"stop_reason":"end_turn"}, "usage": {"output_tokens": 77}})
         ));
         ev.push("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".into());
-        return sse(ev, if slow { 40 } else { 2 });
+        // Slow mode must outlast client-drop detection on a loaded host: the
+        // Proxy only sees the drop on its next write.
+        return sse(ev, if slow { 150 } else { 2 });
     }
     let mut u = start_usage;
     u["output_tokens"] = json!(77);
