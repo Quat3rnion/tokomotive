@@ -281,7 +281,14 @@ async fn subscription_providers_are_never_queried() {
     }
     a.st.set_router_table(table);
     let scoped = a.json("/admin/search/models?q=&provider=claude-max").await;
-    assert_eq!(ids(&scoped), ["claude-sonnet"]);
+    // The catalog Model and the offline models.dev list may appear; the live
+    // source must not: no request reaches the subscription upstream.
+    assert_eq!(ids(&scoped)[0], "claude-sonnet");
+    assert!(
+        scoped.iter().all(|h| h["source"] != "provider"),
+        "{scoped:?}"
+    );
+    assert!(!ids(&scoped).contains(&"claude-live"));
     a.json("/admin/search/models?q=claude").await;
     assert_eq!(hits.load(Ordering::SeqCst), 0);
 }
@@ -561,4 +568,35 @@ async fn usage_model_filter_limits_the_rows() {
     assert!(!one.contains(">gpt-4o</th>"));
     let none = a.page("/admin/usage?model=none-such").await;
     assert!(none.contains("No requests in this range."));
+}
+
+/// models.dev models appear in the picker, scoped to the matching Provider,
+/// from the bundled snapshot (no network).
+#[tokio::test]
+async fn models_dev_hits_are_scoped_to_the_mapped_provider() {
+    let a = app().await;
+    // An unreachable base URL: the live source fails, models.dev still answers.
+    a.provider("deepseek", "https://api.deepseek.com", "api_key")
+        .await;
+    let hits = a
+        .json("/admin/search/models?q=deepseek-v4&provider=deepseek")
+        .await;
+    let dev: Vec<&Value> = hits
+        .iter()
+        .filter(|h| h["source"] == "models.dev")
+        .collect();
+    assert!(
+        dev.iter().any(|h| h["id"] == "deepseek-v4-pro"),
+        "no models.dev hit: {hits:?}"
+    );
+    assert!(dev.iter().all(|h| h["provider"] == "deepseek"));
+    assert!(
+        dev.iter().any(|h| h["price"].is_string()),
+        "no price: {dev:?}"
+    );
+    // A Provider with no models.dev match gets no models.dev hits.
+    a.provider("mystery", "http://127.0.0.1:9/v1", "api_key")
+        .await;
+    let hits = a.json("/admin/search/models?q=gpt&provider=mystery").await;
+    assert!(hits.iter().all(|h| h["source"] != "models.dev"), "{hits:?}");
 }

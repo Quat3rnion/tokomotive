@@ -70,6 +70,11 @@ pub trait ModelSource: Send + Sync {
     fn prepare(&self, _ctx: &SearchCtx) -> Option<BoxFuture<'static, ()>> {
         None
     }
+    /// Like [`ModelSource::prepare`], with the query. For sources that look
+    /// up each query in a database. The default calls `prepare`.
+    fn prepare_for(&self, ctx: &SearchCtx, _q: &str) -> Option<BoxFuture<'static, ()>> {
+        self.prepare(ctx)
+    }
 }
 
 /// Case-insensitive substring match. An empty query matches all.
@@ -162,6 +167,7 @@ impl Registry {
             Box::new(RouteSource),
             Box::new(CatalogSource),
             Box::new(ProviderSource::default()),
+            Box::new(crate::models_dev::Source::default()),
         ];
         Registry {
             sources: RwLock::new(sources.into_iter().map(Arc::from).collect()),
@@ -205,7 +211,10 @@ impl Registry {
             .filter(|s| only.is_none_or(|o| o.iter().any(|n| n == s.name())))
             .cloned()
             .collect();
-        let warm: Vec<_> = sources.iter().filter_map(|s| s.prepare(ctx)).collect();
+        let warm: Vec<_> = sources
+            .iter()
+            .filter_map(|s| s.prepare_for(ctx, q))
+            .collect();
         if !warm.is_empty() {
             let _ =
                 tokio::time::timeout(PREPARE_BUDGET, futures_util::future::join_all(warm)).await;

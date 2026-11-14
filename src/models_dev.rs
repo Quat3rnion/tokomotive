@@ -371,14 +371,27 @@ pub fn start_background(st: crate::state::AppState) -> tokio::task::JoinHandle<(
 
 /// Explicit mapping, provider preset, then exact normalized API URL. Model:
 /// exact ID, canonical ID, then longest `<id>-` prefix (catalog precedence).
-async fn mapping(conn: &mut SqliteConnection, id: i64) -> Result<Option<(String, String)>> {
-    let row = sqlx::query("SELECT m.name,m.models_dev_provider,m.models_dev_model,p.preset,p.base_url FROM models m LEFT JOIN providers p ON p.name=m.provider WHERE m.id=?").bind(id).fetch_one(&mut *conn).await?;
-    let override_provider: Option<String> = row.get("models_dev_provider");
-    let base: Option<String> = row.get("base_url");
+/// The models.dev provider ID for a Tokomotive Provider, from its preset or
+/// its base URL. `None` when nothing matches.
+pub async fn provider_for(db: &Db, provider: &str) -> Result<Option<String>> {
+    let mut conn = db.acquire().await?;
+    let row = sqlx::query("SELECT preset,base_url FROM providers WHERE name=?")
+        .bind(provider)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(row) = row else { return Ok(None) };
+    infer_provider(&mut conn, row.get("preset"), row.get("base_url")).await
+}
+
+async fn infer_provider(
+    conn: &mut SqliteConnection,
+    preset: Option<String>,
+    base: Option<String>,
+) -> Result<Option<String>> {
     // Providers created before presets were persisted (including seed files)
     // can still use a verified preset's identity. Some upstream entries, such
     // as Anthropic, deliberately have no API URL in models.dev.
-    let preset: Option<String> = row.get::<Option<String>, _>("preset").or_else(|| {
+    let preset: Option<String> = preset.or_else(|| {
         let url = base
             .as_deref()?
             .trim_end_matches('/')
@@ -391,16 +404,21 @@ async fn mapping(conn: &mut SqliteConnection, id: i64) -> Result<Option<(String,
             })
             .map(|p| p.name.to_owned())
     });
-    let provider: Option<String> = if let Some(p) = override_provider {
-        Some(p)
-    } else {
-        sqlx::query_scalar("SELECT id FROM models_dev_providers WHERE id=? OR (api!='' AND ?!='' AND (rtrim(api,'/')=? OR rtrim(api,'/')||'/v1'=? OR rtrim(api,'/')=?||'/v1')) ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,id LIMIT 1")
+    Ok(sqlx::query_scalar("SELECT id FROM models_dev_providers WHERE id=? OR (api!='' AND ?!='' AND (rtrim(api,'/')=? OR rtrim(api,'/')||'/v1'=? OR rtrim(api,'/')=?||'/v1')) ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,id LIMIT 1")
             .bind(preset.as_deref().unwrap_or(""))
             .bind(base.as_deref().unwrap_or(""))
             .bind(base.as_deref().unwrap_or("").trim_end_matches('/'))
             .bind(base.as_deref().unwrap_or("").trim_end_matches('/'))
             .bind(base.as_deref().unwrap_or("").trim_end_matches('/'))
-            .bind(preset.as_deref().unwrap_or("")).fetch_optional(&mut *conn).await?
+            .bind(preset.as_deref().unwrap_or("")).fetch_optional(&mut *conn).await?)
+}
+
+async fn mapping(conn: &mut SqliteConnection, id: i64) -> Result<Option<(String, String)>> {
+    let row = sqlx::query("SELECT m.name,m.models_dev_provider,m.models_dev_model,p.preset,p.base_url FROM models m LEFT JOIN providers p ON p.name=m.provider WHERE m.id=?").bind(id).fetch_one(&mut *conn).await?;
+    let override_provider: Option<String> = row.get("models_dev_provider");
+    let provider = match override_provider {
+        Some(p) => Some(p),
+        None => infer_provider(conn, row.get("preset"), row.get("base_url")).await?,
     };
     let Some(provider) = provider else {
         return Ok(None);
@@ -593,4 +611,89 @@ pub async fn search(
             })
         })
         .collect()
+}
+
+/// The models.dev source of the model picker. `prepare_for` runs the
+/// database query for the query text and keeps the hits; `search` returns
+/// them. The cache holds the last 64 queries only.
+type PickerKey = (Option<String>, String);
+type PickerCache =
+    std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(PickerKey, Vec<SearchHit>)>>>;
+
+#[derive(Default)]
+pub struct Source {
+    hits: PickerCache,
+}
+
+impl Source {
+    const KEEP: usize = 64;
+    const LIMIT: usize = 50;
+}
+
+impl crate::model_search::ModelSource for Source {
+    fn name(&self) -> &'static str {
+        "models.dev"
+    }
+
+    fn prepare_for(
+        &self,
+        ctx: &crate::model_search::SearchCtx,
+        q: &str,
+    ) -> Option<futures_util::future::BoxFuture<'static, ()>> {
+        let db = ctx.state.db.clone();
+        let provider = ctx.provider.clone();
+        let q = q.trim().to_owned();
+        let hits = self.hits.clone();
+        Some(Box::pin(async move {
+            // Map the Tokomotive Provider to its models.dev provider ID. A
+            // Provider with no match gets no models.dev hits.
+            let dev = match &provider {
+                Some(p) => match provider_for(&db, p).await {
+                    Ok(Some(id)) => Some(id),
+                    _ => return,
+                },
+                None => None,
+            };
+            let found = search(&db, dev.as_deref(), &q, Self::LIMIT)
+                .await
+                .unwrap_or_default();
+            let mut cache = hits.lock().expect("models.dev picker cache");
+            cache.retain(|(k, _)| k != &(provider.clone(), q.clone()));
+            cache.push_back(((provider, q), found));
+            while cache.len() > Self::KEEP {
+                cache.pop_front();
+            }
+        }))
+    }
+
+    fn search(
+        &self,
+        ctx: &crate::model_search::SearchCtx,
+        q: &str,
+        limit: usize,
+    ) -> Vec<crate::model_search::ModelHit> {
+        let key = (ctx.provider.clone(), q.trim().to_owned());
+        let cache = self.hits.lock().expect("models.dev picker cache");
+        let Some((_, found)) = cache.iter().rev().find(|(k, _)| k == &key) else {
+            return Vec::new();
+        };
+        found
+            .iter()
+            .take(limit)
+            .map(|h| crate::model_search::ModelHit {
+                // Scoped to a Provider: the upstream model ID. Unscoped: the
+                // provider/model form that the Proxy can route.
+                id: if ctx.provider.is_some() {
+                    h.id.clone()
+                } else {
+                    format!("{}/{}", h.provider, h.id)
+                },
+                label: h.label.clone(),
+                provider: ctx.provider.clone().or_else(|| Some(h.provider.clone())),
+                source: "models.dev",
+                context: h.context.and_then(|c| u64::try_from(c).ok()),
+                price: h.price.clone(),
+            })
+            .collect()
+    }
 }
