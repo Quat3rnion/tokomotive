@@ -1288,7 +1288,9 @@ async fn binary_starts_without_a_config_file() {
         .spawn()
         .unwrap();
     let mut ready = false;
-    for _ in 0..100 {
+    // 20 s: the binary starts in well under a second, but a busy build host
+    // (parallel test binaries) can delay process start by several seconds.
+    for _ in 0..660 {
         if client()
             .get(format!("http://{addr}/healthz"))
             .send()
