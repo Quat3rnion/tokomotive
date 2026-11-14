@@ -23,8 +23,28 @@ pub fn valid_name(name: &str, max: usize) -> bool {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
 }
+pub fn valid_server_name(name: &str) -> bool {
+    valid_name(name, 32)
+        && !name.bytes().all(|b| b == b'.')
+        && !name.starts_with('_')
+        && !name.ends_with('_')
+        && !name.contains("__")
+}
 pub async fn servers(db: &Db) -> anyhow::Result<Vec<Server>> {
-    Ok(sqlx::query_as("SELECT id,name,url,auth,header_name,secret,allow_private,enabled FROM mcp_servers ORDER BY name LIMIT 65").fetch_all(db).await?)
+    let mut servers: Vec<Server> = sqlx::query_as("SELECT id,name,url,auth,header_name,secret,allow_private,enabled FROM mcp_servers ORDER BY name LIMIT 65").fetch_all(db).await?;
+    servers.retain(|s| {
+        if valid_server_name(&s.name) {
+            true
+        } else {
+            tracing::warn!(
+                server_id = s.id,
+                error_class = "invalid_server_name",
+                "MCP server omitted"
+            );
+            false
+        }
+    });
+    Ok(servers)
 }
 #[derive(Default)]
 pub struct Access {
@@ -94,4 +114,33 @@ pub async fn cache_tools(st: &AppState, id: i64, tools: &[Value]) -> anyhow::Res
         .execute(&st.db)
         .await?;
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub struct LogRetention {
+    pub days: i64,
+    pub max_rows: i64,
+}
+impl LogRetention {
+    pub async fn load(db: &Db) -> anyhow::Result<Self> {
+        Ok(Self {
+            days: crate::settings::value(db, "mcp_retention_days")
+                .await?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30)
+                .clamp(1, 3650),
+            max_rows: crate::settings::value(db, "mcp_max_rows")
+                .await?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100_000)
+                .clamp(1, 1_000_000),
+        })
+    }
+}
+/// Delete at most 500 rows per tick, including incomplete calls.
+pub async fn purge_calls(db: &Db, now_ms: i64) -> anyhow::Result<u64> {
+    let retention = LogRetention::load(db).await?;
+    Ok(sqlx::query("DELETE FROM mcp_calls WHERE id IN (SELECT id FROM mcp_calls WHERE ts_ms<? OR id<=(SELECT id FROM mcp_calls ORDER BY id DESC LIMIT 1 OFFSET ?) ORDER BY id LIMIT 500)")
+        .bind(now_ms - retention.days * 86_400_000).bind(retention.max_rows)
+        .execute(db).await?.rows_affected())
 }

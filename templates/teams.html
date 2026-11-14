@@ -34,13 +34,13 @@
   </tr>
   <tr id="edit-t{{ t.id }}" class="edit-row" data-collapse>
     <td colspan="{% if base.simple %}3{% else %}4{% endif %}"><div class="edit-panel">
-      <form method="post" action="/admin/teams/{{ t.id }}/mcp" class="stack">{% call picker::mcp_access(t.mcp_access.all, t.mcp_access.display()) %}<div class="form-error" role="alert" tabindex="-1"></div><button class="ghost">Save MCP access</button></form>
       <form method="post" action="/admin/teams/{{ t.id }}" class="row" aria-label="Edit Team {{ t.name }}">
         <div class="field"><label for="t{{ t.id }}-name">Name</label><input id="t{{ t.id }}-name" name="name" value="{{ t.name }}" required autocomplete="off" spellcheck="false"></div>
         {% if !base.simple %}{% let budget = t.budget_view %}{% include "budget_fields.html" %}{% endif %}
         <button aria-label="Save Team {{ t.name }}">Save</button><button type="button" class="ghost" data-toggle="edit-t{{ t.id }}">Cancel</button>
         <div class="form-error" role="alert" tabindex="-1"></div>
       </form>
+      <form method="post" action="/admin/teams/{{ t.id }}/mcp" class="subform" aria-label="MCP access for Team {{ t.name }}">{% call picker::mcp_access(t.id, t.mcp_access.all, t.mcp_access.display()) %}<div class="form-error" role="alert" tabindex="-1"></div><button class="ghost">Save MCP access</button></form>
       <p class="hint">To move a User to another Team, edit the User on the <a href="/admin/users">Users</a> page.</p>
     </div></td>
   </tr>

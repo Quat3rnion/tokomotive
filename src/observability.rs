@@ -341,6 +341,9 @@ pub fn start_retention(st: crate::state::AppState) -> tokio::task::JoinHandle<()
             tick.tick().await;
             let state = st.clone();
             st.spawn_tracked(async move {
+                if let Err(e) = crate::mcp::data::purge_calls(&state.db, db::now_ms()).await {
+                    tracing::warn!(error=%e,"MCP call retention purge failed");
+                }
                 if let Err(e) = purge(
                     &state.db,
                     state.observability.settings().retention_days,

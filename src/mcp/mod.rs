@@ -17,11 +17,18 @@ use std::{
 };
 pub mod data;
 pub mod upstream;
-type Upstreams =
-    Arc<tokio::sync::Mutex<HashMap<i64, Arc<tokio::sync::Mutex<upstream::Connection>>>>>;
+type Upstreams = Arc<SessionTools>;
+#[derive(Default)]
+struct SessionTools {
+    connections: tokio::sync::Mutex<HashMap<i64, Arc<tokio::sync::Mutex<upstream::Connection>>>>,
+    names: Mutex<HashMap<String, (String, String)>>,
+}
 
 pub const VERSION: &str = "2025-06-18";
 const BODY_CAP: usize = 1024 * 1024;
+const BODY_DEADLINE: Duration = Duration::from_secs(15);
+const MAX_REQUESTS: usize = 256;
+const MAX_KEY_REQUESTS: usize = 8;
 const SESSION_TTL: Duration = Duration::from_secs(1800);
 const MAX_SESSIONS: usize = 1024;
 const MAX_KEY_SESSIONS: usize = 16;
@@ -35,6 +42,8 @@ struct Session {
 }
 pub struct Sessions {
     inner: Mutex<HashMap<String, Session>>,
+    requests: tokio::sync::Semaphore,
+    key_requests: Mutex<HashMap<i64, usize>>,
     ttl: Duration,
     max: usize,
     per_key: usize,
@@ -50,10 +59,29 @@ impl Sessions {
     pub fn with_limits(ttl: Duration, max: usize, per_key: usize) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            requests: tokio::sync::Semaphore::new(MAX_REQUESTS),
+            key_requests: Mutex::new(HashMap::new()),
             ttl: ttl.min(SESSION_TTL),
             max: max.min(MAX_SESSIONS),
             per_key: per_key.min(MAX_KEY_SESSIONS),
         }
+    }
+    fn admit(&self, key: i64) -> Result<RequestPermit<'_>, StatusCode> {
+        let permit = self
+            .requests
+            .try_acquire()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let mut keys = self.key_requests.lock().expect("MCP requests");
+        let count = keys.entry(key).or_default();
+        if *count >= MAX_KEY_REQUESTS {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        *count += 1;
+        Ok(RequestPermit {
+            _global: permit,
+            keys: &self.key_requests,
+            key,
+        })
     }
     pub fn create(&self, key: i64, endpoint: &str) -> Option<String> {
         let mut sessions = self.inner.lock().expect("MCP sessions");
@@ -102,6 +130,21 @@ impl Sessions {
             .map(|s| s.upstreams.clone())
     }
 }
+struct RequestPermit<'a> {
+    _global: tokio::sync::SemaphorePermit<'a>,
+    keys: &'a Mutex<HashMap<i64, usize>>,
+    key: i64,
+}
+impl Drop for RequestPermit<'_> {
+    fn drop(&mut self) {
+        let mut keys = self.keys.lock().expect("MCP requests");
+        let count = keys.get_mut(&self.key).expect("admitted MCP key");
+        *count -= 1;
+        if *count == 0 {
+            keys.remove(&self.key);
+        }
+    }
+}
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/mcp", any(aggregate))
@@ -137,6 +180,11 @@ async fn handle(st: AppState, endpoint: String, req: Request) -> Response {
         Ok(a) => a,
         Err(r) => return *r,
     };
+    // Hold admission through dispatch, not just the body read. No wait queue.
+    let _permit = match st.mcp.admit(auth.key_id) {
+        Ok(permit) => permit,
+        Err(status) => return status.into_response(),
+    };
     if parts.method != Method::POST && parts.method != Method::DELETE {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
@@ -170,9 +218,12 @@ async fn handle(st: AppState, endpoint: String, req: Request) -> Response {
     {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     }
-    let Ok(bytes) = axum::body::to_bytes(body, BODY_CAP).await else {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-    };
+    let bytes =
+        match tokio::time::timeout(BODY_DEADLINE, axum::body::to_bytes(body, BODY_CAP)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+            Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+        };
     let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
         return error(&Value::Null, -32700, "Parse error");
     };
@@ -230,7 +281,7 @@ async fn connection(
     upstreams: &Upstreams,
     id: i64,
 ) -> Option<Arc<tokio::sync::Mutex<upstream::Connection>>> {
-    let mut entries = upstreams.lock().await;
+    let mut entries = upstreams.connections.lock().await;
     if entries.len() >= 64 && !entries.contains_key(&id) {
         return None;
     }
@@ -245,6 +296,10 @@ async fn tools(
     id: &Value,
     params: &Value,
 ) -> Response {
+    if method == "tools/list" {
+        // A failed refresh must not leave an earlier catalog usable.
+        upstreams.names.lock().expect("MCP tool names").clear();
+    }
     let Ok(permissions) = data::Permissions::load(st, auth).await else {
         return error(id, -32603, "Access lookup failed");
     };
@@ -259,6 +314,7 @@ async fn tools(
         .filter(|s| s.enabled && (endpoint.is_empty() || s.name == endpoint))
         .collect();
     if method == "tools/list" {
+        let mut names = HashMap::new();
         let mut tools = Vec::new();
         let mut bytes = 0;
         for server in servers.iter().filter(|s| permissions.server(&s.name)) {
@@ -272,8 +328,16 @@ async fn tools(
             let Ok(mut upstream) = connection.try_lock() else {
                 return error(id, -32603, "Upstream is busy; retry this request");
             };
-            let Ok(list) = upstream.tools(st, server).await else {
-                return error(id, -32603, "Upstream tool list failed");
+            let list = match upstream.tools(st, server).await {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!(
+                        server_id = server.id,
+                        error_class = e.0,
+                        "MCP tool list rejected"
+                    );
+                    return error(id, -32603, "Upstream tool list failed");
+                }
             };
             for mut tool in list {
                 let Some(name) = tool["name"].as_str() else {
@@ -282,6 +346,7 @@ async fn tools(
                 if !permissions.permits(&server.name, name) {
                     continue;
                 }
+                let tool_name = name.to_owned();
                 let name = if endpoint.is_empty() {
                     format!("{}__{name}", server.name)
                 } else {
@@ -289,6 +354,16 @@ async fn tools(
                 };
                 if name.len() > 128 {
                     continue;
+                }
+                if names
+                    .insert(name.clone(), (server.name.clone(), tool_name))
+                    .is_some()
+                {
+                    tracing::warn!(
+                        error_class = "aggregate_name_collision",
+                        "MCP tool list rejected"
+                    );
+                    return error(id, -32603, "Duplicate gateway tool name");
                 }
                 tool["name"] = json!(name);
                 bytes += tool.to_string().len();
@@ -312,28 +387,12 @@ async fn tools(
         if end < tools.len() {
             result["nextCursor"] = json!(end.to_string());
         }
+        *upstreams.names.lock().expect("MCP tool names") = names;
         return reply(id, result);
     }
     let Some(name) = params["name"].as_str().filter(|s| data::valid_name(s, 128)) else {
         return error(id, -32602, "Invalid tool name");
     };
-    let (server_name, tool) = if endpoint.is_empty() {
-        match name.split_once("__") {
-            Some(v) => v,
-            None => return error(id, -32602, "Use a prefixed tool name"),
-        }
-    } else {
-        (endpoint, name)
-    };
-    let start = Instant::now();
-    // Write before dispatch: cancellation, shutdown or a failed final UPDATE
-    // must not erase evidence that a tool might have had a side effect.
-    let logged = sqlx::query("INSERT INTO mcp_calls(ts_ms,key_id,user_id,server,tool,status,latency_ms,error_class) VALUES(?,?,?,?,?,'unknown',0,'incomplete')")
-        .bind(chrono::Utc::now().timestamp_millis()).bind(auth.key_id).bind(auth.user_id).bind(server_name).bind(tool).execute(&st.db).await;
-    let Ok(logged) = logged else {
-        return error(id, -32603, "Tool call log failed");
-    };
-    let log_id = logged.last_insert_rowid();
     let scopes = [
         (
             crate::ratelimit::Scope::Key(auth.key_id),
@@ -350,51 +409,71 @@ async fn tools(
             },
         ),
     ];
-    let mut class = "";
-    let mut result = None;
-    let mut value = None;
     if let Err(limited) = st
         .limiter
         .admit(&scopes, chrono::Utc::now().timestamp_millis())
     {
-        class = "rate_limit";
+        rejected("rate_limit");
         let mut response = error(id, -32000, "Rate limit exceeded");
         *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         response.headers_mut().insert(
             "retry-after",
             limited.retry_after_secs.to_string().parse().expect("retry"),
         );
-        result = Some(response);
-    } else if !permissions.permits(server_name, tool) {
-        class = "denied";
-    } else if let Some(server) = servers.iter().find(|s| s.name == server_name) {
-        if params.get("arguments").is_some_and(|a| !a.is_object()) {
-            class = "invalid_arguments";
-        } else {
-            let connection = connection(&upstreams, server.id).await;
-            let mut p = json!({"name":tool});
-            if let Some(args) = params.get("arguments") {
-                p["arguments"] = args.clone();
+        return response;
+    }
+    let route = upstreams
+        .names
+        .lock()
+        .expect("MCP tool names")
+        .get(name)
+        .cloned();
+    let Some((server_name, tool)) = route else {
+        rejected("not_listed");
+        return error(id, -32602, "List tools before calling a listed tool");
+    };
+    if !permissions.permits(&server_name, &tool) {
+        rejected("denied");
+        return error(id, -32602, "Tool not allowed or invalid");
+    }
+    let Some(server) = servers.iter().find(|s| s.name == server_name) else {
+        rejected("not_found");
+        return error(id, -32602, "Tool not allowed or invalid");
+    };
+    if params.get("arguments").is_some_and(|a| !a.is_object()) {
+        rejected("invalid_arguments");
+        return error(id, -32602, "Tool not allowed or invalid");
+    }
+    let start = Instant::now();
+    // Only admitted calls get a durable row, before any possible side effect.
+    let logged = sqlx::query("INSERT INTO mcp_calls(ts_ms,key_id,user_id,server,tool,status,latency_ms,error_class) VALUES(?,?,?,?,?,'unknown',0,'incomplete')")
+        .bind(chrono::Utc::now().timestamp_millis()).bind(auth.key_id).bind(auth.user_id).bind(&server_name).bind(&tool).execute(&st.db).await;
+    let Ok(logged) = logged else {
+        return error(id, -32603, "Tool call log failed");
+    };
+    let log_id = logged.last_insert_rowid();
+    let mut class = "";
+    let mut value = None;
+    let connection = connection(&upstreams, server.id).await;
+    let mut p = json!({"name":tool});
+    if let Some(args) = params.get("arguments") {
+        p["arguments"] = args.clone();
+    }
+    let requested = match connection.as_ref().map(|c| c.try_lock()) {
+        Some(Ok(mut connection)) => connection.request(st, server, "tools/call", p).await,
+        _ => Err(upstream::Failure("upstream_busy")),
+    };
+    match requested {
+        Ok(mut v) => {
+            v["id"] = id.clone();
+            if v.get("error").is_some() {
+                class = "upstream_rpc";
+            } else if v["result"]["isError"] == true {
+                class = "tool_error";
             }
-            let requested = match connection.as_ref().map(|c| c.try_lock()) {
-                Some(Ok(mut connection)) => connection.request(st, server, "tools/call", p).await,
-                _ => Err(upstream::Failure("upstream_busy")),
-            };
-            match requested {
-                Ok(mut v) => {
-                    v["id"] = id.clone();
-                    if v.get("error").is_some() {
-                        class = "upstream_rpc";
-                    } else if v["result"]["isError"] == true {
-                        class = "tool_error";
-                    }
-                    value = Some(v);
-                }
-                Err(e) => class = e.0,
-            }
+            value = Some(v);
         }
-    } else {
-        class = "not_found";
+        Err(e) => class = e.0,
     }
     let status = if class.is_empty() { "ok" } else { "error" };
     // Arguments, results, upstream error messages and credentials are never logged.
@@ -409,15 +488,41 @@ async fn tools(
         return error(id, -32603, "Tool call log failed");
     }
     metrics::counter!("tokomotive_mcp_tool_calls_total", "status" => status, "error_class" => class).increment(1);
-    if let Some(result) = result {
-        return result;
-    }
     if let Some(v) = value {
         return Json(v).into_response();
     }
-    if matches!(class, "denied" | "not_found" | "invalid_arguments") {
-        error(id, -32602, "Tool not allowed or invalid")
-    } else {
-        error(id, -32603, "Upstream tool call failed")
+    error(id, -32603, "Upstream tool call failed")
+}
+
+fn rejected(class: &'static str) {
+    metrics::counter!("tokomotive_mcp_tool_calls_total", "status" => "rejected", "error_class" => class).increment(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn request_admission_has_global_and_key_bounds_and_releases_idle_keys() {
+        let sessions = Sessions::default();
+        let mut permits = Vec::new();
+        for key in 0..32 {
+            for _ in 0..MAX_KEY_REQUESTS {
+                permits.push(sessions.admit(key).unwrap());
+            }
+            if key == 0 {
+                assert!(matches!(
+                    sessions.admit(key),
+                    Err(StatusCode::TOO_MANY_REQUESTS)
+                ));
+            }
+        }
+        assert!(matches!(
+            sessions.admit(33),
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        ));
+        assert_eq!(sessions.key_requests.lock().unwrap().len(), 32);
+        permits.clear();
+        assert!(sessions.key_requests.lock().unwrap().is_empty());
+        assert!(sessions.admit(33).is_ok());
     }
 }

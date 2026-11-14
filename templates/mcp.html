@@ -4,27 +4,37 @@
 {% block content %}
 <h1>MCP servers</h1>
 <p class="muted">Connect Streamable HTTP tool servers. Clients use a Virtual Key at <code>/mcp</code> or <code>/mcp/server-name</code>. New keys and Teams have no MCP access. <a href="/admin/mcp/log">Tool call log</a></p>
+<nav class="toc" aria-label="On this page"><a href="#add-mcp-h">Add a server</a><a href="#servers-h">Saved servers</a><a href="/admin/mcp/log#retention">Log retention</a></nav>
 <section class="panel" aria-labelledby="add-mcp-h">
 <h2 id="add-mcp-h">Add an MCP server</h2>
 <form method="post" action="/admin/mcp" class="stack">
-<div class="row"><label>Name <input name="name" required maxlength="32" pattern="[A-Za-z0-9_.-]+" placeholder="research"></label><label class="grow">URL <input type="url" name="url" required placeholder="https://tools.example.com/mcp"></label></div>
-<div class="row"><label>Authentication <select name="auth"><option value="none">None</option><option value="bearer">Bearer token</option><option value="header">Custom header</option></select></label><label>Custom header name <input name="credential_header" placeholder="X-Access-Token"></label><label>Credential <input type="password" name="secret" autocomplete="new-password"></label></div>
+<div class="fields">
+<div class="field"><label for="mcp-name">Name</label><input id="mcp-name" name="name" required maxlength="32" pattern="[A-Za-z0-9_.-]+" placeholder="research" aria-describedby="mcp-name-help"><p class="hint" id="mcp-name-help">Do not start or end with an underscore, use two underscores together, or use only dots.</p></div>
+<div class="field"><label for="mcp-url">URL</label><input id="mcp-url" type="url" name="url" required placeholder="https://tools.example.com/mcp"></div>
+<div class="field"><label for="mcp-auth">Authentication</label><select id="mcp-auth" name="auth"><option value="none">None</option><option value="bearer">Bearer token</option><option value="header">Custom header</option></select></div>
+<div class="field"><label for="mcp-secret">Credential</label><input id="mcp-secret" type="password" name="secret" autocomplete="new-password"></div></div>
 <label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
+<details><summary>Advanced</summary><div class="fields"><div class="field"><label for="mcp-header">Custom header name</label><input id="mcp-header" name="credential_header" placeholder="X-Access-Token"></div></div>
 <label class="check"><input type="checkbox" name="allow_private"> Allow private network access (including local HTTP)</label>
-<p class="hint">Enable private network access only for a trusted server. Public servers need HTTPS. Redirects are not followed. Credentials are encrypted and are not shown again. Do not put a credential in the URL.</p>
+<p class="hint">Enable private network access only for a trusted server. Public servers need HTTPS. Redirects are not followed. Do not put a credential in the URL. Transport and hop-by-hop headers are not permitted as credential headers.</p></details>
+<p class="hint">Credentials are encrypted and are not shown again.</p>
 <div class="form-error" role="alert" tabindex="-1"></div><button>Add server</button>
 </form></section>
+<h2 id="servers-h">Saved servers</h2>
 {% for v in servers %}
 {% let s = v.server %}
 <section class="panel" aria-labelledby="mcp-{{ s.id }}-h"><h2 id="mcp-{{ s.id }}-h">{{ s.name }} {% if !s.enabled %}<span class="tag">disabled</span>{% endif %}</h2>
 <p><code>{{ s.url }}</code></p><p>Authentication: {{ s.auth }}. Credential: {% if s.secret.is_some() %}<code>********</code>{% else %}none{% endif %}.</p>
-<div class="actions"><form method="post" action="/admin/mcp/{{ s.id }}/test"><button>Test connection and list tools</button><div class="form-error" role="alert" tabindex="-1"></div></form><button type="button" class="ghost" data-toggle="edit-mcp-{{ s.id }}" aria-expanded="false" aria-controls="edit-mcp-{{ s.id }}">Edit</button><form method="post" action="/admin/mcp/{{ s.id }}/delete" data-confirm="Delete MCP server {{ s.name }}?"><button class="danger">Delete</button></form></div>
+<div class="actions"><button type="button" class="ghost" data-toggle="edit-mcp-{{ s.id }}" aria-expanded="false" aria-controls="edit-mcp-{{ s.id }}">Edit</button><form method="post" action="/admin/mcp/{{ s.id }}/delete" data-confirm="Delete MCP server {{ s.name }}? Its tool calls stay in the log until retention removes them."><button class="danger">Delete</button></form></div>
 <div id="edit-mcp-{{ s.id }}" data-collapse><form method="post" action="/admin/mcp/{{ s.id }}" class="stack">
-<div class="row"><label>Name <input name="name" value="{{ s.name }}" required maxlength="32"></label><label class="grow">URL <input type="url" name="url" value="{{ s.url }}" required></label></div>
-<div class="row"><label>Authentication <select name="auth"><option value="none"{% if s.auth == "none" %} selected{% endif %}>None</option><option value="bearer"{% if s.auth == "bearer" %} selected{% endif %}>Bearer token</option><option value="header"{% if s.auth == "header" %} selected{% endif %}>Custom header</option></select></label><label>Custom header name <input name="credential_header" value="{{ s.header_name }}"></label><label>New credential <input type="password" name="secret" autocomplete="new-password" placeholder="Leave blank to keep the credential"></label></div>
-<label class="check"><input type="checkbox" name="enabled"{% if s.enabled %} checked{% endif %}> Enabled</label><label class="check"><input type="checkbox" name="allow_private"{% if s.allow_private %} checked{% endif %}> Allow private network access (including local HTTP)</label>
+<div class="fields"><div class="field"><label for="mcp-{{ s.id }}-name">Name</label><input id="mcp-{{ s.id }}-name" name="name" value="{{ s.name }}" required maxlength="32"></div><div class="field"><label for="mcp-{{ s.id }}-url">URL</label><input id="mcp-{{ s.id }}-url" type="url" name="url" value="{{ s.url }}" required></div>
+<div class="field"><label for="mcp-{{ s.id }}-auth">Authentication</label><select id="mcp-{{ s.id }}-auth" name="auth"><option value="none"{% if s.auth == "none" %} selected{% endif %}>None</option><option value="bearer"{% if s.auth == "bearer" %} selected{% endif %}>Bearer token</option><option value="header"{% if s.auth == "header" %} selected{% endif %}>Custom header</option></select></div><div class="field"><label for="mcp-{{ s.id }}-secret">New credential</label><input id="mcp-{{ s.id }}-secret" type="password" name="secret" autocomplete="new-password" aria-describedby="mcp-{{ s.id }}-secret-help"><p class="hint" id="mcp-{{ s.id }}-secret-help">Leave blank to keep the credential. Only an Owner can change the URL, authentication, custom header or private network access while keeping it. An Admin must enter a new credential.</p></div></div>
+<label class="check"><input type="checkbox" name="enabled"{% if s.enabled %} checked{% endif %}> Enabled</label>
+<details><summary>Advanced</summary><div class="fields"><div class="field"><label for="mcp-{{ s.id }}-header">Custom header name</label><input id="mcp-{{ s.id }}-header" name="credential_header" value="{{ s.header_name }}"></div></div><label class="check"><input type="checkbox" name="allow_private"{% if s.allow_private %} checked{% endif %}> Allow private network access (including local HTTP)</label></details>
 <p class="hint">If you change the name, update key and Team access. Test the connection after you save.</p><div class="form-error" role="alert" tabindex="-1"></div><button>Save server</button>
 </form></div>
-<h3>Tools from the last connection test</h3><div class="scroll"><table><thead><tr><th scope="col">Tool</th><th scope="col">Description</th></tr></thead><tbody>{% for t in v.tools %}<tr><th scope="row"><code>{{ t.name }}</code></th><td>{{ t.description }}</td></tr>{% else %}<tr><td colspan="2">No cached tools. Run a connection test.</td></tr>{% endfor %}</tbody></table></div></section>
+<details class="subform"{% if !v.tools.is_empty() %} open{% endif %}><summary>Diagnostics</summary>
+<form method="post" action="/admin/mcp/{{ s.id }}/test"><button data-busy="Testing...">Test connection and list tools</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+<h3>Tools from the last connection test</h3><div class="scroll"><table><thead><tr><th scope="col">Tool</th><th scope="col">Description</th></tr></thead><tbody>{% for t in v.tools %}<tr><th scope="row"><code>{{ t.name }}</code></th><td>{{ t.description }}</td></tr>{% else %}<tr><td colspan="2">No cached tools. Run a connection test.</td></tr>{% endfor %}</tbody></table></div></details></section>
 {% else %}<p class="empty">No MCP servers. Add a trusted server, then run a connection test.</p>{% endfor %}
 {% endblock %}

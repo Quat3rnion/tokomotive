@@ -2,7 +2,13 @@
 {% block title %}MCP tool calls - Tokomotive{% endblock %}
 {% block nav_mcp %}aria-current="page"{% endblock %}
 {% block content %}
-<h1>MCP tool calls</h1><p class="muted"><a href="/admin/mcp">MCP servers</a>. This log does not store arguments, results or upstream error messages. Tool calls count against key and User RPM limits.</p>
+<h1>MCP tool calls</h1><p class="muted"><a href="/admin/mcp">MCP servers</a>. This log does not store arguments, results or upstream error messages. Tool calls count against key and User RPM limits. Rejected calls appear only in metrics.</p>
+<details class="panel" id="retention"><summary>Log retention</summary>
+<form method="post" action="/admin/mcp/retention" class="stack">
+<div class="fields"><div class="field"><label for="mcp-days">Retention (days)</label><input id="mcp-days" name="days" type="number" min="1" max="3650" value="{{ retention.days }}" required></div>
+<div class="field"><label for="mcp-rows">Maximum rows</label><input id="mcp-rows" name="max_rows" type="number" min="1" max="1000000" value="{{ retention.max_rows }}" required></div></div>
+<p class="hint">The default is 30 days and 100000 rows. Each minute, the Proxy removes up to 500 old or excess rows. The log can exceed these limits until the next batches finish.</p>
+<div class="form-error" role="alert" tabindex="-1"></div><button>Save retention</button></form></details>
 {% include "search.html" %}
 <div class="panel scroll"><table><thead><tr><th scope="col">Time (UTC)</th><th scope="col">Key</th><th scope="col">User</th><th scope="col">Server</th><th scope="col">Tool</th><th scope="col">Status</th><th scope="col">Latency (ms)</th><th scope="col">Error class</th></tr></thead><tbody>{% for c in calls %}<tr><td>{{ c.time() }}</td><td>{{ c.key_name }}</td><td>{{ c.user_name }}</td><td>{{ c.server }}</td><td>{{ c.tool }}</td><td>{{ c.status }}</td><td>{{ c.latency_ms }}</td><td>{{ c.error_class }}</td></tr>{% else %}<tr><td colspan="8" class="empty">No MCP tool calls.</td></tr>{% endfor %}</tbody></table></div>
 {% include "pager.html" %}

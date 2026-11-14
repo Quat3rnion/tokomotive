@@ -10,6 +10,7 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/mcp", get(index).post(create))
         .route("/admin/mcp/log", get(log))
+        .route("/admin/mcp/retention", post(retention))
         .route("/admin/mcp/search", get(search))
         .route("/admin/mcp/{id}", post(update))
         .route("/admin/mcp/{id}/delete", post(delete))
@@ -67,23 +68,23 @@ struct ServerForm {
     allow_private: Option<String>,
     enabled: Option<String>,
 }
-async fn create(_: Admin, State(st): State<AppState>, Form(f): Form<ServerForm>) -> Response {
-    save(&st, None, f).await
+async fn create(admin: Admin, State(st): State<AppState>, Form(f): Form<ServerForm>) -> Response {
+    save(admin, &st, None, f).await
 }
 async fn update(
-    _: Admin,
+    admin: Admin,
     State(st): State<AppState>,
     Path(id): Path<i64>,
     Form(f): Form<ServerForm>,
 ) -> Response {
-    save(&st, Some(id), f).await
+    save(admin, &st, Some(id), f).await
 }
-async fn save(st: &AppState, id: Option<i64>, f: ServerForm) -> Response {
+async fn save(Admin(account): Admin, st: &AppState, id: Option<i64>, f: ServerForm) -> Response {
     let _lock = st.settings_write.lock().await;
     let name = f.name.trim();
-    if !data::valid_name(name, 32) || name.bytes().all(|b| b == b'.') || name.contains("__") {
+    if !data::valid_server_name(name) {
         return bad(
-            "Use 1 to 32 letters, digits, dots, hyphens or underscores. Do not use two underscores together or a dot-only name.",
+            "Use 1 to 32 letters, digits, dots, hyphens or underscores. Do not start or end with an underscore, use two underscores together, or use only dots.",
         );
     }
     let url = match upstream::valid_url(f.url.trim()) {
@@ -110,6 +111,22 @@ async fn save(st: &AppState, id: Option<i64>, f: ServerForm) -> Response {
     let old = id.and_then(|id| servers.iter().find(|s| s.id == id));
     if id.is_some() && old.is_none() {
         return bad("MCP server not found.");
+    }
+    if account.role != "owner"
+        && f.auth != "none"
+        && f.secret.is_empty()
+        && old.is_some_and(|s| {
+            s.secret.is_some()
+                && (upstream::valid_url(&s.url).ok().as_ref() != Some(&url)
+                    || s.auth != f.auth
+                    || !s.header_name.eq_ignore_ascii_case(f.header_name.trim())
+                    || s.allow_private != f.allow_private.is_some())
+        })
+    {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Only an Owner can change the destination or authentication while keeping an MCP credential. Enter a new credential.",
+        );
     }
     let secret = if f.auth == "none" {
         None
@@ -341,6 +358,7 @@ struct LogPage {
     base: Base,
     calls: Vec<CallView>,
     pager: Pager,
+    retention: data::LogRetention,
 }
 async fn log(
     _: Admin,
@@ -367,5 +385,25 @@ async fn log(
         base: Base::new(&st),
         calls: page.items,
         pager,
+        retention: tryr!(data::LogRetention::load(&st.db).await),
     })
+}
+
+#[derive(Deserialize)]
+struct RetentionForm {
+    days: i64,
+    max_rows: i64,
+}
+async fn retention(_: Admin, State(st): State<AppState>, Form(f): Form<RetentionForm>) -> Response {
+    if !(1..=3650).contains(&f.days) || !(1..=1_000_000).contains(&f.max_rows) {
+        return bad("Use 1 to 3650 days and 1 to 1000000 rows for the MCP call log.");
+    }
+    let _lock = st.settings_write.lock().await;
+    let mut tx = tryr!(st.db.begin().await);
+    for (key, value) in [("mcp_retention_days", f.days), ("mcp_max_rows", f.max_rows)] {
+        tryr!(sqlx::query("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            .bind(key).bind(value.to_string()).execute(&mut *tx).await);
+    }
+    tryr!(tx.commit().await);
+    saved("/admin/mcp/log#retention", "MCP call log retention saved.")
 }

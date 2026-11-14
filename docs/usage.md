@@ -2171,6 +2171,13 @@ not the credential. Leave the credential field blank on edit to keep it. Select
 and `tools/list`. The tool descriptions from this test fill the access picker.
 Client discovery reads the current tool list, not this dashboard copy.
 
+Only an Owner can keep a stored credential when changing the full URL, including
+its path, the authentication method, the custom header name or private network
+access. An Admin must enter a new credential for these changes. Equivalent
+normalized URLs and header names with different letter case are not changes.
+Custom credential headers cannot replace transport headers. This includes
+`TE`, `Trailer`, `Upgrade`, `Keep-Alive` and `Proxy-Connection`.
+
 New Virtual Keys and Teams deny all MCP tools. On **Keys**, edit a key and select
 servers or tools in **MCP tool access**. Choose `research/*` for all tools on that
 server, or `research/search_docs` for one tool. **All MCP servers and tools** also
@@ -2185,9 +2192,15 @@ for example `research__search_docs`. To use the original names, connect to
 Requests with any `Origin` header get HTTP 403 and a JSON-RPC error, even when
 Origin matches Host. There is no browser origin or CORS opt-in setting.
 Server names must have 1 to 32 ASCII
-letters, digits, dots, hyphens or underscores, with no `__` or dot-only name.
+letters, digits, dots, hyphens or underscores. They cannot start or end with
+an underscore, contain `__`, or contain only dots. Invalid stored server names
+are not loaded. The Proxy logs the class `invalid_server_name`.
 Tool names have the MCP name characters and at most 128 characters. An aggregate
 name longer than 128 characters is not listed; use the single-server endpoint.
+Call `tools/list` before `tools/call` in each session. The Proxy maps each listed
+name to its server and original tool name. It does not split the name to route
+a call. A duplicate aggregate name rejects the list and logs the class
+`aggregate_name_collision`. A failed list clears the session's tool map.
 
 ### Client configuration
 
@@ -2248,7 +2261,12 @@ Restarting the gateway clears sessions. Use one process, or sticky routing.
 The gateway permits at most 64 servers and 64 upstream mappings per session.
 Each upstream request has a 5-second connect timeout and a 20-second total timeout.
 DNS has a 5-second timeout and a 32-address limit. Client requests have a 1 MiB
-body limit. Each upstream response is limited to 4 MiB. SSE is limited to 128
+body limit and a 15-second body-read deadline. An incomplete body gets HTTP 408.
+Before reading a body or checking a session, the Proxy limits active requests
+to 256 in total and 8 per Virtual Key. There is no wait queue. A full global
+limit returns HTTP 503; a full key limit returns HTTP 429. Admission is held
+until the request ends and is released on cancellation or timeout.
+Each upstream response is limited to 4 MiB. SSE is limited to 128
 events and 1 MiB per event. Discovery permits at most 16 upstream pages and 2048
 tools per server, with a 4 MiB combined list limit. The aggregate list also has
 a 2048-tool and 4 MiB limit. Client pages contain at most 100 tools. Send the
@@ -2259,7 +2277,9 @@ requests to the same upstream session get a busy error instead of queuing.
 The **MCP tool calls** page lists time, key, User, server, tool, status, latency
 and error class, with search and page controls. Arguments, results, credentials
 and upstream error messages are not stored. The LLM body-capture setting does
-not enable MCP body capture. An entry is written before dispatch. Status `unknown`
+not enable MCP body capture. RPM and access checks run before a log entry is
+written. Rejected calls do not create rows; they increment the Prometheus counter
+with `status="rejected"`. An admitted call is logged before dispatch. Status `unknown`
 and error class `incomplete` mean that the call did not record a final outcome,
 for example after a client disconnect or restart. The tool might have run. Check
 the upstream before you retry a tool that changes data. Valid tool call attempts, including denied calls,
@@ -2267,6 +2287,13 @@ count against key and User RPM limits in both operating modes. A rate rejection
 returns HTTP 429, a JSON-RPC error and `Retry-After`. MCP calls do not consume TPM
 or create LLM token charges. The Prometheus counter
 `tokomotive_mcp_tool_calls_total` has `status` and `error_class` labels.
+
+Open **MCP tool calls > Log retention** to set the retention period and maximum
+row count. The defaults are 30 days and 100000 rows. Each minute, the tracked
+retention task removes at most 500 old or excess rows, oldest IDs first. These
+limits include incomplete calls. Rows can exceed the limits while batches are
+pending. Set 1 to 3650 days and 1 to 1000000 rows. Retention removes call history;
+back up the database if you need to keep it longer.
 
 ## Unofficial subscription sign-in
 

@@ -16,6 +16,7 @@ use tokomotive::{config::Config, state::AppState};
 struct Mock(
     Arc<Mutex<Vec<(HeaderMap, Value)>>>,
     Arc<std::sync::atomic::AtomicBool>,
+    Arc<Mutex<Option<Vec<Value>>>>,
 );
 async fn upstream(State(mock): State<Mock>, headers: HeaderMap, Json(v): Json<Value>) -> Response {
     mock.0.lock().unwrap().push((headers, v.clone()));
@@ -25,6 +26,10 @@ async fn upstream(State(mock): State<Mock>, headers: HeaderMap, Json(v): Json<Va
         }
         "notifications/initialized" => return axum::http::StatusCode::ACCEPTED.into_response(),
         "tools/list" => {
+            if let Some(tools) = mock.2.lock().unwrap().as_ref() {
+                return Json(json!({"jsonrpc":"2.0","id":v["id"],"result":{"tools":tools}}))
+                    .into_response();
+            }
             let mut page = json!({"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]});
             if mock.1.load(std::sync::atomic::Ordering::Relaxed) {
                 if v["params"]["cursor"].is_string() {
@@ -239,7 +244,7 @@ async fn aggregate_prefix_route_default_deny_and_log() {
         .fetch_one(&f.st.db)
         .await
         .unwrap();
-    assert_eq!(count, 2);
+    assert_eq!(count, 1);
     let seen = f.mock.0.lock().unwrap();
     assert_eq!(seen[0].1["method"], "initialize");
     assert_eq!(seen[1].1["method"], "notifications/initialized");
@@ -257,6 +262,12 @@ async fn sse_caps_redirects_team_intersection_and_rpm() {
         .await
         .unwrap();
     let session = f.initialize().await;
+    assert!(
+        f.rpc(&session, "tools/list", json!({}))
+            .await
+            .get("result")
+            .is_some()
+    );
     let sse = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         f.rpc(
@@ -307,6 +318,12 @@ async fn sse_caps_redirects_team_intersection_and_rpm() {
         .execute(&f.st.db)
         .await
         .unwrap();
+    assert!(
+        f.rpc(&session, "tools/list", json!({}))
+            .await
+            .get("result")
+            .is_some()
+    );
     assert_eq!(
         f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
             .await["result"]["content"][0]["text"],
@@ -328,16 +345,266 @@ async fn sse_caps_redirects_team_intersection_and_rpm() {
         .unwrap();
     assert_eq!(
         classes,
-        vec![
-            "",
-            "upstream_http",
-            "response_cap",
-            "event_cap",
-            "denied",
-            "",
-            "rate_limit"
-        ]
+        vec!["", "upstream_http", "response_cap", "event_cap", "",]
     );
+}
+
+#[tokio::test]
+async fn rejected_mcp_calls_do_not_create_durable_rows() {
+    let f = Fixture::new().await;
+    f.register("alpha").await;
+    let session = f.initialize().await;
+    assert_eq!(
+        f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
+            .await["error"]["code"],
+        -32602
+    );
+    sqlx::query("UPDATE virtual_keys SET mcp_all=1,rpm_limit=0")
+        .execute(&f.st.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
+            .await["error"]["code"],
+        -32000
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_calls")
+        .fetch_one(&f.st.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    assert!(f.mock.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn tracked_retention_purges_mcp_calls_by_age_and_count_in_batches() {
+    let f = Fixture::new().await;
+    tokomotive::settings::put(&f.st.db, "mcp_retention_days", "30")
+        .await
+        .unwrap();
+    tokomotive::settings::put(&f.st.db, "mcp_max_rows", "3")
+        .await
+        .unwrap();
+    // The newest row is too old. Age retention must not depend on insertion order.
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1004) INSERT INTO mcp_calls(ts_ms,key_id,user_id,server,tool,status,latency_ms,error_class) SELECT ?,1,1,'alpha','echo','ok',0,'' FROM n")
+        .bind(chrono::Utc::now().timestamp_millis()).execute(&f.st.db).await.unwrap();
+    sqlx::query("UPDATE mcp_calls SET ts_ms=0 WHERE id=1004")
+        .execute(&f.st.db)
+        .await
+        .unwrap();
+    for expected in [504_i64, 4, 2] {
+        let task = tokomotive::observability::start_retention(f.st.clone());
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_calls")
+                    .fetch_one(&f.st.db)
+                    .await
+                    .unwrap();
+                if count == expected {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        task.abort();
+        assert!(
+            observed.is_ok(),
+            "retention did not reach {expected} rows in one batch"
+        );
+    }
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM mcp_calls ORDER BY id")
+        .fetch_all(&f.st.db)
+        .await
+        .unwrap();
+    assert_eq!(ids, vec![1002, 1003]);
+}
+
+#[tokio::test]
+async fn mcp_server_names_are_validated_at_save_and_load() {
+    let f = Fixture::new().await;
+    tokomotive::db::create_session(&f.st.db, "owner", 1)
+        .await
+        .unwrap();
+    let c = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for name in ["alpha_", "_alpha", "alpha__beta", "..."] {
+        let response = c
+            .post(format!("{}/admin/mcp", f.base))
+            .header("cookie", "tokomotive_session=owner")
+            .header("origin", &f.base)
+            .form(&[
+                ("name", name),
+                ("url", f.upstream.as_str()),
+                ("auth", "none"),
+                ("allow_private", "on"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{name}");
+        f.register(name).await;
+    }
+    f.register("alpha_beta").await;
+    let names: Vec<String> = tokomotive::mcp::data::servers(&f.st.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, vec!["alpha_beta"]);
+}
+
+#[tokio::test]
+async fn mcp_dispatch_requires_listed_name_and_rejects_duplicate_catalog() {
+    let f = Fixture::new().await;
+    f.register("alpha").await;
+    sqlx::query("UPDATE virtual_keys SET mcp_all=1")
+        .execute(&f.st.db)
+        .await
+        .unwrap();
+    let session = f.initialize().await;
+    assert_eq!(
+        f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
+            .await["error"]["code"],
+        -32602
+    );
+    assert!(f.mock.0.lock().unwrap().is_empty());
+    let tool = json!({"name":"_echo","inputSchema":{"type":"object"}});
+    *f.mock.2.lock().unwrap() = Some(vec![tool.clone()]);
+    assert_eq!(
+        f.rpc(&session, "tools/list", json!({})).await["result"]["tools"][0]["name"],
+        "alpha___echo"
+    );
+    assert!(
+        f.rpc(&session, "tools/call", json!({"name":"alpha___echo"}))
+            .await
+            .get("result")
+            .is_some()
+    );
+    assert!(
+        f.mock
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, v)| v["method"] == "tools/call" && v["params"]["name"] == "_echo")
+    );
+    *f.mock.2.lock().unwrap() = Some(vec![tool.clone(), tool]);
+    assert_eq!(
+        f.rpc(&session, "tools/list", json!({})).await["error"]["code"],
+        -32603
+    );
+    assert_eq!(
+        f.rpc(&session, "tools/call", json!({"name":"alpha___echo"}))
+            .await["error"]["code"],
+        -32602
+    );
+}
+
+fn incomplete_body() -> reqwest::Body {
+    let stream = futures_util::stream::once(async { Ok::<_, std::io::Error>("{") })
+        .chain(futures_util::stream::pending());
+    reqwest::Body::wrap_stream(stream)
+}
+
+#[test]
+fn custom_mcp_auth_headers_reject_all_hop_by_hop_fields() {
+    for name in [
+        "TE",
+        "Trailer",
+        "Upgrade",
+        "Keep-Alive",
+        "Proxy-Connection",
+        "Connection",
+        "Transfer-Encoding",
+    ] {
+        assert!(!tokomotive::mcp::upstream::valid_header(name), "{name}");
+        assert!(
+            !tokomotive::mcp::upstream::valid_header(&name.to_ascii_lowercase()),
+            "{name}"
+        );
+    }
+    assert!(tokomotive::mcp::upstream::valid_header("X-Service-Key"));
+}
+
+#[tokio::test]
+async fn incomplete_mcp_body_has_a_deadline_before_session_validation() {
+    let f = Fixture::new().await;
+    let started = std::time::Instant::now();
+    let response = f
+        .post("ping", 1)
+        .header("mcp-session-id", "invalid-session")
+        .body(incomplete_body())
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await;
+    assert!(
+        response.is_ok(),
+        "incomplete body did not get a response: {response:?}"
+    );
+    assert_eq!(response.unwrap().status(), 408);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(14));
+}
+
+#[tokio::test]
+async fn incomplete_mcp_bodies_hit_nonqueuing_key_limit_and_release_slots() {
+    let f = Fixture::new().await;
+    let mut pending = Vec::new();
+    for _ in 0..8 {
+        let request = f
+            .post("ping", 1)
+            .header("mcp-session-id", "invalid-session")
+            .body(incomplete_body());
+        pending.push(tokio::spawn(async { request.send().await }));
+    }
+    let saturated = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let response = f.post("ping", 2).send().await.unwrap();
+            if response.status() == 429 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        saturated.is_ok(),
+        "incomplete bodies did not enforce the per-key limit"
+    );
+    // A different key is not blocked by this key's cap.
+    let user = tokomotive::db::create_user(&f.st.db, "other", None, None, false)
+        .await
+        .unwrap();
+    let (_, key) = tokomotive::db::create_key(&f.st.db, user, "other", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        reqwest::Client::new()
+            .post(format!("{}/mcp", f.base))
+            .bearer_auth(&key)
+            .json(&json!({"jsonrpc":"2.0","id":2,"method":"ping"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    for task in &pending {
+        task.abort();
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if f.post("ping", 2).send().await.unwrap().status() == 404 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("aborted or timed-out bodies must release admission");
 }
 
 #[tokio::test]
@@ -574,8 +841,7 @@ async fn private_access_is_opt_in_and_custom_auth_stays_upstream() {
         .unwrap();
     let session = f.initialize().await;
     assert_eq!(
-        f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
-            .await["error"]["code"],
+        f.rpc(&session, "tools/list", json!({})).await["error"]["code"],
         -32603
     );
     assert!(f.mock.0.lock().unwrap().is_empty());
@@ -587,6 +853,12 @@ async fn private_access_is_opt_in_and_custom_auth_stays_upstream() {
     .execute(&f.st.db)
     .await
     .unwrap();
+    assert!(
+        f.rpc(&session, "tools/list", json!({}))
+            .await
+            .get("result")
+            .is_some()
+    );
     assert!(
         f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
             .await
@@ -641,6 +913,13 @@ async fn a_call_is_not_dispatched_without_a_durable_log_entry() {
         .unwrap();
     sqlx::query("CREATE TRIGGER reject_mcp_log BEFORE INSERT ON mcp_calls BEGIN SELECT RAISE(FAIL,'log unavailable'); END").execute(&f.st.db).await.unwrap();
     let session = f.initialize().await;
+    assert!(
+        f.rpc(&session, "tools/list", json!({}))
+            .await
+            .get("result")
+            .is_some()
+    );
+    f.mock.0.lock().unwrap().clear();
     assert_eq!(
         f.rpc(&session, "tools/call", json!({"name":"alpha__echo"}))
             .await["error"]["code"],
@@ -669,4 +948,174 @@ async fn browser_origins_are_rejected_even_when_origin_matches_host() {
         assert_eq!(body["jsonrpc"], "2.0");
         assert_eq!(body["error"]["code"], -32000);
     }
+}
+
+#[tokio::test]
+async fn retained_mcp_secret_destination_changes_require_owner_or_new_secret() {
+    let f = Fixture::new().await;
+    f.register("alpha").await;
+    let secret = f.st.secret_key.encrypt("original-secret").unwrap();
+    sqlx::query("UPDATE mcp_servers SET auth='bearer',secret=?")
+        .bind(secret)
+        .execute(&f.st.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO admin_accounts(username,role,password_hash) SELECT 'limited','admin',password_hash FROM admin_accounts LIMIT 1")
+        .execute(&f.st.db).await.unwrap();
+    let admin = tokomotive::admin::by_username(&f.st.db, "limited")
+        .await
+        .unwrap()
+        .unwrap();
+    tokomotive::admin::create_session(&f.st.db, "limited", 1, &admin)
+        .await
+        .unwrap();
+    tokomotive::db::create_session(&f.st.db, "owner", 1)
+        .await
+        .unwrap();
+    let c = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let changed = format!("{}/other-path", f.upstream);
+    for (cookie, new_secret, url, auth, header, private, status) in [
+        ("limited", "", changed.as_str(), "bearer", "", "on", 403),
+        (
+            "limited",
+            "",
+            f.upstream.as_str(),
+            "header",
+            "X-Key",
+            "on",
+            403,
+        ),
+        (
+            "limited",
+            "",
+            f.upstream.as_str(),
+            "bearer",
+            "X-Key",
+            "on",
+            403,
+        ),
+        (
+            "limited",
+            "",
+            "https://tools.example/mcp",
+            "bearer",
+            "",
+            "",
+            403,
+        ),
+        ("limited", "", f.upstream.as_str(), "bearer", "", "on", 303),
+        (
+            "limited",
+            "replacement",
+            changed.as_str(),
+            "bearer",
+            "",
+            "on",
+            303,
+        ),
+        ("owner", "", f.upstream.as_str(), "bearer", "", "on", 303),
+    ] {
+        let mut form = vec![
+            ("name", "alpha"),
+            ("url", url),
+            ("auth", auth),
+            ("credential_header", header),
+            ("secret", new_secret),
+            ("enabled", "on"),
+        ];
+        if private == "on" {
+            form.push(("allow_private", "on"));
+        }
+        let response = c
+            .post(format!("{}/admin/mcp/1", f.base))
+            .header("cookie", format!("tokomotive_session={cookie}"))
+            .header("origin", &f.base)
+            .form(&form)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            status,
+            "{cookie} {url} {auth} {header}"
+        );
+    }
+    sqlx::query("UPDATE mcp_servers SET url='https://tools.example/mcp',allow_private=1")
+        .execute(&f.st.db)
+        .await
+        .unwrap();
+    for (url, private, expected) in [
+        ("https://TOOLS.example:443/mcp", true, 303),
+        ("https://tools.example/mcp", false, 403),
+    ] {
+        let mut form = vec![
+            ("name", "alpha"),
+            ("url", url),
+            ("auth", "bearer"),
+            ("enabled", "on"),
+        ];
+        if private {
+            form.push(("allow_private", "on"));
+        }
+        assert_eq!(
+            c.post(format!("{}/admin/mcp/1", f.base))
+                .header("cookie", "tokomotive_session=limited")
+                .header("origin", &f.base)
+                .form(&form)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_log_retention_form_shows_defaults_and_validates_saved_limits() {
+    let f = Fixture::new().await;
+    tokomotive::db::create_session(&f.st.db, "owner", 1)
+        .await
+        .unwrap();
+    let c = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let html = c
+        .get(format!("{}/admin/mcp/log", f.base))
+        .header("cookie", "tokomotive_session=owner")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("value=\"30\""));
+    assert!(html.contains("value=\"100000\""));
+    for (days, max_rows, expected) in [
+        ("0", "3", 400),
+        ("3651", "3", 400),
+        ("30", "0", 400),
+        ("30", "1000001", 400),
+        ("7", "250", 303),
+    ] {
+        assert_eq!(
+            c.post(format!("{}/admin/mcp/retention", f.base))
+                .header("cookie", "tokomotive_session=owner")
+                .header("origin", &f.base)
+                .form(&[("days", days), ("max_rows", max_rows)])
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            expected
+        );
+    }
+    let retention = tokomotive::mcp::data::LogRetention::load(&f.st.db)
+        .await
+        .unwrap();
+    assert_eq!((retention.days, retention.max_rows), (7, 250));
 }
