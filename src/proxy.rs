@@ -801,6 +801,14 @@ pub async fn handle(
     };
 
     let status = upstream.status();
+    if status.is_redirection() {
+        ctx.finish(Outcome::failed(502));
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "upstream redirect rejected",
+        );
+    }
     let mut out_headers = HeaderMap::new();
     for (name, value) in upstream.headers().iter() {
         if !skip_header(name) && name != header::CONTENT_ENCODING {
@@ -998,59 +1006,77 @@ async fn build_request(
 /// The Codex backend only streams. Collect the final Response for JSON clients
 /// with the same usage accounting as streaming clients, without buffering deltas.
 async fn collect_codex(ctx: Ctx, upstream: reqwest::Response, mut headers: HeaderMap) -> Response {
-    let mut decoder = ResponseStream::new("", false);
-    let mut tracker = ProviderKind::Openai.new_stream_tracker(Endpoint::Responses, false);
-    let mut stream = upstream.bytes_stream();
-    let mut failed = false;
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
-            failed = true;
-            break;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let st = ctx.st.clone();
+    let anthropic = ctx.endpoint == Endpoint::Messages;
+    // Keep Ctx (including its Reservation) alive after the handler is cancelled.
+    // finish records TPM and metrics, then holds the Reservation for the write.
+    st.spawn_tracked(async move {
+        let mut decoder = ResponseStream::new("", false);
+        let mut tracker = ProviderKind::Openai.new_stream_tracker(Endpoint::Responses, false);
+        let mut stream = upstream.bytes_stream();
+        let mut failed = false;
+        while let Some(chunk) = stream.next().await {
+            let Ok(chunk) = chunk else {
+                failed = true;
+                break;
+            };
+            tracker.feed(&chunk);
+            decoder.feed(&chunk);
+        }
+        tracker.finish();
+        decoder.finish();
+        let response = decoder.final_response.take();
+        let failed = failed || decoder.failed || response.is_none();
+        let endpoint = ctx.endpoint;
+        let status = if failed {
+            StatusCode::BAD_GATEWAY
+        } else {
+            StatusCode::OK
         };
-        tracker.feed(&chunk);
-        decoder.feed(&chunk);
-    }
-    tracker.finish();
-    decoder.finish();
-    let response = decoder.final_response.take();
-    let failed = failed || decoder.failed || response.is_none();
-    let endpoint = ctx.endpoint;
-    let status = if failed {
-        StatusCode::BAD_GATEWAY
-    } else {
-        StatusCode::OK
-    };
-    ctx.finish(Outcome {
-        status: status.as_u16(),
-        model: tracker.model.take(),
-        usage: tracker.usage.unwrap_or_default(),
-        estimated: !tracker.usage_final,
-        ttft_ms: None,
-        client_aborted: false,
+        let make_response = || {
+            let Some(value) = response.filter(|_| !failed) else {
+                return formatted_error(
+                    StatusCode::BAD_GATEWAY,
+                    "api_error",
+                    "Responses upstream failed",
+                    endpoint == Endpoint::Messages,
+                );
+            };
+            let value = match endpoint {
+                Endpoint::ChatCompletions => translate_responses::response(&value),
+                Endpoint::Messages => translate::translate_response(
+                    Direction::MessagesToChat,
+                    &translate_responses::response(&value),
+                ),
+                _ => value,
+            };
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            let mut response = Response::new(Body::from(value.to_string()));
+            *response.headers_mut() = headers;
+            response
+        };
+        let client_aborted = tx.send(make_response()).is_err();
+        ctx.finish(Outcome {
+            status: status.as_u16(),
+            model: tracker.model.take(),
+            usage: tracker.usage.unwrap_or_default(),
+            estimated: !tracker.usage_final,
+            ttft_ms: None,
+            client_aborted,
+        });
     });
-    let Some(value) = response.filter(|_| !failed) else {
-        return formatted_error(
+    rx.await.unwrap_or_else(|_| {
+        formatted_error(
             StatusCode::BAD_GATEWAY,
             "api_error",
             "Responses upstream failed",
-            endpoint == Endpoint::Messages,
-        );
-    };
-    let value = match endpoint {
-        Endpoint::ChatCompletions => translate_responses::response(&value),
-        Endpoint::Messages => translate::translate_response(
-            Direction::MessagesToChat,
-            &translate_responses::response(&value),
-        ),
-        _ => value,
-    };
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    let mut response = Response::new(Body::from(value.to_string()));
-    *response.headers_mut() = headers;
-    response
+            anthropic,
+        )
+    })
 }
 
 /// Forward an SSE stream. If the client disconnects, keep reading the
@@ -1119,7 +1145,9 @@ fn stream_response(
         }
         drop(tx);
         let estimated = status.is_success() && !tracker.usage_final;
-        let code = if upstream_failed && !tracker.usage_final {
+        let code = if translator.as_ref().is_some_and(ProxyStream::failed)
+            || (upstream_failed && !tracker.usage_final)
+        {
             502
         } else {
             status.as_u16()

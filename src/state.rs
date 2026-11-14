@@ -114,6 +114,7 @@ impl AppState {
         let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
         let router_table = RouterTable::from_config(&runtime);
         let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(settings.upstream_timeout_secs))
             .connect_timeout(Duration::from_secs(15))
             .build()?;
@@ -154,6 +155,7 @@ impl AppState {
     pub async fn reload_settings(&self) -> Result<()> {
         let (cfg, settings) = crate::settings::load(&self.db, &self.secret_key).await?;
         let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(settings.upstream_timeout_secs))
             .connect_timeout(Duration::from_secs(15))
             .build()?;
@@ -217,12 +219,18 @@ impl AppState {
     /// Spawn a background write. `flush` waits for all of them.
     pub fn spawn_tracked<F: std::future::Future<Output = ()> + Send + 'static>(&self, fut: F) {
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let me = self.clone();
-        tokio::spawn(async move {
-            fut.await;
-            if me.pending.fetch_sub(1, Ordering::SeqCst) == 1 {
-                me.idle.notify_waiters();
+        struct Pending(AppState);
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                if self.0.pending.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    self.0.idle.notify_waiters();
+                }
             }
+        }
+        let pending = Pending(self.clone());
+        tokio::spawn(async move {
+            let _pending = pending;
+            fut.await;
         });
     }
 

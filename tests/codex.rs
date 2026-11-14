@@ -2,6 +2,7 @@ use serde_json::json;
 use tokomotive::config::Config;
 use tokomotive::translate_responses;
 #[path = "support/codex.rs"]
+#[allow(dead_code)] // Shared fixture controls are used by different integration suites.
 mod mock_codex;
 
 #[tokio::test]
