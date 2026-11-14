@@ -1089,6 +1089,7 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
             model: Some(line.model.clone()),
             status,
             streamed: false,
+            cache_hit: false,
             usage,
             reported_cost_micros: None,
             quote,
