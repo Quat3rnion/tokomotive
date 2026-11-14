@@ -92,6 +92,7 @@ pub fn router(st: AppState) -> Router<AppState> {
             st,
             accounts::authorize,
         ))
+        .layer(axum::middleware::from_fn(accounts::read_body))
         .layer(axum::middleware::from_fn(same_origin))
         .layer(axum::middleware::from_fn(htmx_redirect))
         .layer(axum::middleware::from_fn(context))

@@ -18,15 +18,76 @@ impl DashboardState {
     }
 }
 #[derive(Default)]
-pub(crate) struct LoginLimiter(HashMap<String, (i64, u8)>);
+pub(crate) struct LoginLimiter(HashMap<String, IpBudget>);
+#[derive(Default)]
+struct IpBudget {
+    start: i64,
+    last_seen: i64,
+    attempts: u8,
+    usernames: HashMap<String, (i64, u8)>,
+}
+#[cfg(test)]
+mod tests {
+    use super::LoginLimiter;
+
+    #[test]
+    fn fake_usernames_cannot_exhaust_other_ips_or_future_windows() {
+        let mut limiter = LoginLimiter::default();
+        for n in 0..1100 {
+            limiter.allow("192.0.2.1", &format!("fake-{n}"), 0);
+        }
+        assert!(limiter.allow("192.0.2.2", "chief", 0));
+        assert!(!limiter.allow("192.0.2.1", "chief", 0));
+        assert!(limiter.allow("192.0.2.1", "chief", 300));
+    }
+
+    #[test]
+    fn login_limits_evict_old_ips_and_usernames_without_global_refusal() {
+        let mut limiter = LoginLimiter::default();
+        for n in 0..4100 {
+            assert!(limiter.allow(&format!("ip-{n}"), "chief", 5000));
+        }
+        for n in 0..17 {
+            assert!(limiter.allow("fresh-ip", &format!("fake-{n}"), 5000));
+        }
+        assert!(limiter.allow("fresh-ip", "chief", 5000));
+    }
+}
 impl LoginLimiter {
     pub fn allow(&mut self, ip: &str, username: &str, now: i64) -> bool {
-        self.0.retain(|_, (start, _)| now - *start < 300);
-        let key = db::hash_key(&format!("{ip}:{}", username.to_ascii_lowercase()));
-        if !self.0.contains_key(&key) && self.0.len() >= 1024 {
+        self.0.retain(|_, budget| now - budget.start < 300);
+        if !self.0.contains_key(ip) && self.0.len() >= 4096 {
+            let oldest = self
+                .0
+                .iter()
+                .min_by_key(|(_, b)| b.last_seen)
+                .map(|(k, _)| k.clone());
+            if let Some(oldest) = oldest {
+                self.0.remove(&oldest);
+            }
+        }
+        let budget = self.0.entry(ip.to_owned()).or_insert_with(|| IpBudget {
+            start: now,
+            ..IpBudget::default()
+        });
+        budget.last_seen = now;
+        // Charge the IP before looking up a username, including denied pairs.
+        if budget.attempts >= 20 {
             return false;
         }
-        let entry = self.0.entry(key).or_insert((now, 0));
+        budget.attempts += 1;
+        let key = db::hash_key(&username.to_ascii_lowercase());
+        if !budget.usernames.contains_key(&key) && budget.usernames.len() >= 16 {
+            let oldest = budget
+                .usernames
+                .iter()
+                .min_by_key(|(_, (start, _))| *start)
+                .map(|(k, _)| k.clone());
+            if let Some(oldest) = oldest {
+                budget.usernames.remove(&oldest);
+            }
+        }
+        let entry = budget.usernames.entry(key).or_insert((now, 0));
         if entry.1 >= 5 {
             return false;
         }
@@ -45,6 +106,34 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/settings/accounts/{id}/delete", post(delete_account))
         .route("/admin/audit", get(super::audit::page))
         .route("/admin/settings/audit", post(super::audit::retention))
+}
+
+/// Bound dashboard body reads before authorization can take the mutation lock.
+/// This layer belongs only to the dashboard router, never to streaming /v1.
+pub(super) async fn read_body(req: Request, next: Next) -> Response {
+    let (parts, body) = req.into_parts();
+    let bytes = match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        axum::body::to_bytes(body, 2 * 1024 * 1024),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => {
+            return page_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "The dashboard body must be at most 2 MiB.",
+            );
+        }
+        Err(_) => {
+            return page_error(
+                StatusCode::REQUEST_TIMEOUT,
+                "The dashboard body did not arrive within 15 seconds.",
+            );
+        }
+    };
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await
 }
 
 pub(super) async fn authorize(
@@ -109,10 +198,12 @@ pub(super) async fn authorize(
     {
         return page_error(StatusCode::FORBIDDEN, "This account has read-only access.");
     }
-    if path.starts_with("/admin/settings/accounts") && account.role != "owner" {
+    if (path.starts_with("/admin/settings/accounts") || path == "/admin/settings/audit")
+        && account.role != "owner"
+    {
         return page_error(
             StatusCode::FORBIDDEN,
-            "Only an Owner can manage admin accounts.",
+            "Only an Owner can manage admin accounts or audit retention.",
         );
     }
     // Metrics credentials are Master-Key-sensitive. Ordinary server settings

@@ -396,6 +396,9 @@ impl Config {
         let mut providers = std::collections::HashSet::new();
         for p in &self.providers {
             validate_name(&p.name)?;
+            for env in p.api_key_env.iter().chain(&p.api_keys_env) {
+                validate_provider_env(env)?;
+            }
             use crate::provider::ProviderAuth;
             if p.auth != ProviderAuth::ApiKey {
                 let base = match p.auth {
@@ -603,19 +606,59 @@ impl ProviderCfg {
     /// All keys of the pool: the single key first, then `api_keys`, then
     /// `api_keys_env`. Empty values are skipped; duplicates are removed.
     pub fn keys(&self) -> Vec<String> {
-        let single = env_or(self.api_key_env.as_deref(), self.api_key.as_deref());
+        let single = self
+            .api_key_env
+            .as_deref()
+            .and_then(provider_env_value)
+            .or_else(|| self.api_key.clone());
         let mut out: Vec<String> = single.into_iter().collect();
         out.extend(self.api_keys.iter().cloned());
         out.extend(
             self.api_keys_env
                 .iter()
-                .filter_map(|e| std::env::var(e).ok()),
+                .filter_map(|e| provider_env_value(e)),
         );
         out.retain(|k| !k.trim().is_empty());
         let mut seen = std::collections::HashSet::new();
         out.retain(|k| seen.insert(k.clone()));
         out
     }
+}
+
+/// Provider references must never expose service or common host credentials.
+pub fn validate_provider_env(name: &str) -> Result<()> {
+    anyhow::ensure!(
+        !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'),
+        "Use env:NAME for an environment variable reference."
+    );
+    let upper = name.to_ascii_uppercase();
+    anyhow::ensure!(
+        !["TOKOMOTIVE_", "AWS_", "SSH_", "CI_"]
+            .iter()
+            .any(|p| upper.starts_with(p))
+            && !upper.ends_with("_PASSWORD")
+            && !upper.ends_with("_PRIVATE_KEY")
+            && ![
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "GITHUB_TOKEN",
+                "GH_TOKEN",
+                "GH_ENTERPRISE_TOKEN",
+                "GITLAB_TOKEN",
+                "GLAB_TOKEN",
+                "DATABASE_URL",
+                "REDIS_URL",
+                "SECRET_KEY",
+                "PRIVATE_KEY"
+            ]
+            .contains(&upper.as_str()),
+        "This environment variable is reserved and cannot be a Provider Key."
+    );
+    Ok(())
+}
+
+pub(crate) fn provider_env_value(name: &str) -> Option<String> {
+    validate_provider_env(name).ok()?;
+    std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
 #[cfg(test)]

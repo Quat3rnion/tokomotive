@@ -370,6 +370,9 @@ struct AuditRow {
     after_json: String,
 }
 impl AuditRow {
+    fn result(&self) -> &str {
+        self.summary.split('.').next().unwrap_or(&self.summary)
+    }
     fn stamp(&self) -> String {
         chrono::DateTime::from_timestamp(self.time, 0)
             .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
@@ -389,8 +392,9 @@ pub(super) async fn page(
     _: Admin,
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
-    Query(q): Query<AuditQuery>,
+    Query(mut q): Query<AuditQuery>,
 ) -> Response {
+    q.page.limit.get_or_insert(25);
     let time = |s: &str| -> anyhow::Result<Option<i64>> {
         if s.is_empty() {
             return Ok(None);

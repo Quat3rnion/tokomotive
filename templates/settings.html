@@ -157,7 +157,7 @@
 <section class="panel" id="audit" aria-labelledby="audit-h">
 <h2 id="audit-h">Audit log</h2>
 <p><a href="/admin/audit">Open the audit log</a>. Secrets and URLs are not recorded.</p>
-<form method="post" action="/admin/settings/audit" class="row"><label>Retention (days) <input type="number" name="days" min="1" max="36500" value="{{ audit_retention_days }}" required></label><button>Save retention</button></form>
+{% if base.owner %}<form method="post" action="/admin/settings/audit" class="row"><label>Retention (days) <input type="number" name="days" min="1" max="36500" value="{{ audit_retention_days }}" required></label><button>Save retention</button></form>{% endif %}
 </section>
 {% endif %}
 {% if base.owner %}

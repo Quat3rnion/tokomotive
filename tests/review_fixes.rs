@@ -40,9 +40,9 @@ async fn seeded_provider_keeps_env_first_literal_fallback() {
                 "--nocapture",
             ])
             .env("TOKOMOTIVE_REVIEW_SEED_CHILD", "1")
-            .env_remove("TOKOMOTIVE_REVIEW_PROVIDER_KEY");
+            .env_remove("PROVIDER_REVIEW_TEST_KEY");
             if let Some(value) = value {
-                cmd.env("TOKOMOTIVE_REVIEW_PROVIDER_KEY", value);
+                cmd.env("PROVIDER_REVIEW_TEST_KEY", value);
             }
             let out = cmd.output().unwrap();
             assert!(
@@ -62,7 +62,7 @@ database = "sqlite::memory:"
 name = "test"
 kind = "openai"
 base_url = "http://localhost"
-api_key_env = "TOKOMOTIVE_REVIEW_PROVIDER_KEY"
+api_key_env = "PROVIDER_REVIEW_TEST_KEY"
 api_key = "literal-key"
 "#,
     )

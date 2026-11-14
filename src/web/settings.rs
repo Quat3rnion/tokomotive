@@ -981,7 +981,7 @@ fn last4(plain: &str) -> String {
 }
 
 fn env_value(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    crate::config::provider_env_value(name)
 }
 
 fn key_view(st: &AppState, stored: &str, index: i64) -> anyhow::Result<KeyView> {
@@ -1452,9 +1452,7 @@ async fn runtime(st: &AppState) -> anyhow::Result<Config> {
 
 fn encode_key(st: &AppState, key: &str) -> anyhow::Result<String> {
     if let Some(env) = key.strip_prefix("env:") {
-        if env.is_empty() || !env.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
-            anyhow::bail!("Use env:NAME for an environment variable reference.");
-        }
+        crate::config::validate_provider_env(env)?;
         Ok(key.into())
     } else {
         st.secret_key.encrypt(key)
@@ -1479,13 +1477,19 @@ async fn update_provider(
     save_provider(admin, st, Some(name), f, false).await
 }
 async fn save_provider(
-    _: Admin,
+    Admin(account): Admin,
     st: AppState,
     old: Option<String>,
     mut f: ProviderForm,
     hx: bool,
 ) -> Response {
     use crate::provider::ProviderAuth;
+    if account.role != "owner" && f.api_key.trim().starts_with("env:") {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Only an Owner can change environment key references.",
+        );
+    }
     f.name = f.name.trim().into();
     f.base_url = f.base_url.trim().trim_end_matches('/').into();
     if f.auth == ProviderAuth::GoogleVertex {
@@ -1516,6 +1520,32 @@ async fn save_provider(
         f.base_url = f.base_url.trim_end_matches("/v1").into();
     }
     let guard = st.settings_write.lock().await;
+    if account.role != "owner"
+        && let Some(name) = &old
+    {
+        let previous: Option<(String, String, String, Option<String>, String)> = tryr!(
+            sqlx::query_as(
+                "SELECT keys_json,base_url,kind,key_header,auth FROM providers WHERE name=?"
+            )
+            .bind(name)
+            .fetch_optional(&st.db)
+            .await
+        );
+        if let Some((raw, base, kind, header, auth)) = previous {
+            let keys: Vec<String> = tryr!(serde_json::from_str(&raw));
+            if keys.iter().any(|k| k.starts_with("env:"))
+                && (base != f.base_url
+                    || kind != tryr!(serde_json::to_string(&f.kind))
+                    || header.as_deref() != f.key_header.map(|h| h.as_str())
+                    || auth != f.auth.as_str())
+            {
+                return page_error(
+                    StatusCode::FORBIDDEN,
+                    "Only an Owner can change the address, format or authentication of an environment-backed Provider.",
+                );
+            }
+        }
+    }
     let added = old.is_none();
     let aws_credentials = if f.kind == ProviderKind::Bedrock {
         if f.auth != ProviderAuth::ApiKey || !f.api_key.is_empty() {
@@ -1818,11 +1848,17 @@ struct KeyForm {
     api_key: String,
 }
 async fn add_key(
-    _: Admin,
+    Admin(account): Admin,
     State(st): State<AppState>,
     Path(name): Path<String>,
     Form(f): Form<KeyForm>,
 ) -> Response {
+    if account.role != "owner" && f.api_key.trim().starts_with("env:") {
+        return page_error(
+            StatusCode::FORBIDDEN,
+            "Only an Owner can change environment key references.",
+        );
+    }
     if f.api_key.trim().is_empty() {
         return form_error("Enter a Provider Key or env:NAME.");
     }
@@ -1830,20 +1866,21 @@ async fn add_key(
         Ok(v) => v,
         Err(e) => return form_error(e),
     };
-    change_keys(st, name, None, Some(encoded)).await
+    change_keys(st, name, None, Some(encoded), account.role == "owner").await
 }
 async fn delete_key(
-    _: Admin,
+    Admin(account): Admin,
     State(st): State<AppState>,
     Path((name, index)): Path<(String, usize)>,
 ) -> Response {
-    change_keys(st, name, Some(index), None).await
+    change_keys(st, name, Some(index), None, account.role == "owner").await
 }
 async fn change_keys(
     st: AppState,
     name: String,
     remove: Option<usize>,
     add: Option<String>,
+    owner: bool,
 ) -> Response {
     let _guard = st.settings_write.lock().await;
     let auth: Option<String> = tryr!(
@@ -1868,6 +1905,12 @@ async fn change_keys(
     if let Some(i) = remove {
         if i >= keys.len() {
             return form_error("Key not found. Reload the page.");
+        }
+        if !owner && keys[i].starts_with("env:") {
+            return page_error(
+                StatusCode::FORBIDDEN,
+                "Only an Owner can change environment key references.",
+            );
         }
         keys.remove(i);
     }

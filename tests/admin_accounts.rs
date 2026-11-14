@@ -87,6 +87,220 @@ impl App {
 }
 
 #[tokio::test]
+async fn provider_env_references_require_owner_and_reject_server_secrets() {
+    let a = app().await;
+    let owner = a.setup().await;
+    add(&a, &owner, "operator", "admin").await;
+    let admin = a.login("operator", "account-password").await;
+    let form = [
+        ("name", "env-provider"),
+        ("kind", "openai"),
+        ("base_url", "https://provider.example"),
+        ("api_key", "env:OPENAI_API_KEY"),
+    ];
+    assert_eq!(
+        a.post("/admin/providers", &admin, &form).await.status(),
+        403
+    );
+    for name in [
+        "TOKOMOTIVE_ADMIN_PASSWORD",
+        "TOKOMOTIVE_SECRET_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+    ] {
+        let mut denied = form;
+        let reference = format!("env:{name}");
+        denied[3].1 = &reference;
+        assert_eq!(
+            a.post("/admin/providers", &owner, &denied).await.status(),
+            400,
+            "{name}"
+        );
+    }
+    assert_eq!(
+        a.post("/admin/providers", &owner, &form).await.status(),
+        303
+    );
+    assert_eq!(
+        a.post(
+            "/admin/providers/env-provider/keys",
+            &admin,
+            &[("api_key", "env:ANTHROPIC_API_KEY")]
+        )
+        .await
+        .status(),
+        403
+    );
+    let mut redirected = form;
+    redirected[2].1 = "https://other.example";
+    redirected[3].1 = "";
+    assert_eq!(
+        a.post("/admin/providers/env-provider", &admin, &redirected)
+            .await
+            .status(),
+        403
+    );
+    redirected[2].1 = "https://provider.example";
+    let mut header = redirected.to_vec();
+    header.push(("key_header", "api-key"));
+    assert_eq!(
+        a.post("/admin/providers/env-provider", &admin, &header)
+            .await
+            .status(),
+        403
+    );
+    assert_eq!(
+        a.post("/admin/providers/env-provider/keys/0/delete", &admin, &[])
+            .await
+            .status(),
+        403
+    );
+    assert_eq!(
+        a.post(
+            "/admin/providers/env-provider/keys",
+            &admin,
+            &[("api_key", "pasted-provider-key")]
+        )
+        .await
+        .status(),
+        303
+    );
+    sqlx::query("UPDATE providers SET keys_json='[\"env:TOKOMOTIVE_ADMIN_PASSWORD\"]' WHERE name='env-provider'")
+        .execute(&a.st.db).await.unwrap();
+    assert!(
+        tokomotive::settings::load(&a.st.db, &a.st.secret_key)
+            .await
+            .is_err(),
+        "Old data must not resolve a server secret."
+    );
+}
+
+#[tokio::test]
+async fn audit_retention_is_owner_only_in_authorization_and_forms() {
+    let a = app().await;
+    let owner = a.setup().await;
+    add(&a, &owner, "operator", "admin").await;
+    let admin = a.login("operator", "account-password").await;
+    assert_eq!(
+        a.post("/admin/settings/audit", &admin, &[("days", "1")])
+            .await
+            .status(),
+        403
+    );
+    for (session, allowed) in [(&owner, true), (&admin, false)] {
+        let html =
+            a.c.get(format!("{}/admin/settings", a.url))
+                .header("cookie", session)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+        assert_eq!(html.contains("action=\"/admin/settings/audit\""), allowed);
+        assert!(html.contains("href=\"/admin/audit\""));
+    }
+}
+
+#[tokio::test]
+async fn fake_username_flood_does_not_block_another_ip_login() {
+    let a = app().await;
+    a.setup().await;
+    for n in 0..1100 {
+        let r = a
+            .post(
+                "/admin/login",
+                "",
+                &[("username", &format!("fake-{n}")), ("password", "wrong")],
+            )
+            .await;
+        assert_eq!(r.status(), if n < 20 { 401 } else { 429 });
+    }
+    assert_eq!(
+        a.post(
+            "/admin/login",
+            "",
+            &[("username", "chief"), ("password", "owner-password")]
+        )
+        .await
+        .status(),
+        429
+    );
+    let other_ip = reqwest::Client::builder()
+        .local_address(std::net::IpAddr::from([127, 0, 0, 2]))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    assert_eq!(
+        other_ip
+            .post(format!("{}/admin/login", a.url))
+            .form(&[("username", "chief"), ("password", "owner-password")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        303
+    );
+}
+
+#[tokio::test]
+async fn dashboard_body_size_limit_rejects_before_mutation() {
+    let a = app().await;
+    let owner = a.setup().await;
+    let response =
+        a.c.post(format!("{}/admin/teams", a.url))
+            .header("cookie", owner)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("name={}", "x".repeat(2 * 1024 * 1024)))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(response.status(), 413);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM teams")
+        .fetch_one(&a.st.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn slow_viewer_body_does_not_hold_mutation_lock_and_expires() {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let a = app().await;
+    let owner = a.setup().await;
+    let reader = add(&a, &owner, "reader", "viewer").await;
+    let viewer = a.login("reader", "account-password").await;
+    let mut slow = tokio::net::TcpStream::connect(a.url.trim_start_matches("http://"))
+        .await
+        .unwrap();
+    slow.write_all(format!("POST /admin/settings/password HTTP/1.1\r\nHost: localhost\r\nCookie: {viewer}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 512\r\nConnection: close\r\n\r\ncurrent_password=").as_bytes()).await.unwrap();
+    // Give the accepted request a turn before the Owner operation arrives.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let deletion = tokio::time::timeout(
+        Duration::from_secs(2),
+        a.post(
+            &format!("/admin/settings/accounts/{reader}/delete"),
+            &owner,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(
+        deletion
+            .expect("An incomplete body must not hold the dashboard mutation lock.")
+            .status(),
+        303
+    );
+    let mut response = vec![0; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(16), slow.read(&mut response))
+        .await
+        .expect("Dashboard body deadline must return a response.")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&response[..n]).starts_with("HTTP/1.1 408"));
+}
+
+#[tokio::test]
 async fn setup_creates_named_owner_and_login_requires_that_account() {
     let a = app().await;
     a.setup().await;
@@ -594,7 +808,9 @@ async fn audit_records_mutations_without_secrets_and_has_filters_and_retention()
             .text()
             .await
             .unwrap();
-        assert_eq!(html.matches("<article class=\"panel\">").count(), 1);
+        assert_eq!(html.matches("class=\"audit-entry\"").count(), 1);
+        assert!(html.contains("<table class=\"audit-table\">"));
+        assert!(html.contains("<summary>Before and after"));
         assert!(html.contains(&format!("teams / {id}")));
         assert!(html.contains(if page == 1 { "page=2" } else { "page=1" }));
     }
@@ -641,6 +857,68 @@ async fn audit_records_mutations_without_secrets_and_has_filters_and_retention()
             .status(),
         400
     );
+}
+
+#[tokio::test]
+async fn audit_purge_commits_bounded_batches_and_keeps_recent_entries() {
+    let a = app().await;
+    a.setup().await;
+    sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10001) INSERT INTO admin_audit(time,account,action,target_type,target_id,summary,before_json,after_json) SELECT 0,'chief','POST /admin/teams','teams',x,'HTTP 303.','null','null' FROM n")
+        .execute(&a.st.db).await.unwrap();
+    // A failure in the second statement must not undo the first 5000 rows.
+    sqlx::query("CREATE TRIGGER test_purge_failure BEFORE DELETE ON admin_audit WHEN OLD.time=0 AND (SELECT count(*) FROM admin_audit WHERE time=0)<=5001 BEGIN SELECT RAISE(ABORT,'test purge failure'); END")
+        .execute(&a.st.db).await.unwrap();
+    assert!(
+        tokomotive::admin::purge_audit(&a.st.db, tokomotive::db::now_s())
+            .await
+            .is_err()
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_audit WHERE time=0")
+        .fetch_one(&a.st.db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 5001);
+    sqlx::query("DROP TRIGGER test_purge_failure")
+        .execute(&a.st.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        tokomotive::admin::purge_audit(&a.st.db, tokomotive::db::now_s())
+            .await
+            .unwrap(),
+        5001
+    );
+    let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_audit")
+        .fetch_one(&a.st.db)
+        .await
+        .unwrap();
+    assert_eq!(recent, 1);
+}
+
+#[tokio::test]
+async fn audit_table_defaults_to_25_entries_and_keeps_explicit_page_size() {
+    let a = app().await;
+    let owner = a.setup().await;
+    sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<30) INSERT INTO admin_audit(account,action,target_type,target_id,summary,before_json,after_json) SELECT 'chief','POST /admin/teams','teams',x,'HTTP 303. Public fields changed.','null','{}' FROM n")
+        .execute(&a.st.db).await.unwrap();
+    for (query, count) in [("?target=teams", 25), ("?target=teams&limit=10", 10)] {
+        let html =
+            a.c.get(format!("{}/admin/audit{query}", a.url))
+                .header("cookie", &owner)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+        assert_eq!(html.matches("class=\"audit-entry\"").count(), count);
+        for column in ["Time (UTC)", "Account", "Action", "Target", "Result"] {
+            assert!(html.contains(&format!("scope=\"col\">{column}</th>")));
+        }
+        assert!(html.contains("page=2"));
+        assert!(html.contains("target=teams"));
+        assert!(html.contains("role=\"region\" aria-label=\"Audit entries\" tabindex=\"0\""));
+    }
 }
 
 #[tokio::test]

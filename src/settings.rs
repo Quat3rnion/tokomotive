@@ -91,12 +91,13 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
         let mut tx = db.begin().await?;
         for p in &cfg.providers {
             let mut keys = Vec::new();
+            for env in p.api_key_env.iter().chain(&p.api_keys_env) {
+                crate::config::validate_provider_env(env)?;
+            }
             if let (Some(env), Some(fallback)) = (&p.api_key_env, &p.api_key) {
                 // Resolve the legacy single-key pair once, with env precedence.
-                let value = std::env::var(env)
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| fallback.clone());
+                let value =
+                    crate::config::provider_env_value(env).unwrap_or_else(|| fallback.clone());
                 keys.push(key.encrypt(&value)?);
             } else if let Some(env) = &p.api_key_env {
                 keys.push(format!("env:{env}"));
@@ -183,9 +184,8 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
             let mut keys = Vec::new();
             for v in encoded {
                 if let Some(env) = v.strip_prefix("env:") {
-                    if let Ok(v) = std::env::var(env)
-                        && !v.is_empty()
-                    {
+                    crate::config::validate_provider_env(env)?;
+                    if let Some(v) = crate::config::provider_env_value(env) {
                         keys.push(v);
                     }
                 } else {

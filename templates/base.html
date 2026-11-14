@@ -187,6 +187,11 @@ caption { text-align:left; color:var(--muted); font-size:12px; padding-bottom:va
 td.wrap { white-space:normal; min-width:16ch; max-width:40ch; }
 td.n a, td.wrap a { display:inline-block; min-width:24px; min-height:24px; line-height:24px; }
 .panel.scroll table { font-size:13px; }
+.audit-table { table-layout:fixed; min-width:760px; }
+.audit-table td { white-space:normal; overflow-wrap:anywhere; }
+.audit-table .audit-entry td { border-bottom:0; }
+.audit-table .audit-diff > td { padding-top:0; }
+.audit-table pre.code { white-space:pre-wrap; overflow-wrap:anywhere; }
 
 input, select, textarea, button { font:inherit; color:var(--text); }
 input, select, textarea { background:var(--field); border:1px solid var(--line-input); border-radius:6px; padding:5px var(--sp-2); min-height:32px; max-width:100%; }

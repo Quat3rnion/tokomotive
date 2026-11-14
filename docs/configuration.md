@@ -222,8 +222,11 @@ dots, underscores or hyphens.
 
 Use **Settings > Admin accounts** to add, change or delete accounts. Only an
 Owner can use these controls. At least one Owner must remain. An Admin can
-change other configuration, but cannot manage accounts or change the metrics
-token. A Viewer has read-only access. Viewers can still log out and change
+change other configuration, but cannot manage accounts, change the metrics
+token or set audit retention. Only an Owner can add or remove environment key
+references. Only an Owner can change the address, API format or authentication
+header of a Provider that has these references. An Admin can still add pasted
+Provider Keys. A Viewer has read-only access. Viewers can still log out and change
 their own password with the current password.
 
 Use **Settings > Change password** for your own password. A password change,
@@ -239,24 +242,37 @@ account exists.
 Complete Setup through a trusted local connection before you expose the service.
 Use TLS at the reverse proxy for remote access. Preserve the public Host and
 Origin headers. All dashboard POST routes refuse cross-origin browser forms.
-Login permits 5 attempts per socket IP and username in 5 minutes. Forwarded IP
-headers do not bypass this limit. Behind a reverse proxy, the socket IP is the
-reverse proxy IP. The in-memory table has at most 1024 entries. When full,
-new entries are refused until an entry expires.
+Login permits 20 attempts per socket IP in a 5-minute window. Each username
+permits at most 5 attempts in that IP window. A username change does not reset
+the IP budget. After the window ends, the same IP can log in again. Forwarded
+IP headers do not bypass these limits. Behind a reverse proxy, the socket IP
+is the reverse proxy IP. The server stores at most 4096 IP budgets, with at
+most 16 username buckets per IP. A full IP map removes the least recently used
+IP. A full username map removes the oldest bucket. One full budget does not
+block a different IP.
+
+All dashboard request bodies, including Setup and login, have a 2 MiB size
+limit and a 15-second read deadline. The server reads the body before it locks
+dashboard mutations. It checks the session and role after it gets the lock.
+These limits do not apply to `/v1` requests or streaming Proxy responses.
 
 ### Audit log
 
 Owners and Admins can open **Audit log** from Settings or the navigation.
 Filter by account, action, target type or ID, and UTC time. The page contains
-at most 200 entries at a time. Each dashboard mutation records its account,
+25 entries by default, with at most 200 entries at a time. The compact table
+shows UTC time, account, action, target and result. Expand **Before and after**
+to see public fields. The table scrolls inside its container on small screens.
+Each dashboard mutation records its account,
 time, route, target, HTTP outcome and public before/after fields. Passwords,
 Provider Keys, client secrets, tokens and URLs are not copied to the log.
 Secret-only changes show metadata, not secret values. Authorized form errors
 also have entries. Failed login attempts are not stored, to limit unauthenticated
 log growth. An interrupted configuration operation has an unknown outcome.
 
-**Settings > Audit log** controls retention in days. The default is 365 days.
-The server removes old entries at start and once per hour. The log covers
+Only an Owner can set retention in **Settings > Audit log**. The default is
+365 days. The server removes old entries at start and once per hour. Each
+DELETE removes at most 5000 entries. The task yields between batches. The log covers
 dashboard operations, not direct database edits, environment recovery or
 background model-data sync. Export audit records separately if you need
 protection against database administrators. Dashboard OIDC sign-in is not
@@ -358,6 +374,21 @@ reference, not an encrypted key. `NAME` has letters, digits and underscores. The
 Proxy resolves the variable at start and on each reload. Set the variable in the
 service environment. A dashboard edit cannot change the environment of the
 running process.
+
+Only an Owner can add or remove `env:NAME` references in the dashboard. An
+Admin cannot change the address, API format or authentication header of a
+Provider with an environment reference. Use a pasted key for Admin-managed
+Providers. For example, an Owner can use `env:OPENAI_API_KEY`.
+
+Provider references cannot use names that start with `TOKOMOTIVE_`, `AWS_`,
+`SSH_` or `CI_`, or end with `_PASSWORD` or `_PRIVATE_KEY`. They also cannot
+use `GOOGLE_APPLICATION_CREDENTIALS`, `GITHUB_TOKEN`, `GH_TOKEN`,
+`GH_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, `GLAB_TOKEN`, `DATABASE_URL`,
+`REDIS_URL`, `SECRET_KEY` or `PRIVATE_KEY`. These checks are not case-sensitive.
+They protect service and common system secrets. They apply to `api_key_env`
+and `api_keys_env` in seed files as well. A reserved reference in old database
+data causes a load error before the value is read. Remove that reference with
+a trusted database tool before you start the service again.
 
 The table below lists the keys of the seed file. The dashboard has the fields
 `name`, `kind`, `auth`, `base_url`, `key_header`, `include_usage` and the keys.

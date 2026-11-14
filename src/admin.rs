@@ -57,11 +57,16 @@ pub async fn purge_audit(db: &Db, now: i64) -> Result<u64> {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(365)
         .clamp(1, 36500);
-    Ok(sqlx::query("DELETE FROM admin_audit WHERE time<?")
-        .bind(now - days * 86400)
-        .execute(db)
-        .await?
-        .rows_affected())
+    let mut total = 0;
+    loop {
+        let removed = sqlx::query("DELETE FROM admin_audit WHERE id IN (SELECT id FROM admin_audit WHERE time<? ORDER BY time,id LIMIT 5000)")
+            .bind(now - days * 86400).execute(db).await?.rows_affected();
+        total += removed;
+        if removed < 5000 {
+            return Ok(total);
+        }
+        tokio::task::yield_now().await;
+    }
 }
 pub fn start_audit_purge(db: Db) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {

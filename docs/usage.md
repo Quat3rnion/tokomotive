@@ -177,9 +177,12 @@ the same password. An empty username also means `admin`.
 
 In **Settings > Admin accounts**, an Owner can add accounts and set their roles:
 
-- Owner: all configuration, admin accounts and metrics credentials.
+- Owner: all configuration, admin accounts, metrics credentials, environment
+  key references and audit retention.
 - Admin: configuration and audit records, without admin-account management or
-  metrics-credential changes.
+  metrics-credential, environment-reference or audit-retention changes. An
+  Admin cannot change the address, API format or authentication header of a
+  Provider with environment references. Pasted Provider Keys remain available.
 - Viewer: read-only dashboard access. Configuration forms are hidden and
   configuration changes return HTTP 403. Logout and own-password changes
   remain available.
@@ -188,11 +191,25 @@ Keep at least one Owner. A role change, password change or account deletion
 ends that account's sessions. To change your own password, enter the current
 password in **Settings > Change password**.
 
+Login permits 20 attempts per socket IP in a 5-minute window, with at most
+5 attempts per username in that window. Changing the username does not reset
+the IP budget. Wait for the window to end if the IP budget is full. A different
+IP can still log in. Forwarded IP headers do not change the socket IP. The
+bounded maps keep at most 4096 IPs and 16 usernames per IP. When a map is full,
+the server removes the least recently used IP or the oldest username bucket.
+
+Dashboard bodies have a 2 MiB limit and a 15-second read deadline. Body reads
+do not lock other dashboard changes. The server checks the session and role
+after it gets the mutation lock. These limits do not cut `/v1` streams.
+
 Open **Audit log** to see dashboard changes. Filter by account, action, target
-or UTC time, then use the page links for older entries. Before/after fields
+or UTC time, then use the page links for older entries. The compact table shows
+25 entries by default. It scrolls inside its container on small screens.
+Expand **Before and after** to see the public fields. Before/after fields
 exclude secrets and URLs. An interrupted operation shows an unknown outcome.
-Set retention in **Settings > Audit log**. The default is 365 days, with an
-hourly purge. Only Owners and Admins can read the log. Dashboard OIDC sign-in
+Only an Owner can set retention in **Settings > Audit log**. The default is
+365 days, with an hourly purge in batches of at most 5000 entries. The purge
+task yields between batches. Only Owners and Admins can read the log. Dashboard OIDC sign-in
 is not available.
 
 ## Connect a client
@@ -975,6 +992,14 @@ changes without a restart. The settings are in
    uses the Provider blocks this.
 
 The dashboard asks for confirmation before it deletes or disconnects.
+
+Only an Owner can add or remove `env:NAME` references. A normal example is
+`env:OPENAI_API_KEY`. Names that start with `TOKOMOTIVE_`, `AWS_`, `SSH_` or
+`CI_`, or end with `_PASSWORD` or `_PRIVATE_KEY`, are reserved. Common system
+secrets such as `DATABASE_URL` and `GH_TOKEN` are also reserved. See the full
+list in [Provider configuration](configuration.md#providers). These checks
+apply at save and load time, including old database data and seed files.
+Never use a service password or a Master Key as a Provider Key.
 
 #### Add a Provider
 

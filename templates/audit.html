@@ -11,13 +11,17 @@
 <label>Until (UTC) <input type="datetime-local" name="until" value="{{ q.until }}"></label>
 <label>Page size <input type="number" name="limit" min="1" max="200" value="{{ q.page.limit() }}"></label><button>Filter</button>
 </form>
+<div class="panel scroll" role="region" aria-label="Audit entries" tabindex="0">
+<table class="audit-table">
+<caption>Dashboard changes. Expand Before and after for public fields.</caption>
+<thead><tr><th scope="col">Time (UTC)</th><th scope="col">Account</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th></tr></thead>
+<tbody>
 {% for row in rows %}
-<article class="panel">
-<h2>#{{ row.id }}: {{ row.action }}</h2>
-<p>{{ row.stamp() }} - {{ row.account }} - {{ row.target_type }} / {{ row.target_id }}</p>
-<p>{{ row.summary }}</p>
-<details><summary>Before and after</summary><h3>Before</h3><pre class="code">{{ row.before_json }}</pre><h3>After</h3><pre class="code">{{ row.after_json }}</pre></details>
-</article>
-{% else %}<p class="empty">No audit entries match these filters.</p>{% endfor %}
+<tr class="audit-entry"><td>{{ row.stamp() }}</td><td>{{ row.account }}</td><td>{{ row.action }}</td><td>{{ row.target_type }} / {{ row.target_id }}</td><td>{{ row.result() }}</td></tr>
+<tr class="audit-diff"><td colspan="5"><details><summary>Before and after<span class="vh"> for entry {{ row.id }}</span></summary><p>{{ row.summary }}</p><h3>Before</h3><pre class="code">{{ row.before_json }}</pre><h3>After</h3><pre class="code">{{ row.after_json }}</pre></details></td></tr>
+{% else %}<tr><td colspan="5" class="empty">No audit entries match these filters.</td></tr>{% endfor %}
+</tbody>
+</table>
+</div>
 {% include "pager.html" %}
 {% endblock %}

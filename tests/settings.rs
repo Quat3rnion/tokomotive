@@ -1321,7 +1321,7 @@ name = "seeded"
 kind = "openai"
 base_url = "https://first.example"
 api_key = "seed-secret"
-api_keys_env = ["TOKOMOTIVE_SETTINGS_MISSING_TEST_KEY"]
+api_keys_env = ["PROVIDER_SETTINGS_MISSING_TEST_KEY"]
 key_header = "api-key"
 include_usage = false
 [[routes]]
@@ -1354,7 +1354,7 @@ deployments = [{provider="seeded",model="first",weight=1}]
         .fetch_one(&first.db)
         .await
         .unwrap();
-    assert!(stored.contains("env:TOKOMOTIVE_SETTINGS_MISSING_TEST_KEY"));
+    assert!(stored.contains("env:PROVIDER_SETTINGS_MISSING_TEST_KEY"));
     assert!(!stored.contains("seed-secret"));
     cfg.providers[0].base_url = "https://later.example".into();
     cfg.router.max_attempts = 99;

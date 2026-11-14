@@ -106,7 +106,14 @@ async fn mock_openai(
             ));
         }
         ev.push("data: [DONE]\n\n".into());
-        return sse(ev, 5);
+        return sse(
+            ev,
+            if b["metadata"]["dashboard_timeout_probe"] == true {
+                8000
+            } else {
+                5
+            },
+        );
     }
     Json(json!({"id":"chat_test", "model": b["model"], "choices": [{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}], "usage": usage})).into_response()
 }
@@ -179,6 +186,28 @@ struct Env {
 
 async fn env() -> Env {
     env_with_routes("").await
+}
+
+#[tokio::test]
+async fn dashboard_body_deadline_does_not_cut_long_proxy_streams() {
+    let e = env().await;
+    let start = std::time::Instant::now();
+    let response = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(
+            &json!({"model":"gpt-4o", "stream":true, "metadata":{"dashboard_timeout_probe":true}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let text = response.text().await.unwrap();
+    assert!(start.elapsed() >= Duration::from_secs(16));
+    assert!(text.contains("data: [DONE]"));
+    let row = last_entry(&e.st).await;
+    assert_eq!(i(&row, "output"), 100);
 }
 
 #[tokio::test]
