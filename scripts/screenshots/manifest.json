@@ -22,7 +22,8 @@
     {"image":"overview-simple.png", "page":"/admin", "route":"/admin", "recipe":"overview-simple", "caption":"Overview in Simple Mode", "alt":"The Overview without money data: requests, tokens, latency, errors and attempts.", "kind":"table"},
     {"image":"teams.png", "page":"/admin/teams", "route":"/admin/teams", "recipe":"full", "caption":"Teams", "alt":"Teams with their Budgets, spend and member counts.", "kind":"table"},
     {"image":"settings.png", "page":"/admin/settings", "route":"/admin/settings", "recipe":"observability", "caption":"Settings", "alt":"The operating mode, routing settings, metrics and alert controls.", "kind":"table"},
-    {"image":"audit.png", "page":"/admin/audit?limit=10", "route":"/admin/audit", "recipe":"pager", "caption":"Audit log", "alt":"The audit log: who changed what and when, with filters and the pager.", "kind":"table"}
+    {"image":"audit.png", "page":"/admin/audit?limit=10", "route":"/admin/audit", "recipe":"pager", "caption":"Audit log", "alt":"The audit log: who changed what and when, with filters and the pager.", "kind":"table"},
+    {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"Rule sets, Route attachments and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
     {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page."},

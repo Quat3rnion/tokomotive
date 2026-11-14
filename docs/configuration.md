@@ -1,5 +1,60 @@
 # Configuration reference
 
+## Guardrails
+
+Use **Guardrails** in the dashboard. Rule sets and their Route, Team and
+Virtual Key attachments are stored in SQLite, not in the seed file.
+
+| Limit | Value |
+| --- | --- |
+| Rule sets | 64 |
+| Rules per set / per request union | 64 / 256 |
+| Regex or keyword pattern | 8192 bytes |
+| Compiled regex program | 1 MiB, with `RegexBuilder::size_limit` |
+| Inspected text | 1 MiB by default; set 1 to 16777216 bytes per rule set |
+| Matches per inspection | 1024 |
+| Stream evaluation interval | At least 32 KiB of pending SSE data, or stream end |
+| Retained stream text | 8 KiB between windows |
+| SSE frame / pending data | 128 KiB / 256 KiB |
+
+The smallest attached text limit applies. Exceeding an inspection, match
+or stream buffer limit blocks the request or terminates the stream.
+Invalid JSON response bodies and invalid SSE data also stop the response.
+Regex uses the linear-time `regex` crate, without backtracking. Empty-text patterns
+are not accepted. These checks bound work; they do not prove that every
+possible PII or secret format is detected.
+
+- `email`: a common ASCII email address with a dotted domain.
+- `phone`: E.164-like text, a plus sign followed by 7 to 15 digits. The
+  first digit cannot be zero. Spaces, brackets and local phone numbers
+  are not detected. This detector does not check national numbering plans.
+- `credit_card`: 13 to 19 digits, with optional spaces or hyphens, and a
+  valid Luhn checksum. All-zero numbers are not accepted.
+- `iban`: an uppercase IBAN with optional spaces and a valid modulo-97
+  checksum. Country lengths are checked. Lowercase text is not detected.
+- `secret`: OpenAI `sk-`, Anthropic `sk-ant-`, AWS `AKIA`, GitHub `ghp_`,
+  Slack `xoxb-` and `xoxp-`, Google `AIza`, private-key PEM headers and
+  JWT-shaped tokens. Short prefixes and other secret formats can be missed.
+
+Each rule set can have an external moderation URL. Use an operator-controlled
+HTTP or HTTPS URL without URL credentials. The Proxy sends a JSON object:
+
+```json
+{"text":"assembled text","direction":"request"}
+```
+
+The hook must return `{"action":"block","reason":"policy"}`. `redact`
+replaces all inspected text; `log` leaves it unchanged. The reason is not
+stored or returned to the client. The request and response body timeout is
+2 seconds. The reply is limited to 8192 bytes. Redirects are not followed.
+Streaming can call the hook once per window; windows can overlap.
+
+The default is fail-open: a timeout, network error, bad status or invalid
+reply does not block. Select **Block if the external hook fails** for
+fail-closed behavior. The Ledger name for a hook action is
+`rule-set-name:external`. A hook receives prompt or response text, which
+can contain private data. Test-box text is never sent to the hook.
+
 ## Traces and body capture
 
 Use **Settings > Traces and body capture**. These settings are stored in the

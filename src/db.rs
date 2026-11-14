@@ -1094,6 +1094,7 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub guardrail_rules: String,
     pub captured: bool,
     pub cache_hit: bool,
     pub service_units: i64,
@@ -1198,7 +1199,7 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
 /// One extra row is private lookahead, never rendered or returned in an API list.
 pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
     let mut b = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "SELECT EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
+        "SELECT COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
             l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit
@@ -1442,6 +1443,7 @@ pub async fn small_choices(db: &Db, kind: &str) -> Result<Option<Vec<ControlChoi
             "SELECT name,auth IN ('chatgpt','claude','codex','github_copilot','qwen_code','kimi_code','gemini_cli') AS subscription FROM providers ORDER BY name LIMIT 31"
         }
         "teams" => "SELECT name,0 AS subscription FROM teams ORDER BY name LIMIT 31",
+        "routes" => "SELECT name,0 AS subscription FROM routes ORDER BY name LIMIT 31",
         "users" => "SELECT name,0 AS subscription FROM users ORDER BY name LIMIT 31",
         _ => anyhow::bail!("unsupported control choices"),
     };

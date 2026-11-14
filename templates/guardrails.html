@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "picker.html" as picker %}
+{% block title %}Guardrails - Tokomotive{% endblock %}
+{% block nav_guardrails %}aria-current="page"{% endblock %}
+{% block content %}
+<h1>Guardrails</h1>
+<p class="muted">Attach rule sets to a Route, Team or Virtual Key. All attached rules apply. Block has priority over redact, then log. Rules also apply in Simple Mode and to cache hits.</p>
+<section class="panel stack" aria-labelledby="guard-add"><h2 id="guard-add">Add a rule set</h2>
+<form action="/admin/guardrails" method="post" class="stack">
+<label>Name<input name="name" required maxlength="100"></label>
+<label>Rules (JSON)<textarea name="rules" rows="8" required>[{"name":"EMAIL","kind":{"type":"detector","detector":"email"},"action":"redact","direction":"both"}]</textarea></label>
+<div class="row"><label>Text limit (bytes)<input type="number" name="max_text_bytes" min="1" max="16777216" value="1048576" required></label>
+<label class="grow">External moderation URL (optional)<input type="url" name="hook_url" placeholder="https://moderation.example/check"></label></div>
+<label class="check"><input type="checkbox" name="fail_closed">Block if the external hook fails</label>
+<button>Add rule set</button></form>
+<p class="hint">Kinds: <code>{"type":"regex","pattern":"..."}</code>, <code>{"type":"keywords","words":["word"],"whole_word":true,"case_sensitive":false}</code> or <code>{"type":"detector","detector":"email"}</code>. Detectors: email, phone, credit_card, iban, secret. Actions: block, redact, log. Directions: request, response, both.</p>
+<p class="hint">Patterns: at most 8192 bytes and a 1 MiB compiled program. Text above the limit or more than 1024 matches blocks the request. Phone detects a plus sign and 7 to 15 digits. Stream inspection retains 8 KiB of text in a bounded window; longer matches across windows can be missed. Hooks have a 2 second timeout and fail open unless selected above.</p>
+</section>
+{% for s in sets %}
+<section class="panel stack"><h2>{{ s.name }}</h2>
+<form action="/admin/guardrails" method="post" class="stack"><input type="hidden" name="id" value="{{ s.id }}">
+<label>Name<input name="name" value="{{ s.name }}" required maxlength="100"></label>
+<label>Rules (JSON)<textarea name="rules" rows="8" required>{{ s.rules }}</textarea></label>
+<div class="row"><label>Text limit (bytes)<input type="number" name="max_text_bytes" min="1" max="16777216" value="{{ s.max_text_bytes }}" required></label><label class="grow">External moderation URL<input type="url" name="hook_url" value="{{ s.hook_url }}"></label></div>
+<label class="check"><input type="checkbox" name="fail_closed"{% if s.fail_closed %} checked{% endif %}>Block if the external hook fails</label><button>Save rule set</button></form>
+<h3>Attachments</h3><ul>{% for a in attachments %}{% if a.set_id == s.id %}<li>{{ a.target }} <form class="inline" method="post" action="/admin/guardrails/attachments/{{ a.id }}/delete" data-confirm="Delete this guardrail attachment?"><button class="ghost danger">Delete attachment</button></form></li>{% endif %}{% endfor %}</ul>
+<form action="/admin/guardrails/{{ s.id }}/attach" method="post" class="stack">
+<p class="hint">Select one target. To add more targets, submit this form again.</p>
+<div class="row"><label class="grow">Route{% call picker::entity("", "route_name", "", "routes", routes, "No Route", false) %}</label><label class="grow">Team{% call picker::entity("", "team_name", "", "teams", teams, "No Team", false) %}</label>
+<label class="grow">Virtual Key<select name="key_id"><option value="">No Virtual Key</option>{% for k in keys %}{% if k.revoked_at.is_none() %}<option value="{{ k.id }}">{{ k.user }} / {{ k.label }} (#{{ k.id }})</option>{% endif %}{% endfor %}</select></label></div><button>Add attachment</button></form>
+<form action="/admin/guardrails/{{ s.id }}/delete" method="post" data-confirm="Delete rule set {{ s.name }} and its attachments?"><button class="danger ghost">Delete rule set</button></form>
+</section>
+{% endfor %}
+<section class="panel stack" aria-labelledby="guard-test"><h2 id="guard-test">Test a rule</h2>
+<p class="hint">Test a saved rule set on pasted text. The text and results are not stored. External hooks are not called.</p>
+<form action="/admin/guardrails/test" method="post" hx-post="/admin/guardrails/test" hx-target="#guard-test-result" hx-swap="innerHTML" class="stack">
+<div class="row"><label>Rule set<select name="set_id" required>{% for s in sets %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></label><label>Direction<select name="direction"><option value="request">Request</option><option value="response">Response</option></select></label></div>
+<label>Text<textarea name="text" rows="5" required></textarea></label><button data-busy="Testing...">Test rule set</button><div class="form-error" role="alert" tabindex="-1"></div>
+</form><div id="guard-test-result"></div></section>
+{% endblock %}

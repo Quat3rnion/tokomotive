@@ -53,6 +53,13 @@ post(f"/admin/models/{ids['claude-sonnet-5-5']}/team-price", dict(Z, team_name="
 post(f"/admin/models/{ids['gpt-6-luna']}/price", dict(Z, mode="rates", input="0.20", output="1.00", cache_read="0.02"))
 post("/admin/routes", {"name": "smart", "strategy": "weighted", "fallbacks": "claude-haiku-5-5, gpt-4o-mini", "deployment_provider": ["openai", "anthropic", "anthropic"], "deployment_model": ["gpt-6.1-sol", "claude-sonnet-5-5", "claude-opus-5-5"], "deployment_weight": ["5", "3", "1"]})
 post("/admin/routes", {"name": "fast", "strategy": "priority", "fallbacks": "gpt-4o-mini", "deployment_provider": ["openai", "anthropic"], "deployment_model": ["gpt-6-luna", "claude-haiku-5-5"], "deployment_weight": ["1", "1"]})
+post("/admin/guardrails", {"name": "Contact protection", "rules": json.dumps([
+    {"name": "EMAIL", "kind": {"type": "detector", "detector": "email"}, "action": "redact", "direction": "both"},
+    {"name": "SECRET", "kind": {"type": "detector", "detector": "secret"}, "action": "block", "direction": "request"},
+]), "max_text_bytes": "1048576", "hook_url": ""})
+guard_html = s.get(B + "/admin/guardrails", timeout=30).text
+guard_id = re.search(r'action="/admin/guardrails/(\d+)/attach"', guard_html).group(1)
+post(f"/admin/guardrails/{guard_id}/attach", {"route_name": "smart", "team_name": "", "key_id": ""})
 
 USERS = [
     ("maria.keller", "Research", "250", "600", "4000000", True),

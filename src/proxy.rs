@@ -438,6 +438,7 @@ fn skip_header(name: &HeaderName) -> bool {
 
 /// Request context that is needed to write the Ledger Entry.
 struct Ctx {
+    guardrails: crate::guardrails::Session,
     cache_plan: Option<crate::cache::Plan>,
     cache_hit_price: Option<i64>,
     st: AppState,
@@ -558,6 +559,10 @@ impl Ctx {
         let alerts_auth = self.auth;
         let reservation = self.reservation;
         let fut = async move {
+            let mut entry = entry;
+            if self.guardrails.wait().await {
+                entry.status = 400;
+            }
             let guard = alerts_st.budget_check.lock().await;
             let written = db::insert_entry(&db, &entry).await;
             drop(reservation);
@@ -565,6 +570,9 @@ impl Ctx {
             match written {
                 Err(e) => tracing::error!(error = %e, "ledger write failed"),
                 Ok(id) => {
+                    if let Err(e) = self.guardrails.ledger(&db, id).await {
+                        tracing::error!(error=%e,"guardrail ledger write failed");
+                    }
                     if let Err(e) = self
                         .trace
                         .store(&db, &alerts_st.secret_key, id, entry.ts_ms)
@@ -680,6 +688,25 @@ pub async fn handle(
     headers: HeaderMap,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Response {
+    let guardrails = crate::guardrails::Session::default();
+    let mut completion = guardrails.completion();
+    let endpoint = Endpoint::from_path(uri.path());
+    let anthropic = matches!(endpoint, Endpoint::Messages | Endpoint::CountTokens);
+    let responses = endpoint == Endpoint::Responses;
+    let response = handle_inner(st, method, uri, headers, body, guardrails.clone()).await;
+    let response = guardrails.response(response, anthropic, responses).await;
+    completion.disarm();
+    response
+}
+
+async fn handle_inner(
+    st: AppState,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+    guardrails: crate::guardrails::Session,
+) -> Response {
     let started = Instant::now();
     let ts_ms = db::now_ms();
     let endpoint = Endpoint::from_path(uri.path());
@@ -690,7 +717,7 @@ pub async fn handle(
         Ok(a) => a,
         Err(r) => return *r,
     };
-    let body = match body {
+    let mut body = match body {
         Ok(body) => body,
         Err(rejection) => {
             return error(
@@ -736,7 +763,7 @@ pub async fn handle(
     } else {
         None
     };
-    let json_body: Option<Value> = if let Some(upload) = &audio_upload {
+    let mut json_body: Option<Value> = if let Some(upload) = &audio_upload {
         Some(json!({"model":upload.model}))
     } else if body.is_empty() {
         None
@@ -910,6 +937,74 @@ pub async fn handle(
         );
     };
 
+    // Request rules run before cache identity/lookup and before body capture.
+    match crate::guardrails::load(
+        &st.db,
+        requested_model.as_deref(),
+        auth.team_id,
+        auth.key_id,
+    )
+    .await
+    {
+        Ok(engine) => guardrails.configure(engine),
+        Err(e) => {
+            tracing::error!(error=%e,"guardrail load failed");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+                "Guardrail configuration could not be loaded.",
+            );
+        }
+    }
+    if let Some(value) = &mut json_body {
+        if let Some(name) = guardrails.request(value).await {
+            let entry = NewEntry {
+                cache_hit: false,
+                ts_ms,
+                user_id: auth.user_id,
+                key_id: auth.key_id,
+                team_id: auth.team_id,
+                provider: first.provider.name.clone(),
+                subscription: false,
+                endpoint: endpoint.name().into(),
+                requested_model: requested_model.clone(),
+                model: first.model.clone(),
+                status: 400,
+                streamed: value
+                    .get("stream")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                usage: Usage::default(),
+                reported_cost_micros: None,
+                quote: Default::default(),
+                estimated: false,
+                latency_ms: started.elapsed().as_millis() as i64,
+                ttft_ms: None,
+                client_aborted: false,
+                provider_key: None,
+                attempts: 0,
+                session_affinity: None,
+            };
+            crate::metrics::record(&auth.user_name, &entry);
+            let db = st.db.clone();
+            let session = guardrails.clone();
+            st.spawn_tracked(async move {
+                match db::insert_entry(&db, &entry).await {
+                    Ok(id) => {
+                        if let Err(e) = session.ledger(&db, id).await {
+                            tracing::error!(error=%e,"guardrail ledger write failed");
+                        }
+                    }
+                    Err(e) => tracing::error!(error=%e,"blocked request ledger write failed"),
+                }
+            });
+            return crate::guardrails::blocked(&name, anthropic);
+        }
+        if audio_upload.is_none() {
+            body = Bytes::from(value.to_string());
+        }
+    }
+
     let cache_plan = table
         .routes
         .iter()
@@ -1060,6 +1155,7 @@ pub async fn handle(
     )
     .await;
     let mut ctx = Ctx {
+        guardrails,
         cache_plan,
         cache_hit_price: None,
         st: st.clone(),

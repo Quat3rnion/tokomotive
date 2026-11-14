@@ -1311,6 +1311,7 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub guardrail_rules: String,
     pub captured: bool,
     pub cache_hit: bool,
     pub service_units: String,
@@ -1444,6 +1445,7 @@ impl LedgerView {
             attempts: r.attempts,
             session_affinity: r.session_affinity.clone(),
             cache_hit: r.cache_hit,
+            guardrail_rules: r.guardrail_rules.clone(),
             key: r
                 .provider_key
                 .map(|k| key_label(&r.provider, k).unwrap_or_else(|| format!("Key {}", k + 1)))

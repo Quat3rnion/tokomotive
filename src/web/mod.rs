@@ -48,6 +48,7 @@ macro_rules! tryform {
 
 pub(crate) mod accounts;
 mod audit;
+mod guardrails;
 mod models_dev;
 mod oauth;
 mod pickers;
@@ -84,6 +85,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/search/{kind}", get(pickers::search))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
+        .merge(guardrails::router())
         .merge(models_dev::router())
         .merge(oauth::router())
         .merge(accounts::router())

@@ -1,5 +1,52 @@
 # Operator guide
 
+## Guardrails
+
+Open **Guardrails**. Add a rule set, then attach it to a Route, Team or
+Virtual Key. The Proxy uses the union of these attachments. A block has
+priority over redaction. Redaction has priority over logging. The rules
+also apply in Simple Mode.
+
+Rules have a name, kind, action and direction. Use `request`, `response` or
+`both` for the direction. The actions are `block`, `redact` and `log`.
+Redaction uses `[REDACTED:rule-name]`. A regex uses the Rust `regex` syntax.
+Keyword lists can use whole-word matching and case-sensitive matching.
+The built-in detectors are `email`, `phone`, `credit_card`, `iban` and
+`secret`. See [configuration](configuration.md#guardrails) for their limits.
+
+Example rule array:
+
+```json
+[
+  {"name":"EMAIL","kind":{"type":"detector","detector":"email"},"action":"redact","direction":"both"},
+  {"name":"restricted","kind":{"type":"keywords","words":["restricted"],"whole_word":true,"case_sensitive":false},"action":"block","direction":"request"}
+]
+```
+
+Request rules inspect text in Chat Completions messages, Responses input,
+Anthropic system and message blocks, tool results, and embeddings input.
+They do not inspect images, audio or binary data. Redaction changes the
+upstream request body. Opt-in body capture stores this changed request.
+Request checks run before the response cache lookup. Cached responses still
+pass through response rules, even if a rule set changed after the cache write.
+
+A blocked request returns HTTP 400. The JSON error has the stable code
+`guardrail_blocked` and the rule name, not the matched text. Anthropic errors
+also have the top-level `type: error`. The Ledger flag stores only rule names.
+The counter `llm_guardrail_matches_total` has `rule` and `action` labels.
+
+Non-streaming response rules inspect the assembled JSON text. Streaming
+rules inspect assembled text across SSE events. The Proxy keeps 8 KiB of
+text between windows. A match that needs more than 8 KiB across released
+windows can be missed. Use non-streaming requests when this limit is not
+acceptable. Buffering adds latency. A block during a stream terminates it
+with an error event in the client API format. Earlier released text cannot
+be recalled. A stopped stream can still have upstream usage and Cost.
+
+Use **Test a rule** to test a saved set on pasted text. It shows the rule
+names, byte offsets and changed text. It does not store the text or results
+and does not call external hooks.
+
 ## Request diagnostics
 
 Use **Ledger** as the request log. Filter by User, Provider, Model, UTC dates,

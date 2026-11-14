@@ -77,6 +77,12 @@ async function capture() {
       ledger: async () => [0, Math.max(840, (await box('form.ledger-filters')).bottom + 320)],
       // Existing image: include the new trace export and body retention controls.
       observability: async () => [0, await full()],
+      guardrails: async () => {
+        await page.locator('form[action="/admin/guardrails/test"] textarea[name="text"]').fill('Contact alice@example.com for the project update.');
+        await page.locator('form[action="/admin/guardrails/test"] button').click();
+        await page.waitForSelector('#guard-test-result [role="status"]');
+        return [0, await full()];
+      },
       'keys-capture': async () => {
         await page.locator('table.keys button[data-toggle^="edit-k"]').first().click();
         return [0, (await box('nav.pager', null, null, true)).bottom + 24];

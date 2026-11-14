@@ -9,6 +9,7 @@ pub mod cache;
 pub mod catalog;
 pub mod config;
 pub mod db;
+pub mod guardrails;
 pub mod metrics;
 pub mod model_search;
 pub mod models_dev;

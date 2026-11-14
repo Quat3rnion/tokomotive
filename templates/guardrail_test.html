@@ -1,0 +1,6 @@
+<div role="status" class="stack">
+{% if let Some(name) = verdict.blocked %}<p>Blocked by {{ name }}.</p>{% else %}<p>Not blocked.</p>{% endif %}
+<p>{{ verdict.matches.len() }} matches. Byte offsets refer to the pasted text.</p>
+<ul>{% for m in verdict.matches %}<li>{{ m.rule }}: {{ m.start }} to {{ m.end }}.</li>{% endfor %}</ul>
+<pre class="code">{{ verdict.text }}</pre>
+</div>

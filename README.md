@@ -30,6 +30,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Offers an encrypted [exact response cache](docs/usage.md#exact-response-cache)
   for JSON and SSE. Each Route sets its lifetime and Virtual Key, Team or global scope.
   Hits have zero Cost and a configurable Price. The cache is off by default.
+- Applies [Guardrails](docs/usage.md#guardrails) to prompts and responses.
+  Attach rule sets to Routes, Teams or Virtual Keys. Block, redact or log
+  regex, keyword, PII and secret matches. Rules also apply in Simple Mode.
 
 ### Compatibility
 
@@ -138,6 +141,7 @@ The capture manifest records these changes for the next image refresh.
 | [Teams](docs/images/teams.png) | Teams with their Budgets, spend and member counts. |
 | [Settings](docs/images/settings.png) | The operating mode, routing settings, metrics and alert controls. |
 | [Audit log](docs/images/audit.png) | The audit log: who changed what and when, with filters and the pager. |
+| [Guardrails](docs/images/guardrails.png) | Rule sets, Route attachments and a test box for pasted text. |
 
 ## Quick start
 
