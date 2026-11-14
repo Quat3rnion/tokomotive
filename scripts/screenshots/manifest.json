@@ -26,7 +26,7 @@
     {"image":"teams.png", "page":"/admin/teams", "route":"/admin/teams", "recipe":"full", "caption":"Teams", "alt":"Teams with their Budgets, spend and member counts.", "kind":"table"},
     {"image":"settings.png", "page":"/admin/settings", "route":"/admin/settings", "recipe":"observability", "caption":"Settings", "alt":"The operating mode, routing settings, metrics and alert controls.", "kind":"table"},
     {"image":"audit.png", "page":"/admin/audit?limit=10", "route":"/admin/audit", "recipe":"pager", "caption":"Audit log", "alt":"The audit log: who changed what and when, with filters and the pager.", "kind":"table"},
-    {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"Rule sets, Route attachments and a test box for pasted text.", "kind":"table"}
+    {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
     {"route":"/admin/mcp/search", "reason":"Search result fragment for the MCP tool access picker."},

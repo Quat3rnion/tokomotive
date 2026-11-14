@@ -7,14 +7,59 @@ Virtual Key. The Proxy uses the union of these attachments. A block has
 priority over redaction. Redaction has priority over logging. The rules
 also apply in Simple Mode.
 
-Rules have a name, kind, action and direction. Use `request`, `response` or
-`both` for the direction. The actions are `block`, `redact` and `log`.
-Redaction uses `[REDACTED:rule-name]`. A regex uses the Rust `regex` syntax.
-Keyword lists can use whole-word matching and case-sensitive matching.
-The built-in detectors are `email`, `phone`, `credit_card`, `iban` and
-`secret`. See [configuration](configuration.md#guardrails) for their limits.
+### Edit the rules
 
-Example rule array:
+Each rule set shows its rules as a list. The rules run in the list order.
+Each rule has these fields:
+
+- **Name**. Use a unique name in the rule set, with 1 to 100 bytes.
+  Redaction writes `[REDACTED:name]` in the text.
+- **Kind**. Select one of these kinds:
+  - **Detector**: a built-in detector. Select **Email address**, **Phone
+    number**, **Credit card number**, **IBAN** or **Secret or API key**. A
+    line below the field tells what the detector finds. See
+    [configuration](configuration.md#guardrails) for their limits.
+  - **Regex**: a pattern in the Rust `regex` syntax, at most 8192 bytes. Start
+    the pattern with `(?i)` to ignore case. The pattern must not match empty
+    text.
+  - **Keywords**: one keyword on each line, 1 to 256 keywords. Select
+    **Whole word** to match only full words. Select **Case sensitive** to
+    match only the same case.
+- **Action**: **Redact the match**, **Block the message** or **Log only**.
+- **Direction**: **Requests and responses**, **Requests only** or
+  **Responses only**.
+
+To add a rule, click **Add a rule**. A new rule set starts with one empty
+rule. The quick start buttons add usual rules:
+
+- **Redact emails and phone numbers** adds `EMAIL` and `PHONE`.
+- **Block secrets and API keys** adds `SECRET`.
+- **Redact credit cards and IBANs** adds `CREDIT_CARD` and `IBAN`.
+
+Use the arrow buttons to move a rule up or down. Use **Remove** to remove a
+rule. Then click **Save rule set**. The changes apply only after you save.
+
+The server checks all rules before it saves. It compiles each pattern with
+the limits of the Proxy. It also rejects an empty keyword list, two rules
+with the same name, and more than 64 rules. An error shows below the field
+that has the problem. The typed values stay in the form.
+
+Without JavaScript, the form shows all kind fields and two empty rules. Fill
+in the field of the selected kind. The fields of the other kinds are not
+used. An empty rule is not saved. To remove a rule, select **Remove this rule
+when you save**. To change the order without JavaScript, use the JSON import.
+
+### Import or export JSON
+
+Open **Advanced: import or export JSON** in a rule set. It shows the saved
+rules as JSON. Click **Copy JSON** to copy them. To replace the rules, paste
+a JSON array in **Import JSON** and save. The server checks the imported
+rules in the same way. When **Import JSON** has text, the import replaces all
+rules in the form.
+
+Scripts can send the JSON array in the `rules` form field of
+`POST /admin/guardrails`, with `name` and `max_text_bytes`. Example rule
+array:
 
 ```json
 [
@@ -22,6 +67,14 @@ Example rule array:
   {"name":"restricted","kind":{"type":"keywords","words":["restricted"],"whole_word":true,"case_sensitive":false},"action":"block","direction":"request"}
 ]
 ```
+
+The form fields are `rule[N][name]`, `rule[N][kind]` (`detector`, `regex` or
+`keywords`), `rule[N][detector]`, `rule[N][pattern]`, `rule[N][words]` (one
+keyword on each line), `rule[N][whole_word]`, `rule[N][case_sensitive]`,
+`rule[N][action]` (`block`, `redact` or `log`), `rule[N][direction]`
+(`request`, `response` or `both`) and `rule[N][remove]`. `N` only groups the
+fields of one rule. The order of the fields in the request is the order of
+the rules.
 
 Request rules inspect text in Chat Completions messages, Responses input,
 Anthropic system and message blocks, tool results, and embeddings input.
@@ -43,9 +96,10 @@ acceptable. Buffering adds latency. A block during a stream terminates it
 with an error event in the client API format. Earlier released text cannot
 be recalled. A stopped stream can still have upstream usage and Cost.
 
-Use **Test a rule** to test a saved set on pasted text. It shows the rule
-names, byte offsets and changed text. It does not store the text or results
-and does not call external hooks.
+Use **Test a rule** to test a saved set on pasted text. It shows each rule
+that matched, with its action, the number of matches and the byte offsets.
+It also shows the text after redaction. It does not store the text or
+results and does not call external hooks.
 
 ## Egress proxies
 

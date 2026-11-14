@@ -146,7 +146,7 @@ The capture manifest records these changes for the next image refresh.
 | [Teams](docs/images/teams.png) | Teams with their Budgets, spend and member counts. |
 | [Settings](docs/images/settings.png) | The operating mode, routing settings, metrics and alert controls. |
 | [Audit log](docs/images/audit.png) | The audit log: who changed what and when, with filters and the pager. |
-| [Guardrails](docs/images/guardrails.png) | Rule sets, Route attachments and a test box for pasted text. |
+| [Guardrails](docs/images/guardrails.png) | A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text. |
 | [MCP servers](docs/images/mcp-servers.png) | MCP servers with masked credentials, a connection test and cached tool descriptions. |
 | [MCP tool calls](docs/images/mcp-log.png) | The MCP tool call log with key, User, server, tool, status, latency and error class. Arguments and results are not stored. |
 

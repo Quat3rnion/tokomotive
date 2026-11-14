@@ -80,7 +80,7 @@ async function capture() {
       // Existing image: include the new trace export and body retention controls.
       observability: async () => [0, await full()],
       guardrails: async () => {
-        await page.locator('form[action="/admin/guardrails/test"] textarea[name="text"]').fill('Contact alice@example.com for the project update.');
+        await page.locator('form[action="/admin/guardrails/test"] textarea[name="text"]').fill('Contact alice@example.com about PRJ-2041 before Friday.');
         await page.locator('form[action="/admin/guardrails/test"] button').click();
         await page.waitForSelector('#guard-test-result [role="status"]');
         return [0, await full()];

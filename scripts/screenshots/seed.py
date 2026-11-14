@@ -53,10 +53,16 @@ post(f"/admin/models/{ids['claude-sonnet-5-5']}/team-price", dict(Z, team_name="
 post(f"/admin/models/{ids['gpt-6-luna']}/price", dict(Z, mode="rates", input="0.20", output="1.00", cache_read="0.02"))
 post("/admin/routes", {"name": "smart", "strategy": "weighted", "fallbacks": "claude-haiku-5-5, gpt-4o-mini", "deployment_provider": ["openai", "anthropic", "anthropic"], "deployment_model": ["gpt-6.1-sol", "claude-sonnet-5-5", "claude-opus-5-5"], "deployment_weight": ["5", "3", "1"]})
 post("/admin/routes", {"name": "fast", "strategy": "priority", "fallbacks": "gpt-4o-mini", "deployment_provider": ["openai", "anthropic"], "deployment_model": ["gpt-6-luna", "claude-haiku-5-5"], "deployment_weight": ["1", "1"]})
-post("/admin/guardrails", {"name": "Contact protection", "rules": json.dumps([
-    {"name": "EMAIL", "kind": {"type": "detector", "detector": "email"}, "action": "redact", "direction": "both"},
-    {"name": "SECRET", "kind": {"type": "detector", "detector": "secret"}, "action": "block", "direction": "request"},
-]), "max_text_bytes": "1048576", "hook_url": ""})
+# The rule editor form: one detector, one regex and one keyword rule.
+post("/admin/guardrails", {
+    "name": "Contact protection", "max_text_bytes": "1048576", "hook_url": "",
+    "rule[0][name]": "EMAIL", "rule[0][kind]": "detector", "rule[0][detector]": "email",
+    "rule[0][action]": "redact", "rule[0][direction]": "both",
+    "rule[1][name]": "TICKET", "rule[1][kind]": "regex", "rule[1][pattern]": r"(?i)\bPRJ-[0-9]{4}\b",
+    "rule[1][action]": "redact", "rule[1][direction]": "request",
+    "rule[2][name]": "CODENAMES", "rule[2][kind]": "keywords", "rule[2][words]": "Bluebird\nNightjar",
+    "rule[2][whole_word]": "on", "rule[2][action]": "block", "rule[2][direction]": "both",
+})
 guard_html = s.get(B + "/admin/guardrails", timeout=30).text
 guard_id = re.search(r'action="/admin/guardrails/(\d+)/attach"', guard_html).group(1)
 post(f"/admin/guardrails/{guard_id}/attach", {"route_name": "smart", "team_name": "", "key_id": ""})
