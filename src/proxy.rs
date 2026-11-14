@@ -23,6 +23,9 @@ use crate::translate::{self, Direction, StreamTranslator};
 use crate::translate_responses::{self, ProxyStream, ResponseStream};
 use crate::usage::Usage;
 
+#[path = "proxy_extra.rs"]
+mod extra;
+
 fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -> Response {
     let mut body = json!({"error": {"type": kind, "message": msg}});
     if anthropic {
@@ -52,6 +55,9 @@ async fn read_capped(mut response: reqwest::Response, max: usize) -> anyhow::Res
 
 /// The single compatibility seam for native and translated deployments.
 fn compatible(kind: ProviderKind, endpoint: Endpoint) -> bool {
+    if endpoint == Endpoint::CountTokens {
+        return compatible(kind, Endpoint::Messages);
+    }
     if matches!(
         kind,
         ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Cohere
@@ -89,6 +95,7 @@ fn subscription_path_allowed(endpoint: Endpoint, path_q: &str) -> bool {
         Endpoint::ChatCompletions => path == "/v1/chat/completions",
         Endpoint::Responses => path == "/v1/responses",
         Endpoint::Messages => path == "/v1/messages",
+        Endpoint::CountTokens => path == "/v1/messages/count_tokens",
         Endpoint::Embeddings => path == "/v1/embeddings",
         Endpoint::Images => path == "/v1/images/generations" || path == "/v1/images/edits",
         Endpoint::Other => false,
@@ -108,6 +115,16 @@ fn prepare_body(
     endpoint: Endpoint,
     body: Option<&Value>,
 ) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    if endpoint == Endpoint::CountTokens {
+        let mut prepared = body.cloned().unwrap_or(Value::Null);
+        if candidate.rewrite {
+            prepared["model"] = json!(candidate.model);
+        }
+        if candidate.provider.auth == crate::provider::ProviderAuth::Claude {
+            crate::oauth::prepare_claude(&mut prepared);
+        }
+        return Ok((Some(prepared), endpoint, false));
+    }
     if candidate.provider.kind == ProviderKind::Cohere {
         let mut prepared =
             crate::translate_cohere::request(endpoint, body.unwrap_or(&Value::Null))?;
@@ -455,6 +472,9 @@ impl Outcome {
 
 impl Ctx {
     fn finish(self, mut o: Outcome) {
+        if self.endpoint == Endpoint::CountTokens {
+            o.usage = Usage::default();
+        }
         // Upstream counts are untrusted: clamp them before any sum or price.
         o.usage = o.usage.bounded();
         self.st
@@ -469,6 +489,10 @@ impl Ctx {
             model = Some(id.into());
         }
         let mut quote = catalog.quote(model.as_deref(), self.auth.team_id, &o.usage);
+        if self.endpoint == Endpoint::CountTokens {
+            // Counts are metadata, not inference. Keep a zero-cost audit entry.
+            quote = Default::default();
+        }
         if self.provider.auth.is_subscription() {
             quote.cost_micros = 0;
             quote.cost_card_id = None;
@@ -535,6 +559,9 @@ fn worst_case_price(
     body_len: usize,
     default_output: i64,
 ) -> i64 {
+    if endpoint == Endpoint::CountTokens {
+        return 0;
+    }
     let max_out = body
         .and_then(|body| {
             translate::output_token_limit(body)
@@ -565,7 +592,7 @@ pub async fn handle(
     let started = Instant::now();
     let ts_ms = db::now_ms();
     let endpoint = Endpoint::from_path(uri.path());
-    let anthropic = endpoint == Endpoint::Messages;
+    let anthropic = matches!(endpoint, Endpoint::Messages | Endpoint::CountTokens);
     let error = |status, kind, msg: &str| formatted_error(status, kind, msg, anthropic);
 
     let auth = match authenticate(&st, &headers, anthropic).await {
@@ -586,6 +613,23 @@ pub async fn handle(
         serde_json::from_slice(&body).ok()
     };
     let requested_model = json_body.as_ref().and_then(model_of);
+    if endpoint == Endpoint::CountTokens {
+        if body.len() > extra::COUNT_BODY_LIMIT {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                "token count body exceeds 1 MiB",
+            );
+        }
+        if requested_model.is_none() || json_body.as_ref().is_none_or(|v| !v["messages"].is_array())
+        {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "model and messages are required",
+            );
+        }
+    }
     if endpoint == Endpoint::ChatCompletions
         && let Some(body) = &json_body
         && let Err(e) = translate::validate_chat_limits(body)
@@ -780,6 +824,12 @@ pub async fn handle(
             continue;
         };
         let provider = &candidate.provider;
+        if endpoint == Endpoint::CountTokens && !extra::native_count(provider) {
+            permit.record(true);
+            ctx.provider = provider.clone();
+            ctx.upstream_model = candidate.model.clone();
+            return extra::estimate_count(ctx, json_body.as_ref().unwrap());
+        }
         let dir = translation(provider.kind, endpoint);
         let (prepared, target_endpoint, strip) =
             match prepare_body(candidate, endpoint, json_body.as_ref()) {
@@ -1283,7 +1333,10 @@ pub async fn handle(
         .as_ref()
         .and_then(|v| kind.usage_from_json(upstream_endpoint, v));
     let model = parsed.as_ref().and_then(model_of);
-    let estimated = usage.is_none() && status.is_success() && endpoint.is_accounted();
+    let estimated = usage.is_none()
+        && status.is_success()
+        && endpoint.is_accounted()
+        && endpoint != Endpoint::CountTokens;
     let upstream_model = ctx.upstream_model.clone();
     ctx.finish(Outcome {
         status: status.as_u16(),

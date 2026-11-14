@@ -116,6 +116,17 @@ client = Anthropic(base_url="http://127.0.0.1:8787", api_key="sk-toko-...")
 
 ### Endpoints that the Proxy accounts
 
+`POST /v1/messages/count_tokens` uses the same Model routing, Model permission,
+Provider Access and request Rate Limits as Messages. The body limit is 1 MiB.
+The Proxy forwards counts to Anthropic API-key and Claude subscription Providers.
+For other deployments, including Vertex and Bedrock, it returns an estimate:
+the UTF-8 byte length of the JSON messages, system and tools, divided by four
+and rounded up. The response has `x-tokomotive-estimate: true`. This method
+does not tokenize images or use the Model's tokenizer. Do not use it for billing.
+The Proxy writes a zero-Cost, zero-Price Ledger Entry for audit and metrics.
+Counts do not consume the token Rate Limit. A zero Reservation applies to a
+User with a Budget; counting cannot add inference charges.
+
 | Path ends with                             | Native Provider kind | Usage that the Proxy records                  |
 | ------------------------------------------ | ------------- | --------------------------------------------- |
 | `/chat/completions`                        | `openai`      | Input, output, cache read                     |

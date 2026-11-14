@@ -43,6 +43,15 @@ async fn subscription_bearer_never_leaves_the_model_endpoints() {
                 }),
             )
             .route(
+                "/v1/messages/count_tokens",
+                post(|headers: HeaderMap, axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(headers["authorization"], "Bearer access-1");
+                    assert!(headers.contains_key("anthropic-beta"));
+                    assert!(body["system"].is_array());
+                    Json(json!({"input_tokens":12}))
+                }),
+            )
+            .route(
                 "/v1/messages",
                 post(|| async {
                     Json(json!({"id":"m","model":"m","role":"assistant","content":[],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}))
@@ -115,6 +124,19 @@ key_allowed_providers=['sub']
 
     // The normal model endpoint still works.
     assert_eq!(raw(&addr, "POST", "/v1/messages").await, 200);
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/messages/count_tokens"))
+        .bearer_auth("vk-test")
+        .json(&json!({"model":"m","messages":[{"role":"user","content":"hello"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(!response.headers().contains_key("x-tokomotive-estimate"));
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["input_tokens"],
+        12
+    );
     for (method, path) in [
         ("GET", "/v1/../api/oauth/profile"),
         ("GET", "/v1/%2e%2e/api/oauth/profile"),

@@ -33,6 +33,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Supports OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/responses`,
   `/v1/embeddings`, `/v1/images/generations`, `/v1/images/edits`) and the
   Anthropic API (`/v1/messages`), with and without streaming.
+- Counts input tokens at `POST /v1/messages/count_tokens`. Non-Anthropic
+  deployments return a marked estimate without an inference charge.
 - Translates between Chat Completions and Messages, with streaming and tools.
   A Chat Completions client can use an Anthropic Provider. A Messages client
   can use an OpenAI Provider. See [Translation](docs/usage.md#routing-and-translation)

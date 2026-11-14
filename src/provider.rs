@@ -143,6 +143,7 @@ pub enum Endpoint {
     ChatCompletions,
     Responses,
     Messages,
+    CountTokens,
     Embeddings,
     /// `/v1/images/generations` and `/v1/images/edits`.
     Images,
@@ -153,7 +154,9 @@ pub enum Endpoint {
 impl Endpoint {
     pub fn from_path(path: &str) -> Endpoint {
         let p = path.trim_end_matches('/');
-        if p.ends_with("/chat/completions") {
+        if p == "/v1/messages/count_tokens" {
+            Endpoint::CountTokens
+        } else if p.ends_with("/chat/completions") {
             Endpoint::ChatCompletions
         } else if p.ends_with("/responses") {
             Endpoint::Responses
@@ -175,7 +178,7 @@ impl Endpoint {
             | Endpoint::Responses
             | Endpoint::Embeddings
             | Endpoint::Images => Some(ProviderKind::Openai),
-            Endpoint::Messages => Some(ProviderKind::Anthropic),
+            Endpoint::Messages | Endpoint::CountTokens => Some(ProviderKind::Anthropic),
             Endpoint::Other => None,
         }
     }
@@ -189,6 +192,7 @@ impl Endpoint {
             Endpoint::ChatCompletions => "chat_completions",
             Endpoint::Responses => "responses",
             Endpoint::Messages => "messages",
+            Endpoint::CountTokens => "count_tokens",
             Endpoint::Embeddings => "embeddings",
             Endpoint::Images => "images",
             Endpoint::Other => "other",
