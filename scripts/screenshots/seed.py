@@ -115,6 +115,10 @@ r = mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"
 r.raise_for_status()
 mcp.headers["Mcp-Session-Id"] = r.headers["Mcp-Session-Id"]
 mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, timeout=30).raise_for_status()
+# The gateway dispatches only names from a tools/list of this session.
+r = mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "id": 100, "method": "tools/list", "params": {}}, timeout=30)
+r.raise_for_status()
+assert any(t["name"] == "research__search_docs" for t in r.json()["result"]["tools"]), r.text
 for i in range(16):
     r = mcp.post(B + "/mcp", json={"jsonrpc": "2.0", "id": i + 2, "method": "tools/call", "params": {"name": "research__search_docs", "arguments": {"query": "demo"}}}, timeout=30)
     r.raise_for_status()
