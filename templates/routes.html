@@ -42,6 +42,9 @@
 </div></fieldset>
 {% endmacro %}
 {% block content %}
+<h1>Routes</h1>
+<p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
+{% include "search.html" %}
 <section class="panel" aria-labelledby="try-model-h">
   <h2 id="try-model-h">Try a model name</h2>
   <p class="hint">Read-only. No upstream request is sent. Without a Virtual Key, use all API-key Providers and no subscriptions. The picker shows the first 200 keys.</p>
@@ -54,9 +57,6 @@
   </form>
   <div id="model-resolution" role="status" aria-live="polite"></div>
 </section>
-<h1>Routes</h1>
-<p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
-{% include "search.html" %}
 {% if providers.is_empty() %}
 <p class="empty">Add a Provider before you add a Route. <a href="/admin/providers">Go to Providers</a></p>
 {% else if routes.is_empty() %}

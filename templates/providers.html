@@ -70,10 +70,6 @@
   <form method="post" action="/admin/providers/{{ p.name }}" class="stack" aria-label="Edit Provider {{ p.name }}">
     <input type="hidden" name="auth" value="{{ p.auth }}">
     <input type="hidden" name="model_provider" value="{{ p.name }}">
-    <div class="fields">
-      <div class="field"><label for="p-{{ p.name }}-default-model">Default model (optional)</label>{% call picker::model(p.default_model_id(), "default_model", p.default_model, "single", "provider,model,models.dev", "model_provider", "Choose a model", "", "", false) %}<p class="hint">Use this model when the client sends only this Provider name.</p></div>
-      <div class="field"><label for="p-{{ p.name }}-priority">Priority (optional)</label><input id="p-{{ p.name }}-priority" name="priority" type="number" min="-32768" max="32767" step="1" value="{{ p.priority }}"><p class="hint">Lower numbers come first for a shared model ID. Blank is 0. Then API-key Providers come before subscriptions, then name order.</p></div>
-    </div>
     <div class="row">
       <div class="field"><label for="p-{{ p.name }}-name">Name</label><input id="p-{{ p.name }}-name" name="name" value="{{ p.name }}" required autocomplete="off" spellcheck="false" aria-describedby="p-{{ p.name }}-name-help"><p class="hint" id="p-{{ p.name }}-name-help">Renaming changes the name that Routes, Models and clients use.</p></div>
       <div class="field"><label for="p-{{ p.name }}-kind">API format</label>{% if p.auth == "api_key" || p.auth == "github_copilot" || p.auth == "kimi_code" %}<select id="p-{{ p.name }}-kind" name="kind"><option value="openai"{% if p.kind == "openai" %} selected{% endif %}>OpenAI</option><option value="anthropic"{% if p.kind == "anthropic" %} selected{% endif %}>Anthropic</option>{% if p.auth == "api_key" %}<option value="gemini"{% if p.kind == "gemini" %} selected{% endif %}>Gemini</option><option value="bedrock"{% if p.kind == "bedrock" %} selected{% endif %}>AWS Bedrock</option><option value="cohere"{% if p.kind == "cohere" %} selected{% endif %}>Cohere</option>{% endif %}</select>{% else %}<input id="p-{{ p.name }}-kind" value="{% if p.kind == "openai" %}OpenAI{% else if p.kind == "gemini" %}Gemini{% else %}Anthropic{% endif %}" readonly aria-describedby="p-{{ p.name }}-fixed"><input type="hidden" name="kind" value="{{ p.kind }}">{% endif %}</div>
@@ -101,6 +97,10 @@
       <div class="field"><label for="p-{{ p.name }}-region">Region</label><input id="p-{{ p.name }}-region" name="region" value="{{ p.region }}" required autocomplete="off"><p class="hint">Use a region such as us-central1, or global. The host is built from this value.</p></div>
     </div>
     {% endif %}
+    <fieldset class="fields"><legend>Model routing</legend>
+      <div class="field"><label for="p-{{ p.name }}-default-model">Default model (optional)</label>{% call picker::model(p.default_model_id(), "default_model", p.default_model, "single", "provider,model,models.dev", "model_provider", "Choose a model", "", "", false) %}<p class="hint">Use this model when the client sends only this Provider name.</p></div>
+      <div class="field"><label for="p-{{ p.name }}-priority">Priority (optional)</label><input id="p-{{ p.name }}-priority" name="priority" type="number" min="-32768" max="32767" step="1" value="{{ p.priority }}"><p class="hint">Lower numbers come first for a shared model ID. Blank is 0. Then API-key Providers come before subscriptions, then name order.</p></div>
+    </fieldset>
     <div class="form-error" role="alert" tabindex="-1"></div>
     <div><button aria-label="Save Provider {{ p.name }}">Save</button></div>
   </form>
