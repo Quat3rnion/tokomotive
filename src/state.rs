@@ -331,7 +331,10 @@ impl AppState {
         let mut r = self.reservations.lock().expect("reservations");
         let amount = amount.max(0);
         for b in budgets {
-            let open = r.get(&(b.subject, b.start)).copied().unwrap_or(0);
+            let open = r
+                .get(&(b.subject, b.reservation_start()))
+                .copied()
+                .unwrap_or(0);
             if let Some(limit) = b.limit
                 && (b.spent >= limit || b.spent.saturating_add(open).saturating_add(amount) > limit)
             {
@@ -340,7 +343,7 @@ impl AppState {
         }
         let subjects = budgets
             .iter()
-            .map(|b| (b.subject, b.start))
+            .map(|b| (b.subject, b.reservation_start()))
             .collect::<Vec<_>>();
         for subject in &subjects {
             *r.entry(*subject).or_default() += amount;

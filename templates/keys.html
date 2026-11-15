@@ -40,7 +40,7 @@
     </fieldset>
     <div class="row">
       <label>Expires at (UTC) <input type="datetime-local" name="expires_at"></label>
-      {% if !base.simple %}{% let budget = crate::web::views::BudgetView::default() %}{% include "budget_fields.html" %}{% endif %}
+      {% if !base.simple %}{% let budget = crate::web::views::BudgetView::default() %}{% let budget_id = "new-budget" %}{% include "budget_fields.html" %}{% endif %}
     </div>
     {% if !base.simple %}
     <fieldset aria-describedby="key-limits-help">
@@ -70,7 +70,7 @@
     <td data-label="User"><span class="trunc" title="{{ k.user }}">{{ k.user }}</span></td>
     <td data-label="Models" class="wrap"><span class="clamp" title="{{ k.models }}">{{ k.models }}</span></td>
     <td data-label="Provider Access" class="wrap">{{ k.access }}</td>
-    {% if !base.simple %}<td data-label="Rate Limits" class="wrap">{{ k.limits }}<span class="sub">{{ k.budget_view.summary }} spent this period / budget ({{ k.budget_view.period }}). Resets at {{ k.budget_view.resets }}</span></td>{% endif %}
+    {% if !base.simple %}<td data-label="Rate Limits" class="wrap">{{ k.limits }}<span class="sub">{{ k.budget_view.summary }} spent in window / budget. {% if k.budget_view.window == "calendar" %}{{ k.budget_view.period }}. {% endif %}{{ k.budget_view.resets }}</span></td>{% endif %}
     <td data-label="Created (UTC)"><time datetime="{{ k.created.iso }}">{{ k.created.short }}</time></td>
     <td data-label="Last used (UTC)">{% if k.last_used.iso.is_empty() %}{{ k.last_used.short }}{% else %}<time datetime="{{ k.last_used.iso }}">{{ k.last_used.short }}</time>{% endif %}</td>
     <td><div class="actions">
@@ -87,7 +87,7 @@
         </fieldset>
         <div class="row">
           <label>Expires at (UTC) <input type="datetime-local" name="expires_at" value="{{ k.expires }}"></label>
-          {% if !base.simple %}{% let budget = k.budget_view %}{% include "budget_fields.html" %}{% endif %}
+          {% if !base.simple %}{% let budget = k.budget_view %}{% let budget_id = format!("k{}-budget", k.id) %}{% include "budget_fields.html" %}{% endif %}
         </div>
         {% if !base.simple %}
         <fieldset>

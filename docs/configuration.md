@@ -996,11 +996,15 @@ and skips the override.
 ### Budget periods, alerts and key expiry
 
 Use the dashboard for these settings. No file change is needed. On **Users**,
-**Teams** and **Virtual Keys**, set the Budget amount and period. Periods are
-none (lifetime, the default), daily, weekly (Monday), and monthly. All periods
-start at 00:00 UTC. Every applicable Budget must permit the Reservation.
-Spend comes from the frozen Ledger amounts for the current period. Existing
-monthly User Budgets stay monthly when the database is upgraded.
+**Teams** and **Virtual Keys**, set the Budget amount, period and window.
+Calendar periods are none (lifetime, the default), daily, weekly (Monday),
+monthly, quarterly and yearly. Calendar periods start at 00:00 UTC. Quarters
+start on January 1, April 1, July 1 and October 1. Years start on January 1.
+For a rolling window, set 1 to 366 days. The period does not apply, and there
+is no reset time. Every applicable Budget must permit the Reservation.
+Spend uses indexed Ledger ranges and pending spool entries in the selected
+window. Open Reservations and Batch holds also count against admission.
+Existing Budgets keep their calendar period when the database is upgraded.
 
 On **Settings**, add webhook URLs, select Generic JSON, Discord or Slack, and
 enable each webhook. The shared thresholds default to `50,80,100` percent.
@@ -1010,7 +1014,10 @@ not the URL path or token. A blank URL in an edit keeps the saved secret.
 Delivery uses a 10-second timeout, no redirects and at most three attempts.
 Only connection failures, HTTP 429 and HTTP 5xx are retried.
 
-Budget threshold events are sent once per subject, threshold and period.
+Calendar Budget events are sent once per subject, threshold and period.
+A rolling threshold fires once. It becomes active again only when a Budget
+check finds spend below the threshold minus 5 percentage points. For example,
+an 80% alert becomes active again below 75%. This state survives restarts.
 models.dev price alerts also send webhook events. Delivery failures do not
 fail client requests. Failed events are not replayed after the retries or a
 restart. Use trusted webhook endpoints with the required network access.

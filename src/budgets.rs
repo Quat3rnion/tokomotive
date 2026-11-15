@@ -12,6 +12,8 @@ pub enum Period {
     Daily,
     Weekly,
     Monthly,
+    Quarterly,
+    Yearly,
 }
 
 impl Period {
@@ -21,7 +23,9 @@ impl Period {
             "daily" => Self::Daily,
             "weekly" => Self::Weekly,
             "monthly" => Self::Monthly,
-            _ => anyhow::bail!("Choose none, daily, weekly or monthly."),
+            "quarterly" => Self::Quarterly,
+            "yearly" => Self::Yearly,
+            _ => anyhow::bail!("Choose none, daily, weekly, monthly, quarterly or yearly."),
         })
     }
     pub fn bounds(self, now: i64) -> (i64, Option<i64>) {
@@ -43,19 +47,44 @@ impl Period {
                     Some(midnight(monday.checked_add_days(Days::new(7)).unwrap())),
                 )
             }
-            Self::Monthly => {
-                let (y, m) = if dt.month() == 12 {
+            Self::Monthly | Self::Quarterly | Self::Yearly => {
+                let months = match self {
+                    Self::Quarterly => 3,
+                    Self::Yearly => 12,
+                    _ => 1,
+                };
+                let month = (dt.month0() / months) * months + 1;
+                let (y, m) = if month + months > 12 {
                     (dt.year() + 1, 1)
                 } else {
-                    (dt.year(), dt.month() + 1)
+                    (dt.year(), month + months)
                 };
                 (
-                    Utc.with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0)
+                    Utc.with_ymd_and_hms(dt.year(), month, 1, 0, 0, 0)
                         .unwrap()
                         .timestamp(),
                     Some(Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0).unwrap().timestamp()),
                 )
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    Calendar,
+    Rolling(u16),
+}
+impl Window {
+    pub fn parse(kind: &str, days: i64) -> Result<Self> {
+        anyhow::ensure!(
+            (1..=366).contains(&days),
+            "Enter rolling days from 1 to 366."
+        );
+        match kind {
+            "calendar" => Ok(Self::Calendar),
+            "rolling" => Ok(Self::Rolling(days as u16)),
+            _ => anyhow::bail!("Choose a calendar or rolling Budget window."),
         }
     }
 }
@@ -110,30 +139,52 @@ pub struct Budget {
     pub subject: Subject,
     pub limit: Option<i64>,
     pub period: String,
+    pub window: Window,
+    pub days: i64,
     pub start: i64,
     pub end: Option<i64>,
     pub spent: i64,
+}
+impl Budget {
+    /// Rolling windows have no reset. Keep their live holds across clock ticks.
+    pub fn reservation_start(&self) -> i64 {
+        match self.window {
+            Window::Calendar => self.start,
+            Window::Rolling(days) => -i64::from(days),
+        }
+    }
 }
 pub async fn current(db: &Db, subject: Subject, now: i64) -> Result<Budget> {
     load(db, subject, now, true).await
 }
 async fn load(db: &Db, subject: Subject, now: i64, show_unlimited: bool) -> Result<Budget> {
     let (table, id) = subject.table();
-    let (limit, period): (Option<i64>, String) = sqlx::query_as(&format!(
-        "SELECT budget_micros,budget_period FROM {table} WHERE id=?"
+    let (limit, period, kind, days): (Option<i64>, String, String, i64) = sqlx::query_as(&format!(
+        "SELECT budget_micros,budget_period,budget_window,budget_days FROM {table} WHERE id=?"
     ))
     .bind(id)
     .fetch_one(db)
     .await?;
-    let (start, end) = Period::parse(&period)?.bounds(now);
+    let window = Window::parse(&kind, days)?;
+    let (start, end) = match window {
+        Window::Calendar => Period::parse(&period)?.bounds(now),
+        Window::Rolling(days) => (now.saturating_sub(i64::from(days) * 86400), None),
+    };
+    // `now` has second precision. Include that whole second, but not the next.
+    let spend_end = match window {
+        Window::Calendar => end,
+        Window::Rolling(_) => Some(now.saturating_add(1)),
+    };
     Ok(Budget {
         subject,
         limit,
         period,
+        window,
+        days,
         start,
         end,
         spent: if limit.is_some() || show_unlimited {
-            spend(db, subject, start, end).await?
+            spend(db, subject, start, spend_end).await?
         } else {
             0
         },
@@ -172,7 +223,21 @@ pub async fn reserve(
     amount: i64,
     now: i64,
 ) -> Result<Option<Reservation>> {
-    let _guard = st.budget_check.lock().await;
-    let budgets = applicable(&st.db, auth, now).await?;
-    Ok(st.reserve_budgets(&budgets, amount))
+    let (budgets, reservation) = {
+        let _guard = st.budget_check.lock().await;
+        let budgets = applicable(&st.db, auth, now).await?;
+        let reservation = st.reserve_budgets(&budgets, amount);
+        (budgets, reservation)
+    };
+    // An idle rolling window can fall below its alert re-arm level before a
+    // new request. Check the existing snapshot before its new charge arrives.
+    // Alert storage is best-effort and never holds the Budget lock.
+    if st.settings().mode != "simple" {
+        for budget in &budgets {
+            if let Err(error) = crate::alerts::rearm_rolling(&st.db, budget).await {
+                tracing::warn!(%error, "rolling Budget alert re-arm failed");
+            }
+        }
+    }
+    Ok(reservation)
 }

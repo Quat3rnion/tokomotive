@@ -198,7 +198,54 @@ async fn first(st: &AppState, subject: &str, threshold: i64, start: i64) -> Resu
     .rows_affected()
         == 1)
 }
-/// Check committed spend, never Reservations. Dedupe survives restarts.
+fn budget_subject(b: &budgets::Budget) -> String {
+    match b.window {
+        budgets::Window::Calendar => format!("{}:{}", b.subject.name(), b.period),
+        budgets::Window::Rolling(days) => format!("{}:rolling:{days}", b.subject.name()),
+    }
+}
+
+/// Reuse the admission snapshot. Do not take a SQLite writer for a no-op.
+pub(crate) async fn rearm_rolling(db: &db::Db, b: &budgets::Budget) -> Result<()> {
+    let Some(limit) = b.limit else {
+        return Ok(());
+    };
+    if !matches!(b.window, budgets::Window::Rolling(_))
+        || i128::from(b.spent) * 100 >= i128::from(limit) * 95
+    {
+        return Ok(());
+    }
+    let subject = budget_subject(b);
+    // The primary key starts with subject, including the rolling window size.
+    let latched: Vec<i64> =
+        sqlx::query_scalar("SELECT threshold FROM alert_dedupe WHERE subject=? AND period_start=0")
+            .bind(&subject)
+            .fetch_all(db)
+            .await?;
+    let eligible: Vec<_> = latched
+        .into_iter()
+        .filter(|threshold| {
+            i128::from(b.spent) * 100 < i128::from(limit) * i128::from(*threshold - 5)
+        })
+        .collect();
+    if eligible.is_empty() {
+        return Ok(());
+    }
+    // Use the existing 100 ms maintenance writer limit, not SQLite's long
+    // busy wait. Alert recovery must not stall request admission.
+    let mut tx = db::begin_purge(db, "rolling_alert_rearm").await?;
+    for threshold in eligible {
+        sqlx::query("DELETE FROM alert_dedupe WHERE subject=? AND threshold=? AND period_start=0")
+            .bind(&subject)
+            .bind(threshold)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Check Ledger spend, pending spool and Batch holds. Dedupe survives restarts.
 pub async fn check_budgets(st: &AppState, auth: &db::KeyAuth, now: i64) -> Result<()> {
     if st.settings().mode == "simple" {
         return Ok(());
@@ -206,15 +253,15 @@ pub async fn check_budgets(st: &AppState, auth: &db::KeyAuth, now: i64) -> Resul
     let thresholds = parse_thresholds(&thresholds(&st.db).await?)?;
     for b in budgets::applicable(&st.db, auth, now).await? {
         let limit = b.limit.unwrap();
+        rearm_rolling(&st.db, &b).await?;
+        let subject = budget_subject(&b);
+        let (period_start, label) = match b.window {
+            budgets::Window::Calendar => (b.start, b.period.clone()),
+            budgets::Window::Rolling(days) => (0, format!("rolling {days} days")),
+        };
         for threshold in &thresholds {
             if i128::from(b.spent) * 100 >= i128::from(limit) * i128::from(*threshold)
-                && first(
-                    st,
-                    &format!("{}:{}", b.subject.name(), b.period),
-                    *threshold,
-                    b.start,
-                )
-                .await?
+                && first(st, &subject, *threshold, period_start).await?
             {
                 let mut event = Event::new(
                     "budget_threshold",
@@ -223,10 +270,10 @@ pub async fn check_budgets(st: &AppState, auth: &db::KeyAuth, now: i64) -> Resul
                         "{} reached {}% of its {} Budget",
                         b.subject.name(),
                         threshold,
-                        b.period
+                        label
                     ),
                 );
-                event.details = json!({"threshold":threshold,"period":b.period,"period_start":b.start,"resets_at":b.end,"spent_micros":b.spent,"budget_micros":limit});
+                event.details = json!({"threshold":threshold,"period":b.period,"window":label,"period_start":b.start,"resets_at":b.end,"spent_micros":b.spent,"budget_micros":limit});
                 emit(st, event);
             }
         }

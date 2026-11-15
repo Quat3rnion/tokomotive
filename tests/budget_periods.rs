@@ -2,6 +2,26 @@ use chrono::{TimeZone, Utc};
 use tokomotive::budgets::Period;
 
 #[test]
+fn quarter_and_year_boundaries_are_utc() {
+    let at = |y, m, d| Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap().timestamp();
+    let quarter = Period::parse("quarterly").unwrap();
+    for (month, next_year, next_month) in [(1, 2024, 4), (4, 2024, 7), (7, 2024, 10), (10, 2025, 1)]
+    {
+        let start = at(2024, month, 1);
+        let end = at(next_year, next_month, 1);
+        assert_eq!(quarter.bounds(start), (start, Some(end)));
+        assert_eq!(quarter.bounds(end - 1), (start, Some(end)));
+        assert_eq!(quarter.bounds(end).0, end);
+    }
+    let year = Period::parse("yearly").unwrap();
+    assert_eq!(
+        year.bounds(at(2024, 12, 31)),
+        (at(2024, 1, 1), Some(at(2025, 1, 1)))
+    );
+    assert_eq!(year.bounds(at(2025, 1, 1)).0, at(2025, 1, 1));
+}
+
+#[test]
 fn utc_period_boundaries_include_month_end_and_monday() {
     let at = |y, m, d, h, n, s| Utc.with_ymd_and_hms(y, m, d, h, n, s).unwrap().timestamp();
     let now = at(2024, 2, 29, 23, 59, 59);
@@ -189,11 +209,20 @@ async fn entry(
     ts: i64,
     price: i64,
 ) {
+    entry_ms(st, auth, ts * 1000, price).await;
+}
+
+async fn entry_ms(
+    st: &tokomotive::state::AppState,
+    auth: &tokomotive::db::KeyAuth,
+    ts_ms: i64,
+    price: i64,
+) {
     tokomotive::db::insert_entry(
         &st.db,
         &tokomotive::db::NewEntry {
             cache_hit: false,
-            ts_ms: ts * 1000,
+            ts_ms,
             user_id: auth.user_id,
             key_id: auth.key_id,
             team_id: auth.team_id,
@@ -315,6 +344,136 @@ async fn reservations_use_current_ledger_period_and_enforce_every_subject() {
 }
 
 #[tokio::test]
+async fn rolling_window_edges_and_reservations_follow_the_clock() {
+    use tokomotive::budgets::{self, Subject};
+    let (st, base, http, handle) = app().await;
+    let auth = tokomotive::db::lookup_key(&st.db, "client")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE users SET budget_micros=100,budget_window='rolling',budget_days=2")
+        .execute(&st.db)
+        .await
+        .unwrap();
+    let now = 1_730_000_000;
+    for (ts, price) in [
+        ((now - 172800) * 1000 - 1, 1000),
+        ((now - 172800) * 1000, 10),
+        (now * 1000, 7),
+        (now * 1000 + 999, 13),
+        ((now + 1) * 1000, 1000),
+    ] {
+        entry_ms(&st, &auth, ts, price).await;
+    }
+    assert_eq!(
+        budgets::current(&st.db, Subject::User(auth.user_id), now)
+            .await
+            .unwrap()
+            .spent,
+        30
+    );
+    let hold = budgets::reserve(&st, &auth, 70, now)
+        .await
+        .unwrap()
+        .unwrap();
+    // Delete only the future fixture, so the next second tests the live hold.
+    sqlx::query("DELETE FROM ledger WHERE ts_ms=?")
+        .bind((now + 1) * 1000)
+        .execute(&st.db)
+        .await
+        .unwrap();
+    assert!(
+        budgets::reserve(&st, &auth, 11, now + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(hold);
+    let hold = budgets::reserve(&st, &auth, 80, now + 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        budgets::reserve(&st, &auth, 1, now + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(hold);
+    assert_eq!(st.reserved(auth.user_id), 0);
+    sqlx::query("INSERT INTO batch_jobs(id,key_id,user_id,held_micros,snapshot_json,simple,created_at,status) VALUES('hold',?,?,80,'{}',0,0,'in_progress')")
+        .bind(auth.key_id).bind(auth.user_id).execute(&st.db).await.unwrap();
+    assert!(
+        budgets::reserve(&st, &auth, 1, now + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // A durable Batch hold remains until accounting, even if its creation is old.
+    assert_eq!(
+        budgets::applicable(&st.db, &auth, now + 1).await.unwrap()[0].spent,
+        100
+    );
+    sqlx::query("UPDATE batch_jobs SET accounted=1")
+        .execute(&st.db)
+        .await
+        .unwrap();
+    assert!(
+        budgets::reserve(&st, &auth, 80, now + 1)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // Exercise the real Proxy, not only the Budget API.
+    entry(&st, &auth, tokomotive::db::now_s() - 1, 100).await;
+    let response = http
+        .post(format!("{base}/v1/chat/completions"))
+        .bearer_auth("client")
+        .json(&serde_json::json!({"model":"mock/m","messages":[],"max_tokens":1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 402);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn budget_window_migration_preserves_existing_calendar_periods() {
+    let db = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for table in ["users", "teams", "virtual_keys"] {
+        sqlx::raw_sql(&format!("CREATE TABLE {table}(id INTEGER PRIMARY KEY, budget_micros INTEGER, budget_period TEXT NOT NULL DEFAULT 'none' CHECK(budget_period IN ('none','daily','weekly','monthly'))); INSERT INTO {table}(budget_micros,budget_period) VALUES(10,'none'),(20,'daily'),(30,'weekly'),(40,'monthly');"))
+            .execute(&db).await.unwrap();
+    }
+    let mut tx = db.begin().await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0031_budget_windows.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for table in ["users", "teams", "virtual_keys"] {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(&format!(
+            "SELECT budget_micros,budget_period,budget_window FROM {table} ORDER BY id"
+        ))
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (10, "none".into(), "calendar".into()),
+                (20, "daily".into(), "calendar".into()),
+                (30, "weekly".into(), "calendar".into()),
+                (40, "monthly".into(), "calendar".into())
+            ]
+        );
+    }
+}
+
+#[tokio::test]
 async fn alert_thresholds_dedupe_persists_and_resets_each_period() {
     let (st, base, http, handle) = app().await;
     let auth = tokomotive::db::lookup_key(&st.db, "client")
@@ -395,10 +554,92 @@ async fn alert_thresholds_dedupe_persists_and_resets_each_period() {
 }
 
 #[tokio::test]
+async fn rolling_alert_rearms_only_below_five_percentage_points() {
+    let (st, _base, _http, handle) = app().await;
+    let auth = tokomotive::db::lookup_key(&st.db, "client")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE users SET budget_micros=100,budget_window='rolling',budget_days=1")
+        .execute(&st.db)
+        .await
+        .unwrap();
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    let mock = axum::Router::new().route(
+        "/hook",
+        axum::routing::post(move |axum::Json(v): axum::Json<serde_json::Value>| {
+            let send = send.clone();
+            async move {
+                send.send(v).unwrap();
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+    let mock = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    tokomotive::alerts::save(&st, None, &url, "generic", true)
+        .await
+        .unwrap();
+    let now = 1_730_000_000;
+    entry(&st, &auth, now - 86400, 5).await;
+    entry(&st, &auth, now - 86399, 1).await;
+    entry(&st, &auth, now, 44).await;
+    tokomotive::alerts::check_budgets(&st, &auth, now)
+        .await
+        .unwrap();
+    st.flush().await;
+    assert_eq!(receive.try_recv().unwrap()["details"]["threshold"], 50);
+    // Exactly 45% must not re-arm the 50% threshold.
+    tokomotive::alerts::check_budgets(&st, &auth, now + 1)
+        .await
+        .unwrap();
+    entry(&st, &auth, now + 1, 5).await;
+    tokomotive::alerts::check_budgets(&st, &auth, now + 1)
+        .await
+        .unwrap();
+    st.flush().await;
+    assert!(receive.try_recv().is_err());
+    // Only the later 5 remains: below 45%, so the alert is armed again.
+    tokomotive::alerts::check_budgets(&st, &auth, now + 86401)
+        .await
+        .unwrap();
+    entry(&st, &auth, now + 86401, 45).await;
+    let (a, b) = tokio::join!(
+        tokomotive::alerts::check_budgets(&st, &auth, now + 86401),
+        tokomotive::alerts::check_budgets(&st, &auth, now + 86401)
+    );
+    a.unwrap();
+    b.unwrap();
+    st.flush().await;
+    let event = receive.try_recv().unwrap();
+    assert_eq!(event["details"]["threshold"], 50);
+    assert!(event["details"]["resets_at"].is_null());
+    assert!(receive.try_recv().is_err());
+    // No alert check runs while idle. Admission must re-arm before the next
+    // large charge, using its existing pre-charge spend snapshot.
+    let later = now + 2 * 86400 + 2;
+    let hold = tokomotive::budgets::reserve(&st, &auth, 50, later)
+        .await
+        .unwrap()
+        .unwrap();
+    entry(&st, &auth, later, 50).await;
+    drop(hold);
+    tokomotive::alerts::check_budgets(&st, &auth, later)
+        .await
+        .unwrap();
+    st.flush().await;
+    assert_eq!(receive.try_recv().unwrap()["details"]["threshold"], 50);
+    assert!(receive.try_recv().is_err());
+    mock.abort();
+    handle.abort();
+}
+
+#[tokio::test]
 async fn invalid_budget_period_and_expiry_are_form_errors() {
     let (_st, base, http, handle) = app().await;
     for (path, field, value) in [
-        ("/admin/users/1", "budget_period", "yearly"),
+        ("/admin/users/1", "budget_period", "invalid"),
         ("/admin/keys/1", "expires_at", "not-a-date"),
     ] {
         let response = http
@@ -548,7 +789,7 @@ async fn models_dev_price_alerts_emit_once() {
 #[tokio::test]
 async fn simple_mode_hides_money_controls_but_keeps_and_enforces_key_expiry() {
     let (st, base, http, handle) = app().await;
-    sqlx::query("UPDATE users SET budget_micros=100,budget_period='weekly'")
+    sqlx::query("UPDATE users SET budget_micros=100,budget_period='weekly',budget_window='rolling',budget_days=7")
         .execute(&st.db)
         .await
         .unwrap();
@@ -556,6 +797,14 @@ async fn simple_mode_hides_money_controls_but_keeps_and_enforces_key_expiry() {
         .post(format!("{base}/admin/settings/mode"))
         .header("cookie", "tokomotive_session=test-session")
         .form(&[("mode", "simple")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 303);
+    let response = http
+        .post(format!("{base}/admin/users/1"))
+        .header("cookie", "tokomotive_session=test-session")
+        .form(&[("name", "test")])
         .send()
         .await
         .unwrap();
@@ -578,6 +827,8 @@ async fn simple_mode_hides_money_controls_but_keeps_and_enforces_key_expiry() {
         assert!(
             !html.contains("name=\"budget_usd\"")
                 && !html.contains("name=\"budget_period\"")
+                && !html.contains("name=\"budget_window\"")
+                && !html.contains("name=\"budget_days\"")
                 && !html.contains("name=\"thresholds\"")
         );
         if path == "/admin/keys" {
@@ -599,11 +850,109 @@ async fn simple_mode_hides_money_controls_but_keeps_and_enforces_key_expiry() {
         .await
         .unwrap();
     assert_eq!(response.status(), 401);
-    let budget: (Option<i64>, String) =
-        sqlx::query_as("SELECT budget_micros,budget_period FROM users")
+    let budget: (Option<i64>, String, String, i64) =
+        sqlx::query_as("SELECT budget_micros,budget_period,budget_window,budget_days FROM users")
             .fetch_one(&st.db)
             .await
             .unwrap();
-    assert_eq!(budget, (Some(100), "weekly".into()));
+    assert_eq!(budget, (Some(100), "weekly".into(), "rolling".into(), 7));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn budget_window_forms_round_trip_for_users_teams_and_keys() {
+    let (st, base, http, handle) = app().await;
+    let team = tokomotive::db::create_team(&st.db, "team").await.unwrap();
+    for (path, id) in [("users", 1), ("teams", team), ("keys", 1)] {
+        for (period, window, days) in [
+            ("quarterly", "calendar", "30"),
+            ("yearly", "rolling", "366"),
+        ] {
+            let response = http
+                .post(format!("{base}/admin/{path}/{id}"))
+                .header("cookie", "tokomotive_session=test-session")
+                .form(&[
+                    ("name", "team"),
+                    ("budget_usd", "5"),
+                    ("budget_period", period),
+                    ("budget_window", window),
+                    ("budget_days", days),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                303,
+                "{path}: {}",
+                response.text().await.unwrap()
+            );
+            let html = http
+                .get(format!("{base}/admin/{path}"))
+                .header("cookie", "tokomotive_session=test-session")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert!(
+                html.contains(&format!("value=\"{period}\" selected")),
+                "{path}"
+            );
+            assert!(
+                html.contains(&format!("value=\"{window}\" selected")),
+                "{path}"
+            );
+            if window == "rolling" {
+                assert!(html.contains("rolling 366 days"), "{path}");
+            } else {
+                assert!(html.contains("UTC"), "{path}");
+            }
+        }
+        for days in ["0", "367", "-1", "abc"] {
+            let response = http
+                .post(format!("{base}/admin/{path}/{id}"))
+                .header("cookie", "tokomotive_session=test-session")
+                .form(&[
+                    ("name", "team"),
+                    ("budget_window", "rolling"),
+                    ("budget_days", days),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 400, "{path}, {days}");
+        }
+    }
+    for path in ["users", "teams", "keys"] {
+        let name = format!("created-{path}");
+        let response = http
+            .post(format!("{base}/admin/{path}"))
+            .header("cookie", "tokomotive_session=test-session")
+            .form(&[
+                ("name", name.as_str()),
+                ("user_id", "1"),
+                ("label", name.as_str()),
+                ("budget_usd", "3"),
+                ("budget_period", "yearly"),
+                ("budget_window", "rolling"),
+                ("budget_days", "14"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), if path == "keys" { 200 } else { 303 });
+        let html = http
+            .get(format!("{base}/admin/{path}"))
+            .header("cookie", "tokomotive_session=test-session")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(html.contains("rolling 14 days"), "{path}");
+    }
     handle.abort();
 }

@@ -97,6 +97,85 @@ async fn assert_budget_402(st: &tokomotive::state::AppState) {
 
 #[tokio::test]
 async fn spooled_spend_enforces_each_budget_before_and_after_restart() {
+    spooled_budget_window(false).await;
+}
+
+#[tokio::test]
+async fn rolling_spooled_spend_enforces_each_budget_before_and_after_restart() {
+    spooled_budget_window(true).await;
+}
+
+#[tokio::test]
+async fn rolling_admission_does_not_take_writer_when_no_alert_can_rearm() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, st) = spool_state(dir.path(), 65536).await;
+    sqlx::query("UPDATE users SET budget_micros=100,budget_window='rolling',budget_days=1")
+        .execute(&st.db)
+        .await
+        .unwrap();
+    let auth = tokomotive::db::lookup_key(&st.db, "key")
+        .await
+        .unwrap()
+        .unwrap();
+    let now = tokomotive::db::now_s();
+    // The low-spend path must only read when no latch exists.
+    let writer = st.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let hold = tokio::time::timeout(
+        Duration::from_millis(250),
+        tokomotive::budgets::reserve(&st, &auth, 1, now),
+    )
+    .await
+    .expect("unlatched admission must not wait for a writer")
+    .unwrap()
+    .unwrap();
+    drop(hold);
+    writer.rollback().await.unwrap();
+    let mut charge = entry();
+    charge.ts_ms = (now - 1) * 1000;
+    charge.quote.price_micros = 75;
+    tokomotive::db::insert_entry(&st.db, &charge).await.unwrap();
+    sqlx::query(
+        "INSERT INTO alert_dedupe(subject,threshold,period_start) VALUES('user:1:rolling:1',80,0)",
+    )
+    .execute(&st.db)
+    .await
+    .unwrap();
+    let writer = st.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let hold = tokio::time::timeout(
+        Duration::from_millis(250),
+        tokomotive::budgets::reserve(&st, &auth, 1, now),
+    )
+    .await
+    .expect("a latch at exactly its re-arm boundary must not take a writer")
+    .unwrap()
+    .unwrap();
+    drop(hold);
+    // Even a real re-arm failure must not hold up or fail admission.
+    let hold = tokio::time::timeout(
+        Duration::from_millis(250),
+        tokomotive::budgets::reserve(&st, &auth, 1, now + 86401),
+    )
+    .await
+    .expect("best-effort re-arm must stop waiting for a contended writer")
+    .unwrap()
+    .unwrap();
+    drop(hold);
+    writer.rollback().await.unwrap();
+    let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT threshold FROM alert_dedupe WHERE subject=? AND period_start=0",
+    )
+    .bind("user:1:rolling:1")
+    .fetch_all(&st.db)
+    .await
+    .unwrap();
+    assert!(
+        plan.iter()
+            .any(|row| row.3.contains("SEARCH") && row.3.contains("INDEX")),
+        "{plan:?}"
+    );
+}
+
+async fn spooled_budget_window(rolling: bool) {
     use tokomotive::budgets::{self, Period, Subject};
     for (table, subject) in [
         ("users", Subject::User(1)),
@@ -114,13 +193,18 @@ async fn spooled_spend_enforces_each_budget_before_and_after_restart() {
             .await
             .unwrap();
         sqlx::query(&format!(
-            "UPDATE {table} SET budget_micros=24,budget_period='daily'"
+            "UPDATE {table} SET budget_micros=24,budget_period='daily',budget_window=?,budget_days=2"
         ))
+        .bind(if rolling { "rolling" } else { "calendar" })
         .execute(&st.db)
         .await
         .unwrap();
         let now = tokomotive::db::now_ms() / 1000;
-        let (start, end) = Period::Daily.bounds(now);
+        let (start, end) = if rolling {
+            (now - 172800, Some(now + 1))
+        } else {
+            Period::Daily.bounds(now)
+        };
         let writer = st.db.begin_with("BEGIN IMMEDIATE").await.unwrap();
         let mut charge = entry();
         charge.team_id = Some(1);
@@ -138,6 +222,15 @@ async fn spooled_spend_enforces_each_budget_before_and_after_restart() {
                 .unwrap()
                 .is_none()
         );
+        if rolling {
+            charge.ts_ms = (now + 1) * 1000;
+            assert!(
+                tokomotive::db::insert_entry(&st.db, &charge)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
         let replay_db = st.db.clone();
         let replay = tokio::spawn(async move { tokomotive::db::replay_spool(&replay_db).await });
         assert_eq!(
@@ -150,8 +243,30 @@ async fn spooled_spend_enforces_each_budget_before_and_after_restart() {
             .unwrap(),
             24
         );
-        assert_eq!(budgets::spend(&st.db, subject, 0, None).await.unwrap(), 48);
-        assert_budget_402(&st).await;
+        assert_eq!(
+            budgets::spend(&st.db, subject, 0, None).await.unwrap(),
+            if rolling { 72 } else { 48 }
+        );
+        assert_eq!(
+            budgets::current(&st.db, subject, now).await.unwrap().spent,
+            24
+        );
+        // Rolling edge fixtures age out while the real writer timeout runs.
+        // Admission at the injected clock still sees the pending charge.
+        if rolling {
+            let auth = tokomotive::db::lookup_key(&st.db, "key")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                budgets::reserve(&st, &auth, 1, now)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        } else {
+            assert_budget_402(&st).await;
+        }
         assert!(
             replay.await.unwrap().is_err(),
             "the held writer must block replay"
@@ -178,7 +293,20 @@ async fn spooled_spend_enforces_each_budget_before_and_after_restart() {
                 .unwrap(),
             24
         );
-        assert_budget_402(&restarted).await;
+        if rolling {
+            let auth = tokomotive::db::lookup_key(&restarted.db, "key")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                budgets::reserve(&restarted, &auth, 1, now)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        } else {
+            assert_budget_402(&restarted).await;
+        }
     }
 }
 

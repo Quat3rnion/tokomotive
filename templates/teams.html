@@ -11,7 +11,7 @@
   <h2 id="add-team-h">Add a Team</h2>
   <form method="post" action="/admin/teams" class="row">
     <div class="field"><label for="new-team-name">Name</label><input id="new-team-name" name="name" required autocomplete="off" spellcheck="false"></div>
-    {% if !base.simple %}{% let budget = crate::web::views::BudgetView::default() %}{% include "budget_fields.html" %}{% endif %}
+    {% if !base.simple %}{% let budget = crate::web::views::BudgetView::default() %}{% let budget_id = "new-budget" %}{% include "budget_fields.html" %}{% endif %}
     <button>Add team</button>
     <div class="form-error" role="alert" tabindex="-1"></div>
   </form>
@@ -26,7 +26,7 @@
   <tr id="t{{ t.id }}">
     <th scope="row"><span class="name">{{ t.name }}</span></th>
     <td data-label="Users" class="wrap"><a href="/admin/users?team={{ t.id }}">{{ t.user_count }} {% if t.user_count == 1 %}User{% else %}Users{% endif %}</a></td>
-    {% if !base.simple %}<td data-label="Price overrides" class="wrap"><a href="/admin/models?team={{ t.id }}">{{ t.override_count }} overrides</a><p>{{ t.budget_view.summary }} spent this period / budget ({{ t.budget_view.period }}). Resets at {{ t.budget_view.resets }}</p></td>{% endif %}
+    {% if !base.simple %}<td data-label="Price overrides" class="wrap"><a href="/admin/models?team={{ t.id }}">{{ t.override_count }} overrides</a><p>{{ t.budget_view.summary }} spent in window / budget. {% if t.budget_view.window == "calendar" %}{{ t.budget_view.period }}. {% endif %}{{ t.budget_view.resets }}</p></td>{% endif %}
     <td><div class="actions">
       <button type="button" class="ghost" data-toggle="edit-t{{ t.id }}" aria-expanded="false" aria-controls="edit-t{{ t.id }}" aria-label="Edit Team {{ t.name }}">Edit</button>
       <form class="inline" method="post" action="/admin/teams/{{ t.id }}/delete" data-confirm="Delete Team {{ t.name }}? This works only for a Team with no Users, overrides or Ledger Entries."><button class="danger" aria-label="Delete Team {{ t.name }}">Delete</button></form>
@@ -36,7 +36,7 @@
     <td colspan="{% if base.simple %}3{% else %}4{% endif %}"><div class="edit-panel">
       <form method="post" action="/admin/teams/{{ t.id }}" class="row" aria-label="Edit Team {{ t.name }}">
         <div class="field"><label for="t{{ t.id }}-name">Name</label><input id="t{{ t.id }}-name" name="name" value="{{ t.name }}" required autocomplete="off" spellcheck="false"></div>
-        {% if !base.simple %}{% let budget = t.budget_view %}{% include "budget_fields.html" %}{% endif %}
+        {% if !base.simple %}{% let budget = t.budget_view %}{% let budget_id = format!("t{}-budget", t.id) %}{% include "budget_fields.html" %}{% endif %}
         <button aria-label="Save Team {{ t.name }}">Save</button><button type="button" class="ghost" data-toggle="edit-t{{ t.id }}">Cancel</button>
         <div class="form-error" role="alert" tabindex="-1"></div>
       </form>

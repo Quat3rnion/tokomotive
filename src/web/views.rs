@@ -759,8 +759,12 @@ impl OverviewPage {
 pub struct BudgetView {
     pub amount: String,
     pub period: String,
+    pub window: String,
+    pub days: i64,
     pub summary: String,
     pub resets: String,
+    pub used: String,
+    pub over: bool,
 }
 impl BudgetView {
     pub async fn load(
@@ -771,16 +775,32 @@ impl BudgetView {
         Ok(Self {
             amount: b.limit.map(crate::pricing::fmt_rate).unwrap_or_default(),
             period: b.period,
+            window: match b.window {
+                crate::budgets::Window::Calendar => "calendar",
+                crate::budgets::Window::Rolling(_) => "rolling",
+            }
+            .into(),
+            days: b.days,
+            used: match b.limit {
+                Some(limit) if limit > 0 => {
+                    format!("{:.1}%", b.spent as f64 * 100.0 / limit as f64)
+                }
+                _ => "-".into(),
+            },
+            over: b.limit.is_some_and(|limit| b.spent >= limit),
             summary: format!(
                 "{} / {}",
                 money(b.spent),
                 b.limit.map(money).unwrap_or_else(|| "No Budget".into())
             ),
-            resets: b
-                .end
-                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-                .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-                .unwrap_or_else(|| "Never (lifetime)".into()),
+            resets: match b.window {
+                crate::budgets::Window::Rolling(days) => format!("rolling {days} days"),
+                crate::budgets::Window::Calendar => b
+                    .end
+                    .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+                    .map(|t| format!("Resets at {}", t.format("%Y-%m-%d %H:%M UTC")))
+                    .unwrap_or_else(|| "Never (lifetime)".into()),
+            },
         })
     }
 }
@@ -791,8 +811,6 @@ pub struct UserView {
     pub id: i64,
     pub name: String,
     pub team: String,
-    /// The Budget for the form, for example "12.5".
-    pub budget: String,
     pub disabled: bool,
     pub used: String,
     pub over: bool,
@@ -821,10 +839,6 @@ impl UsersPage {
                 id: u.id,
                 name: u.name.clone(),
                 team: u.team.clone().unwrap_or_else(|| "No Team".into()),
-                budget: u
-                    .budget_micros
-                    .map(crate::pricing::fmt_rate)
-                    .unwrap_or_default(),
                 disabled: u.disabled,
                 used: match u.budget_micros {
                     Some(b) if b > 0 => format!("{:.1}%", u.period_spend as f64 * 100.0 / b as f64),

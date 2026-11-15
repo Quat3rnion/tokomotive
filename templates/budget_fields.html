@@ -1,7 +1,15 @@
-<label>Budget (USD) <input name="budget_usd" type="number" min="0" step="0.01" value="{{ budget.amount }}" placeholder="No Budget"></label>
+<div class="field"><label for="{{ budget_id }}">Budget (USD)</label><input id="{{ budget_id }}" name="budget_usd" type="number" min="0" step="0.01" inputmode="decimal" value="{{ budget.amount }}" placeholder="No Budget"></div>
 <label>Budget period (UTC) <select name="budget_period">
 <option value="none"{% if budget.period == "none" %} selected{% endif %}>None (lifetime)</option>
 <option value="daily"{% if budget.period == "daily" %} selected{% endif %}>Daily</option>
 <option value="weekly"{% if budget.period == "weekly" %} selected{% endif %}>Weekly (Monday)</option>
 <option value="monthly"{% if budget.period == "monthly" %} selected{% endif %}>Monthly</option>
+<option value="quarterly"{% if budget.period == "quarterly" %} selected{% endif %}>Quarterly (Jan/Apr/Jul/Oct)</option>
+<option value="yearly"{% if budget.period == "yearly" %} selected{% endif %}>Yearly (January 1)</option>
 </select></label>
+<label>Budget window <select name="budget_window">
+<option value="calendar"{% if budget.window != "rolling" %} selected{% endif %}>Calendar (UTC)</option>
+<option value="rolling"{% if budget.window == "rolling" %} selected{% endif %}>Rolling</option>
+</select></label>
+<label>Rolling days <input name="budget_days" type="number" min="1" max="366" step="1" value="{% if budget.days == 0 %}30{% else %}{{ budget.days }}{% endif %}"></label>
+<p class="hint">Calendar windows use the period above. Rolling windows use the last 1 to 366 days and do not reset.</p>

@@ -1433,8 +1433,11 @@ The **Users** page lists the Users. Each row has these fields:
 - **Team**: the Team of the User, or `(no team)`.
 - **Budget (USD)**: the limit on the total Price for the User. Leave it empty
   for no Budget.
-- **Budget period (UTC)**: none (lifetime), daily, weekly (Monday), or monthly.
-  The default is none. The page shows spend / Budget and the next reset time.
+- **Budget period (UTC)**: none (lifetime), daily, weekly (Monday), monthly,
+  quarterly or yearly. The default is none.
+- **Budget window**: calendar (the default) or rolling. For rolling windows,
+  set **Rolling days** from 1 to 366. The period does not apply to rolling windows.
+  The page shows spent in window / Budget, with a reset time or rolling days.
 - **disabled**: if selected, the Proxy rejects all Virtual Keys of the User with
   HTTP 401.
 - **Spend this period** and **Used**: the Price so far in the current period and
@@ -1802,12 +1805,22 @@ A Budget limits the total Price for a User, Team or Virtual Key. Set it on the
 **Users**, **Teams** or **Virtual Keys** page. Leave the amount blank for no limit.
 A request must fit every applicable Budget, including the Team of the User.
 
-Select **none** for a lifetime Budget (the default), **daily**, **weekly** or
-**monthly**. All boundaries use UTC. A daily period starts at 00:00. A weekly
+Select **none** for a lifetime Budget (the default), **daily**, **weekly**,
+**monthly**, **quarterly** or **yearly**. All calendar boundaries use UTC. A daily period starts at 00:00. A weekly
 period starts on Monday at 00:00. A monthly period starts on the first day of
-the month at 00:00. The page shows spend this period / Budget and the reset time.
+the month at 00:00. Quarters start on January 1, April 1, July 1 and October 1.
+Years start on January 1. These periods also start at 00:00 UTC.
+Existing Budgets keep their calendar period after an upgrade.
+
+Select **Rolling** to use the last N days instead. Set N from 1 to 366.
+The window includes its start and the current second. Later seconds do not count.
+It has no reset time. The page shows spent in window / Budget and
+**rolling N days**. Calendar windows show the next reset time.
 The Proxy sums the frozen Price amounts from indexed Ledger Entries in the
-current period. A reset does not change or delete Ledger Entries. Team spend
+selected window. Pending spool entries use the same timestamp range. Open
+Reservations also count against admission. A Batch hold counts until accounting
+commits, even if its creation time is outside the window.
+A reset does not change or delete Ledger Entries. Team spend
 uses the Team recorded on each Entry, not the current Team of an old User.
 
 Before the Proxy sends a request to the Provider, it makes a Reservation for the
@@ -1824,8 +1837,8 @@ worst-case Price of the request:
 
 The Proxy rejects the request with HTTP 402 in these cases:
 
-- The Price so far in the period is equal to or more than the Budget.
-- The Price so far, plus the open Reservations for the subject and period, plus the new
+- The Price so far in the window is equal to or more than the Budget.
+- The Price so far, plus the open Reservations for the subject and window, plus the new
   Reservation, is more than the Budget.
 
 The Proxy releases the Reservation after it writes the Ledger Entry or syncs it
@@ -1849,9 +1862,17 @@ On **Settings**, add a webhook URL and select **Generic JSON**, **Discord** or
 **Slack**. Select **Enabled** to send events. Set the comma-separated Budget
 thresholds, for example `50,80,100` (the default). Thresholds must be from 1 to
 100 percent. All webhooks use the same thresholds. Each User, Team and Virtual
-Key sends each threshold once per period, after committed spend reaches it.
+Key sends each threshold once per calendar period, after spend reaches it.
 The database keeps this record across restarts. A large request can cross more
 than one threshold. Lifetime Budgets do not reset their alerts.
+
+Rolling windows have no reset point. Each threshold fires once, then stays
+disabled until a Budget check finds spend below that threshold minus 5 percentage
+points. For example, an 80% alert becomes active again below 75%, not at 75%.
+Thresholds of 5% or less cannot become active again with non-negative spend.
+The next crossing then sends one new alert. The database keeps this state across
+restarts. Alerts include pending spool entries and Batch holds, but not open
+in-memory Reservations.
 
 The Proxy also sends `model_price_change` events for models.dev price alerts.
 The internal `alerts::emit` API can send Provider health events. Generic JSON

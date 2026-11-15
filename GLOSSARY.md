@@ -80,7 +80,7 @@
 
 **Estimated Entry** - A Ledger Entry whose token counts or Service units are partly estimated, because the Provider did not report full usage.
 
-**Budget** - A limit on the total Price for a User, Team or Virtual Key. It is for a lifetime, day, week (Monday) or month in UTC. Every applicable Budget must permit a request.
+**Budget** - A limit on the total Price for a User, Team or Virtual Key. A calendar window uses a lifetime, day, week (Monday), month, quarter or year in UTC. A rolling window uses the last 1 to 366 days and has no reset point. Every applicable Budget must permit a request.
 
 **Reservation** - The worst-case Price of a request in progress. It counts against the Budget until the Ledger Entry is written or synced to the durable spool. A synced entry's actual Price still counts against each applicable Budget until replay commits it. A Batch Reservation stays in its durable job until accounting commits.
 

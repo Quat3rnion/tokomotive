@@ -727,6 +727,29 @@ fn period_field(value: Option<&str>, monthly: bool) -> anyhow::Result<String> {
     crate::budgets::Period::parse(value)?;
     Ok(value.to_owned())
 }
+#[derive(Default, Deserialize)]
+struct BudgetWindowForm {
+    budget_window: Option<String>,
+    budget_days: Option<String>,
+}
+impl BudgetWindowForm {
+    fn parse(&self) -> anyhow::Result<(&str, i64)> {
+        let kind = self
+            .budget_window
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("calendar");
+        let days = self
+            .budget_days
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("30")
+            .parse::<i64>()
+            .map_err(|_| anyhow::anyhow!("Enter rolling days from 1 to 366."))?;
+        crate::budgets::Window::parse(kind, days)?;
+        Ok((kind, days))
+    }
+}
 fn parse_expiry(value: &str) -> anyhow::Result<Option<i64>> {
     if value.trim().is_empty() {
         return Ok(None);
@@ -742,12 +765,15 @@ async fn set_budget(
     id: i64,
     budget: Option<i64>,
     period: &str,
+    window: (&str, i64),
 ) -> anyhow::Result<()> {
     sqlx::query(&format!(
-        "UPDATE {table} SET budget_micros=?, budget_period=? WHERE id=?"
+        "UPDATE {table} SET budget_micros=?, budget_period=?, budget_window=?, budget_days=? WHERE id=?"
     ))
     .bind(budget)
     .bind(period)
+    .bind(window.0)
+    .bind(window.1)
     .bind(id)
     .execute(&st.db)
     .await?;
@@ -1175,6 +1201,8 @@ async fn users(
     for user in &mut page.users {
         user.budget_view =
             tryr!(views::BudgetView::load(&st, crate::budgets::Subject::User(user.id)).await);
+        user.used = user.budget_view.used.clone();
+        user.over = user.budget_view.over;
     }
     page.team_choices = tryr!(db::small_choices(&st.db, "teams").await);
     page.pager = Pager::keyset(&uri.to_string(), &q.page, &users);
@@ -1192,12 +1220,15 @@ struct UserForm {
     budget_usd: String,
     monthly: Option<String>,
     budget_period: Option<String>,
+    #[serde(flatten)]
+    window: BudgetWindowForm,
     disabled: Option<String>,
     #[serde(flatten)]
     limits: LimitsForm,
 }
 
 async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserForm>) -> Response {
+    let window = tryform!(f.window.parse());
     let period = tryform!(period_field(
         f.budget_period.as_deref(),
         f.monthly.is_some()
@@ -1238,7 +1269,7 @@ async fn create_user(_: Admin, State(st): State<AppState>, Form(f): Form<UserFor
                 return internal(e);
             }
         };
-    tryr!(set_budget(&st, "users", id, budget, &period).await);
+    tryr!(set_budget(&st, "users", id, budget, &period, window).await);
     saved("/admin/users", &format!("User {name} added."))
 }
 
@@ -1249,6 +1280,7 @@ async fn update_user(
     Form(f): Form<UserForm>,
 ) -> Response {
     let simple = st.settings().mode == "simple";
+    let window = tryform!(f.window.parse());
     let period = tryform!(period_field(
         f.budget_period.as_deref(),
         f.monthly.is_some()
@@ -1306,11 +1338,13 @@ async fn update_user(
     if let Some((budget, limits)) = money {
         tryr!(
             sqlx::query(
-                "UPDATE users SET budget_micros=?, budget_monthly=?, budget_period=?, rpm_limit=?, tpm_limit=? WHERE id=?"
+                "UPDATE users SET budget_micros=?, budget_monthly=?, budget_period=?, budget_window=?, budget_days=?, rpm_limit=?, tpm_limit=? WHERE id=?"
             )
             .bind(budget)
             .bind(period=="monthly")
             .bind(&period)
+            .bind(window.0)
+            .bind(window.1)
             .bind(limits.rpm)
             .bind(limits.tpm)
             .bind(id)
@@ -1353,9 +1387,12 @@ struct NameForm {
     #[serde(default)]
     budget_usd: String,
     budget_period: Option<String>,
+    #[serde(flatten)]
+    window: BudgetWindowForm,
 }
 
 async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameForm>) -> Response {
+    let window = tryform!(f.window.parse());
     let period = tryform!(period_field(f.budget_period.as_deref(), false));
     let budget = match opt_budget(&f.budget_usd) {
         Ok(b) => b,
@@ -1375,7 +1412,7 @@ async fn create_team(_: Admin, State(st): State<AppState>, Form(f): Form<NameFor
         }
     };
     if st.settings().mode != "simple" {
-        tryr!(set_budget(&st, "teams", id, budget, &period).await);
+        tryr!(set_budget(&st, "teams", id, budget, &period, window).await);
     }
     saved("/admin/teams", &format!("Team {name} added."))
 }
@@ -1386,6 +1423,7 @@ async fn rename_team(
     Path(id): Path<i64>,
     Form(f): Form<NameForm>,
 ) -> Response {
+    let window = tryform!(f.window.parse());
     let period = tryform!(period_field(f.budget_period.as_deref(), false));
     let budget = match opt_budget(&f.budget_usd) {
         Ok(b) => b,
@@ -1409,7 +1447,7 @@ async fn rename_team(
     }
     // Overrides show the Team name from the catalog.
     if st.settings().mode != "simple" {
-        tryr!(set_budget(&st, "teams", id, budget, &period).await);
+        tryr!(set_budget(&st, "teams", id, budget, &period, window).await);
     }
     tryr!(st.reload_catalog().await);
     saved(
@@ -1588,6 +1626,11 @@ async fn create_key(
         return r;
     }
     let fields: std::collections::HashMap<_, _> = pairs.into_iter().collect();
+    let window_form = BudgetWindowForm {
+        budget_window: fields.get("budget_window").cloned(),
+        budget_days: fields.get("budget_days").cloned(),
+    };
+    let window = tryform!(window_form.parse());
     let period = tryform!(period_field(
         fields.get("budget_period").map(String::as_str),
         false
@@ -1657,7 +1700,7 @@ async fn create_key(
             .await
     );
     if st.settings().mode != "simple" {
-        tryr!(set_budget(&st, "virtual_keys", id, budget, &period).await);
+        tryr!(set_budget(&st, "virtual_keys", id, budget, &period, window).await);
     }
     keys_page(&st, Some(key), ListQ::default(), "/admin/keys").await
 }
@@ -1700,6 +1743,11 @@ async fn update_key(
         tpm_limit: field("tpm_limit"),
     };
     let expires = tryform!(parse_expiry(&field("expires_at")));
+    let window_form = BudgetWindowForm {
+        budget_window: Some(field("budget_window")),
+        budget_days: Some(field("budget_days")),
+    };
+    let window = tryform!(window_form.parse());
     let period = tryform!(period_field(Some(&field("budget_period")), false));
     let budget = match opt_budget(&field("budget_usd")) {
         Ok(b) => b,
@@ -1712,7 +1760,7 @@ async fn update_key(
             Err(r) => return r,
         };
         tryr!(db::update_key_limits(&st.db, id, limits).await);
-        tryr!(set_budget(&st, "virtual_keys", id, budget, &period).await);
+        tryr!(set_budget(&st, "virtual_keys", id, budget, &period, window).await);
     }
     tryr!(
         sqlx::query("UPDATE virtual_keys SET expires_at=? WHERE id=?")
