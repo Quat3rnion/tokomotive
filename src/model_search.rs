@@ -5,12 +5,13 @@
 //! matches first and caps the result. To add a source, add one line to
 //! [`Registry::with_builtin`] or call `st.model_sources.register(...)`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use futures_util::future::BoxFuture;
 use serde::Serialize;
+use sqlx::Row;
 
 use crate::provider::{ProviderAuth, ProviderKind};
 use crate::state::AppState;
@@ -97,10 +98,10 @@ pub fn score(q: &str, id: &str, label: &str) -> u8 {
         1
     } else if id.starts_with(&q) || label.starts_with(&q) {
         2
-    } else if id
-        .split(['/', '-', '.', '_', ':'])
-        .any(|part| part.starts_with(&q))
-    {
+    } else if [&id, &label].into_iter().any(|text| {
+        text.split(|c: char| c.is_whitespace() || "/-._:".contains(c))
+            .any(|part| part.starts_with(&q))
+    }) {
         3
     } else if id.contains(&q) || label.contains(&q) {
         4
@@ -115,6 +116,7 @@ fn best(q: &str, mut hits: Vec<ModelHit>, limit: usize) -> Vec<ModelHit> {
     hits.sort_by(|a, b| {
         score(q, &a.id, &a.label)
             .cmp(&score(q, &b.id, &b.label))
+            .then(a.provider.cmp(&b.provider))
             .then(a.id.len().cmp(&b.id.len()))
             .then(a.id.cmp(&b.id))
     });
@@ -132,7 +134,11 @@ pub fn merge(q: &str, groups: Vec<Vec<ModelHit>>, limit: usize) -> Vec<ModelHit>
         for hit in group {
             if let Some(&i) = index.get(&hit.id) {
                 let kept = &mut out[i].1;
-                kept.context = kept.context.or(hit.context);
+                kept.context = if kept.source == "provider" && hit.source == "models.dev" {
+                    hit.context.or(kept.context)
+                } else {
+                    kept.context.or(hit.context)
+                };
                 if kept.price.is_none() {
                     kept.price = hit.price;
                 }
@@ -146,18 +152,58 @@ pub fn merge(q: &str, groups: Vec<Vec<ModelHit>>, limit: usize) -> Vec<ModelHit>
         }
     }
     out.sort_by(|(oa, a), (ob, b)| {
+        let priority = |source| match source {
+            "route" => 0,
+            "model" => 1,
+            _ => 2,
+        };
         score(q, &a.id, &a.label)
             .cmp(&score(q, &b.id, &b.label))
-            .then(oa.cmp(ob))
+            .then(priority(a.source).cmp(&priority(b.source)))
+            .then(a.provider.cmp(&b.provider))
             .then(a.id.len().cmp(&b.id.len()))
             .then(a.id.cmp(&b.id))
+            .then(oa.cmp(ob))
     });
     out.into_iter().map(|(_, h)| h).take(limit).collect()
+}
+
+fn resolved_key(key: &str) -> Option<String> {
+    let key = match key.strip_prefix("env:") {
+        Some(name) => std::env::var(name).ok()?,
+        None => key.to_owned(),
+    };
+    (!key.trim().is_empty()).then_some(key)
+}
+
+/// One credential rule for both model sources. Unknown quota health is usable;
+/// exhausted quota is not a sign-out. Providers have no disabled flag.
+fn connected(
+    p: &crate::state::Provider,
+    signin: Option<&crate::oauth::Status>,
+    invalid: &HashSet<String>,
+) -> bool {
+    if p.auth == ProviderAuth::ApiKey {
+        p.keys
+            .iter()
+            .filter_map(|k| resolved_key(k))
+            .any(|k| !invalid.contains(&crate::quota::key_id(&k)))
+    } else {
+        signin.is_some_and(|s| s.connected && s.last_error.is_none()) && !invalid.contains("signin")
+    }
+}
+
+struct Connections {
+    table: Arc<crate::routing::RouterTable>,
+    at: Instant,
+    providers: Vec<crate::state::Provider>,
 }
 
 /// The registered model sources.
 pub struct Registry {
     sources: RwLock<Vec<Arc<dyn ModelSource>>>,
+    connections: RwLock<Option<Connections>>,
+    connection_lock: tokio::sync::Mutex<()>,
 }
 
 impl Registry {
@@ -171,6 +217,8 @@ impl Registry {
         ];
         Registry {
             sources: RwLock::new(sources.into_iter().map(Arc::from).collect()),
+            connections: RwLock::new(None),
+            connection_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -191,6 +239,123 @@ impl Registry {
             .collect()
     }
 
+    /// Credential and health reads are shared by all sources for five seconds,
+    /// and invalidated immediately when the settings snapshot changes.
+    async fn prepare_connections(&self, state: &AppState) {
+        let _guard = self.connection_lock.lock().await;
+        let table = state.router_table();
+        if self
+            .connections
+            .read()
+            .expect("model connections")
+            .as_ref()
+            .is_some_and(|c| {
+                Arc::ptr_eq(&c.table, &table) && c.at.elapsed() < Duration::from_secs(5)
+            })
+        {
+            return;
+        }
+        let mut providers = Vec::new();
+        let result: anyhow::Result<()> = async {
+            let rows = sqlx::query("SELECT name,keys_json FROM providers")
+                .fetch_all(&state.db)
+                .await?;
+            let keys: HashMap<String, String> = rows
+                .into_iter()
+                .map(|r| (r.get("name"), r.get("keys_json")))
+                .collect();
+            let health = sqlx::query(
+                "SELECT provider,account FROM provider_health WHERE state='credentials_invalid'",
+            )
+            .fetch_all(&state.db)
+            .await?;
+            let mut invalid: HashMap<String, HashSet<String>> = HashMap::new();
+            for r in health {
+                invalid
+                    .entry(r.get("provider"))
+                    .or_default()
+                    .insert(r.get("account"));
+            }
+            for p in &table.providers {
+                let mut p = p.clone();
+                let Some(encoded) = keys.get(&p.name) else {
+                    continue;
+                };
+                let raw: Vec<String> = serde_json::from_str(encoded)?;
+                p.keys = Arc::new(
+                    raw.into_iter()
+                        .filter_map(|k| {
+                            let raw = if k.starts_with("env:") {
+                                Some(k)
+                            } else {
+                                state.secret_key.decrypt(&k).ok()
+                            }?;
+                            resolved_key(&raw)
+                        })
+                        .collect(),
+                );
+                let signin = if let Some(flow) = crate::oauth::Flow::from_auth(p.auth) {
+                    state.oauth.status(&p.name, flow).await.ok()
+                } else {
+                    None
+                };
+                let invalid = invalid.get(&p.name).cloned().unwrap_or_default();
+                if connected(&p, signin.as_ref(), &invalid) {
+                    p.keys = Arc::new(
+                        p.keys
+                            .iter()
+                            .filter(|k| !invalid.contains(&crate::quota::key_id(k)))
+                            .cloned()
+                            .collect(),
+                    );
+                    providers.push(p);
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(error=%e, "model picker credentials unavailable");
+            providers.clear();
+        }
+        providers.sort_by(|a, b| a.name.cmp(&b.name));
+        *self.connections.write().expect("model connections") = Some(Connections {
+            table,
+            at: Instant::now(),
+            providers,
+        });
+    }
+
+    pub fn connected_providers(&self) -> Vec<crate::state::Provider> {
+        self.connections
+            .read()
+            .expect("model connections")
+            .as_ref()
+            .map(|c| c.providers.clone())
+            .unwrap_or_default()
+    }
+
+    /// A non-selectable picker note, from the same credential snapshot.
+    pub fn connection_note(&self, provider: Option<&str>) -> String {
+        let connections = self.connections.read().expect("model connections");
+        let Some(c) = connections.as_ref() else {
+            return String::new();
+        };
+        if let Some(name) = provider {
+            return if c.providers.iter().any(|p| p.name == name) {
+                String::new()
+            } else {
+                "This Provider is not connected. Sign in or add a key.".into()
+            };
+        }
+        let excluded = c.table.providers.len() - c.providers.len();
+        match excluded {
+            0 => String::new(),
+            1 => "1 Provider is not connected".into(),
+            n => format!("{n} Providers are not connected"),
+        }
+    }
+
     /// Search all sources (or only those named in `only`). `limit` is
     /// clamped to 1..=[`MAX_LIMIT`]. The async warm-up of the sources runs
     /// first and stops after [`PREPARE_BUDGET`].
@@ -201,6 +366,14 @@ impl Registry {
         limit: usize,
         only: Option<&[String]>,
     ) -> Vec<ModelHit> {
+        self.prepare_connections(&ctx.state).await;
+        if ctx
+            .provider
+            .as_ref()
+            .is_some_and(|name| !self.connected_providers().iter().any(|p| &p.name == name))
+        {
+            return vec![];
+        }
         let limit = limit.clamp(1, MAX_LIMIT);
         let q = q.trim();
         let sources: Vec<Arc<dyn ModelSource>> = self
@@ -450,13 +623,12 @@ impl ProviderSource {
     /// The API-key Providers that this search may query.
     fn targets(ctx: &SearchCtx) -> Vec<crate::state::Provider> {
         ctx.state
-            .router_table()
-            .providers
-            .iter()
-            .filter(|p| p.auth == ProviderAuth::ApiKey && !p.keys.is_empty())
+            .model_sources
+            .connected_providers()
+            .into_iter()
+            .filter(|p| p.auth == ProviderAuth::ApiKey)
             .filter(|p| ctx.provider.as_ref().is_none_or(|n| n == &p.name))
             .take(10)
-            .cloned()
             .collect()
     }
 
@@ -574,6 +746,73 @@ mod tests {
 
     fn hit(id: &str, source: &'static str) -> ModelHit {
         ModelHit::new(id, source)
+    }
+
+    #[test]
+    fn connected_requires_usable_credentials_and_one_valid_account() {
+        let mut p = crate::state::Provider::new("work", ProviderKind::Openai, "", vec![]);
+        let mut invalid = HashSet::new();
+        assert!(!connected(&p, None, &invalid));
+        p.keys = Arc::new(vec!["env:MODEL_PICKER_ABSENT_KEY_17".into(), "  ".into()]);
+        assert!(!connected(&p, None, &invalid));
+        p.keys = Arc::new(vec!["env:PATH".into()]);
+        assert!(connected(&p, None, &invalid));
+        p.keys = Arc::new(vec!["key-one".into()]);
+        assert!(connected(&p, None, &invalid));
+        invalid.insert(crate::quota::key_id("key-one"));
+        assert!(!connected(&p, None, &invalid));
+        p.keys = Arc::new(vec!["key-one".into(), "key-two".into()]);
+        assert!(connected(&p, None, &invalid));
+        p.auth = ProviderAuth::Claude;
+        assert!(!connected(&p, None, &invalid));
+        let mut signin = crate::oauth::Status {
+            connected: true,
+            ..Default::default()
+        };
+        assert!(connected(&p, Some(&signin), &invalid));
+        signin.last_error = Some("invalid credential".into());
+        assert!(!connected(&p, Some(&signin), &invalid));
+        signin.last_error = None;
+        invalid.insert("signin".into());
+        assert!(!connected(&p, Some(&signin), &invalid));
+    }
+
+    #[test]
+    fn ranks_exact_prefix_word_prefix_substring_then_source_and_provider() {
+        let mut word = hit("word", "provider");
+        word.label = "The GPT model".into();
+        let got = merge(
+            "gpt",
+            vec![vec![
+                hit("agpt", "provider"),
+                word,
+                hit("gpt-plus", "provider"),
+                hit("gpt", "provider"),
+            ]],
+            20,
+        );
+        assert_eq!(
+            got.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["gpt", "gpt-plus", "word", "agpt"]
+        );
+        let mut a = hit("a/model", "models.dev");
+        a.provider = Some("a".into());
+        let mut z = hit("z/model", "provider");
+        z.provider = Some("z".into());
+        let got = merge(
+            "",
+            vec![
+                vec![z],
+                vec![a],
+                vec![hit("catalog", "model")],
+                vec![hit("route", "route")],
+            ],
+            20,
+        );
+        assert_eq!(
+            got.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["route", "catalog", "a/model", "z/model"]
+        );
     }
 
     #[test]

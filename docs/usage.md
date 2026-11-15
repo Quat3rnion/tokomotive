@@ -1050,8 +1050,25 @@ rates. The sources are:
 - **model**: a Model name or alias from the Models page.
 - **provider**: a model from the live model list of the Provider
   (`GET {base}/v1/models`, or `{base}/models` when that path is not found).
-- **models.dev**: a model from the models.dev catalog, if that source is
-  installed.
+- **models.dev**: a model from the models.dev catalog for a connected Provider.
+
+Provider models appear only for configured, connected Providers. An API-key
+Provider needs at least one usable key. An `env:` reference must resolve to a
+non-empty value. A sign-in Provider needs an active sign-in with no credential
+error. A Provider is not connected if all its accounts have
+`credentials_invalid` health. These checks are cached for up to 5 seconds.
+A settings change clears this cache.
+
+Unscoped Provider results use the configured name: `provider/model`. A live
+result and a models.dev result for the same ID appear once. The result keeps
+the live source tag and uses the models.dev context and price when available.
+Exact matches come first, then prefixes, word prefixes and other text matches.
+At the same rank, Routes come before catalog Models, then Provider models in
+Provider name order.
+
+The list shows a note when Providers are not connected. A search for one
+disconnected Provider has no suggestions. Sign in or add a key to connect it.
+Unscoped Routes and catalog Models stay in the list as before.
 
 You can always use a name that is not in the list. Type the name, then
 select **Use 'name'** (the last result), or press Enter in a multi-value
@@ -1080,9 +1097,9 @@ Without JavaScript, each model field is a plain text input. In a field for
 several values, enter comma-separated names. The server accepts both forms:
 one field per chip and comma-separated text.
 
-The live model list is fetched only for API-key Providers, with the first
-Provider Key. Subscription Providers are never queried. The Proxy keeps a
-list for 10 minutes. It waits at most 3 seconds for a Provider. If a Provider
+The live model list is fetched only for connected API-key Providers, with the
+first usable Provider Key. Subscription Providers are never queried. The Proxy
+keeps a list for 10 minutes. It waits at most 3 seconds for a Provider. If a Provider
 does not answer or refuses the key, its live results are not shown and the
 other results stay. The Proxy then waits 1 minute before it asks that
 Provider again.
@@ -1096,7 +1113,8 @@ Provider again.
 | `src`      | Comma-separated sources, for example `route,model`. Empty means all.    |
 | `limit`    | The number of results. The default is 20 and the maximum is 50.        |
 
-The response is HTML `<li role="option">` items. With
+The response is HTML `<li role="option">` items. A non-selectable
+`data-empty-note` marker supplies the connection note to the combobox. With
 `Accept: application/json`, it is a JSON array of objects with `id`,
 `label`, `provider`, `source`, `context` and `price`.
 

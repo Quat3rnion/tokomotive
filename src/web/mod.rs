@@ -1058,6 +1058,7 @@ struct ModelOption {
 #[template(path = "model_options.html")]
 struct ModelOptions {
     hits: Vec<ModelOption>,
+    note: String,
 }
 
 /// "128K" or "1M" tokens.
@@ -1132,7 +1133,8 @@ async fn search_models(
             }
         })
         .collect();
-    let mut r = render(ModelOptions { hits });
+    let note = st.model_sources.connection_note(ctx.provider.as_deref());
+    let mut r = render(ModelOptions { hits, note });
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r.headers_mut()

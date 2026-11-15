@@ -649,8 +649,9 @@ pub async fn search(
 /// database query for the query text and keeps the hits; `search` returns
 /// them. The cache holds the last 64 queries only.
 type PickerKey = (Option<String>, String);
-type PickerCache =
-    std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(PickerKey, Vec<SearchHit>)>>>;
+type PickerCache = std::sync::Arc<
+    std::sync::Mutex<std::collections::VecDeque<(PickerKey, Vec<crate::model_search::ModelHit>)>>,
+>;
 
 #[derive(Default)]
 pub struct Source {
@@ -660,6 +661,66 @@ pub struct Source {
 impl Source {
     const KEEP: usize = 64;
     const LIMIT: usize = 50;
+
+    /// Rank in SQLite before the bound, with the same match classes as the
+    /// registry. Only one configured Provider's candidates enter the cache.
+    async fn candidates(
+        db: &Db,
+        dev: &str,
+        provider: &str,
+        scoped: bool,
+        q: &str,
+    ) -> Result<Vec<crate::model_search::ModelHit>> {
+        let prefix = if scoped {
+            String::new()
+        } else {
+            format!("{provider}/")
+        };
+        let rows = sqlx::query(r#"
+            WITH candidates AS (
+                SELECT ? || m.id AS id, m.name, m.context, c.spec,
+                    lower(? || m.id) AS ident, lower(m.name) AS label, lower(?) AS q
+                FROM models_dev_models m LEFT JOIN models_dev_costs c
+                    ON c.provider=m.provider AND c.model=m.id
+                WHERE m.provider=?
+            )
+            SELECT id,name,context,spec FROM candidates
+            WHERE instr(ident,q)>0 OR instr(label,q)>0
+            ORDER BY CASE
+                WHEN q='' THEN 4
+                WHEN ident=q THEN 0 WHEN label=q THEN 1
+                WHEN substr(ident,1,length(q))=q OR substr(label,1,length(q))=q THEN 2
+                WHEN instr(' ' || replace(replace(replace(replace(replace(ident,'/',' '),'-',' '),'.',' '),'_',' '),':',' '),' ' || q)>0
+                  OR instr(' ' || replace(replace(replace(replace(replace(label,'/',' '),'-',' '),'.',' '),'_',' '),':',' '),' ' || q)>0 THEN 3
+                ELSE 4 END, length(id), id LIMIT ?
+        "#).bind(&prefix).bind(&prefix).bind(q).bind(dev).bind(Self::LIMIT as i64).fetch_all(db).await?;
+        rows.into_iter()
+            .map(|r| {
+                let price = r
+                    .get::<Option<String>, _>("spec")
+                    .map(|s| {
+                        serde_json::from_str::<CardRates>(&s).map(|c| {
+                            format!(
+                                "${} / ${} per Mtok",
+                                crate::pricing::fmt_rate(c.base.input),
+                                crate::pricing::fmt_rate(c.base.output)
+                            )
+                        })
+                    })
+                    .transpose()?;
+                Ok(crate::model_search::ModelHit {
+                    id: r.get("id"),
+                    label: r.get("name"),
+                    provider: Some(provider.into()),
+                    source: "models.dev",
+                    context: r
+                        .get::<Option<i64>, _>("context")
+                        .and_then(|c| u64::try_from(c).ok()),
+                    price,
+                })
+            })
+            .collect()
+    }
 }
 
 impl crate::model_search::ModelSource for Source {
@@ -674,21 +735,26 @@ impl crate::model_search::ModelSource for Source {
     ) -> Option<futures_util::future::BoxFuture<'static, ()>> {
         let db = ctx.state.db.clone();
         let provider = ctx.provider.clone();
+        let providers = ctx.state.model_sources.connected_providers();
         let q = q.trim().to_owned();
         let hits = self.hits.clone();
         Some(Box::pin(async move {
             // Map the Tokomotive Provider to its models.dev provider ID. A
             // Provider with no match gets no models.dev hits.
-            let dev = match &provider {
-                Some(p) => match provider_for(&db, p).await {
-                    Ok(Some(id)) => Some(id),
-                    _ => return,
-                },
-                None => None,
-            };
-            let found = search(&db, dev.as_deref(), &q, Self::LIMIT)
-                .await
-                .unwrap_or_default();
+            let mut found = Vec::new();
+            for p in providers
+                .iter()
+                .filter(|p| provider.as_ref().is_none_or(|n| n == &p.name))
+            {
+                let Ok(Some(dev)) = provider_for(&db, &p.name).await else {
+                    continue;
+                };
+                found.extend(
+                    Self::candidates(&db, &dev, &p.name, provider.is_some(), &q)
+                        .await
+                        .unwrap_or_default(),
+                );
+            }
             let mut cache = hits.lock().expect("models.dev picker cache");
             cache.retain(|(k, _)| k != &(provider.clone(), q.clone()));
             cache.push_back(((provider, q), found));
@@ -709,23 +775,6 @@ impl crate::model_search::ModelSource for Source {
         let Some((_, found)) = cache.iter().rev().find(|(k, _)| k == &key) else {
             return Vec::new();
         };
-        found
-            .iter()
-            .take(limit)
-            .map(|h| crate::model_search::ModelHit {
-                // Scoped to a Provider: the upstream model ID. Unscoped: the
-                // provider/model form that the Proxy can route.
-                id: if ctx.provider.is_some() {
-                    h.id.clone()
-                } else {
-                    format!("{}/{}", h.provider, h.id)
-                },
-                label: h.label.clone(),
-                provider: ctx.provider.clone().or_else(|| Some(h.provider.clone())),
-                source: "models.dev",
-                context: h.context.and_then(|c| u64::try_from(c).ok()),
-                price: h.price.clone(),
-            })
-            .collect()
+        crate::model_search::merge(q, vec![found.clone()], limit)
     }
 }

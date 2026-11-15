@@ -977,6 +977,8 @@ pre.code.wrap { white-space:pre-wrap; overflow-wrap:anywhere; align-self:stretch
 <script>
 (() => {
   // 13. Model picker: a WAI-ARIA 1.2 combobox over a plain text input.
+  // Response data-empty-note markers use cb-note outside the listbox and
+  // the live region. They are not options and do not change custom IDs.
   // 12. Entity pickers (data-kind) use the same code in strict mode.
   if (!window.toko || window.toko.pickers) { return; }
   const toko = window.toko;
@@ -1199,7 +1201,7 @@ pre.code.wrap { white-space:pre-wrap; overflow-wrap:anywhere; align-self:stretch
       li.innerHTML = html;
       return li;
     };
-    const show = (found, q, scope, failed, current) => {
+    const show = (found, q, scope, failed, current, responseNote) => {
       const taken = values();
       const opts = found.filter(o => !taken.includes(o.dataset.value));
       const custom = !strict && q && !opts.some(o => o.dataset.value === q) && !taken.includes(q);
@@ -1232,6 +1234,7 @@ pre.code.wrap { white-space:pre-wrap; overflow-wrap:anywhere; align-self:stretch
         const where = scope ? ` for Provider ${scope}` : '';
         text = opts.length ? `${opts.length} result${opts.length === 1 ? '' : 's'}${where}.` : (q ? `No matches${where}. You can use the typed name.` : `No suggestions${where}. Type a name.`);
       }
+      if (responseNote) { text = responseNote; }
       note.textContent = text;
       if (!rows.length && !text) { close(); return; }
       open();
@@ -1274,7 +1277,8 @@ pre.code.wrap { white-space:pre-wrap; overflow-wrap:anywhere; align-self:stretch
           if (input.value !== raw || document.activeElement !== input) { return; }
           const t = document.createElement('template');
           t.innerHTML = html;
-          show([...t.content.querySelectorAll('li[role=option]')], q, scope, false, current);
+          const responseNote = t.content.querySelector('[data-empty-note]');
+          show([...t.content.querySelectorAll('li[role=option]')], q, scope, false, current, responseNote?.dataset.emptyNote);
         })
         .catch(e => { if (e.name !== 'AbortError' && document.activeElement === input) { show([], q, scope, true); } });
     };

@@ -1,2 +1,2 @@
 {% for h in hits %}<li role="option" aria-selected="false" class="cb-opt" data-value="{{ h.id }}"><span class="cb-main"><span class="cb-id">{{ h.id }}</span><span class="tag{% if !h.tag.is_empty() %} {{ h.tag }}{% endif %}">{{ h.source }}</span></span>{% if !h.meta.is_empty() %}<span class="cb-meta">{{ h.meta }}</span>{% endif %}</li>
-{% endfor %}
+{% endfor %}{% if !note.is_empty() %}<template data-empty-note="{{ note }}"></template>{% endif %}

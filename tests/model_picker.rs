@@ -159,6 +159,142 @@ fn ids(hits: &[Value]) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn unconfigured_providers_have_no_models_dev_hits() {
+    let a = app().await;
+    let hits = a.json("/admin/search/models?q=gpt&src=models.dev").await;
+    assert!(hits.is_empty(), "unconfigured models: {hits:?}");
+}
+
+#[tokio::test]
+async fn connected_models_dev_names_use_configured_provider_and_merge_live_metadata() {
+    let a = app().await;
+    let (base, _) = upstream(vec!["gpt-4o".into()], Duration::ZERO).await;
+    a.provider("work", &base, "api_key").await;
+    sqlx::query("UPDATE providers SET preset='openai' WHERE name='work'")
+        .execute(&a.st.db)
+        .await
+        .unwrap();
+    // Independent fixture: catalog metadata must replace the live context.
+    sqlx::query(
+        "UPDATE models_dev_models SET context=777000 WHERE provider='openai' AND id='gpt-4o'",
+    )
+    .execute(&a.st.db)
+    .await
+    .unwrap();
+    let dev = a.json("/admin/search/models?q=gpt-4o&src=models.dev").await;
+    assert!(ids(&dev).contains(&"work/gpt-4o"), "{dev:?}");
+    assert!(
+        dev.iter()
+            .all(|h| h["provider"] == "work" && h["id"].as_str().unwrap().starts_with("work/"))
+    );
+    let hits = a.json("/admin/search/models?q=gpt-4o").await;
+    let matching: Vec<_> = hits.iter().filter(|h| h["id"] == "work/gpt-4o").collect();
+    assert_eq!(matching.len(), 1, "{hits:?}");
+    assert_eq!(matching[0]["source"], "provider");
+    assert_eq!(matching[0]["context"], 777000);
+    assert!(matching[0]["price"].is_string());
+    let qualified = a
+        .json("/admin/search/models?q=work/gpt-4o&src=models.dev")
+        .await;
+    assert_eq!(ids(&qualified)[0], "work/gpt-4o");
+}
+
+#[tokio::test]
+async fn models_dev_ranks_before_applying_the_source_limit() {
+    let a = app().await;
+    let (base, _) = upstream(vec![], Duration::ZERO).await;
+    a.provider("work", &base, "api_key").await;
+    sqlx::query("UPDATE providers SET preset='openai' WHERE name='work'")
+        .execute(&a.st.db)
+        .await
+        .unwrap();
+    for i in 0..60 {
+        sqlx::query("INSERT INTO models_dev_models(provider,id,name,canonical_model_id,details) VALUES('openai',?,?, '', '{}')")
+            .bind(format!("my-picker17-{i}"))
+            .bind(format!("AAA picker17 {i}"))
+            .execute(&a.st.db).await.unwrap();
+    }
+    sqlx::query("INSERT INTO models_dev_models(provider,id,name,canonical_model_id,details) VALUES('openai','picker17','ZZZ', '', '{}')").execute(&a.st.db).await.unwrap();
+    let hits = a
+        .json("/admin/search/models?q=picker17&provider=work&src=models.dev")
+        .await;
+    assert_eq!(hits.len(), 20);
+    assert_eq!(ids(&hits)[0], "picker17");
+}
+
+#[tokio::test]
+async fn disconnected_signin_and_missing_env_key_exclude_provider_models() {
+    let a = app().await;
+    a.provider("signed-out", "https://api.anthropic.com", "claude")
+        .await;
+    let (base, requests) = upstream(vec!["gpt-live".into()], Duration::ZERO).await;
+    a.provider("missing-key", &base, "api_key").await;
+    sqlx::query("UPDATE providers SET keys_json=? WHERE name='missing-key'")
+        .bind(r#"["env:MODEL_PICKER_ABSENT_KEY_17"]"#)
+        .execute(&a.st.db)
+        .await
+        .unwrap();
+    a.st.reload_settings().await.unwrap();
+    // A stale runtime key must not make a missing env reference connected.
+    let mut table = (*a.st.router_table()).clone();
+    table
+        .providers
+        .iter_mut()
+        .find(|p| p.name == "missing-key")
+        .unwrap()
+        .keys = Arc::new(vec!["stale-key".into()]);
+    a.st.set_router_table(table);
+    a.model("gpt-catalog", "signed-out", "").await;
+    assert!(
+        a.json("/admin/search/models?provider=signed-out")
+            .await
+            .is_empty()
+    );
+    assert!(
+        a.json("/admin/search/models?provider=missing-key")
+            .await
+            .is_empty()
+    );
+    assert!(
+        a.json("/admin/search/models?q=gpt&src=provider,models.dev")
+            .await
+            .is_empty()
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    // Unscoped catalog Models remain available.
+    assert_eq!(
+        ids(&a.json("/admin/search/models?q=gpt&src=model").await),
+        ["gpt-catalog"]
+    );
+}
+
+#[tokio::test]
+async fn disconnected_scope_and_excluded_count_are_nonselectable_notes() {
+    let a = app().await;
+    a.provider("signed-out", "https://api.anthropic.com", "claude")
+        .await;
+    a.provider("also-out", "https://api.anthropic.com", "claude")
+        .await;
+    let html = a.page("/admin/search/models?provider=signed-out").await;
+    assert!(
+        html.contains("data-empty-note=\"This Provider is not connected. Sign in or add a key.\""),
+        "{html}"
+    );
+    assert!(!html.contains("role=\"option\""));
+    let html = a.page("/admin/search/models?src=route,model").await;
+    assert!(
+        html.contains("data-empty-note=\"2 Providers are not connected\""),
+        "{html}"
+    );
+    assert!(!html.contains("role=\"option\""));
+    let page = a.page("/admin/routes").await;
+    assert!(
+        page.contains("t.content.querySelector('[data-empty-note]')"),
+        "picker must read response notes"
+    );
+}
+
+#[tokio::test]
 async fn search_ranks_dedupes_caps_and_scopes_by_provider() {
     let a = app().await;
     let mut listed: Vec<String> = (0..80).map(|i| format!("m-{i:02}")).collect();
@@ -281,9 +417,8 @@ async fn subscription_providers_are_never_queried() {
     }
     a.st.set_router_table(table);
     let scoped = a.json("/admin/search/models?q=&provider=claude-max").await;
-    // The catalog Model and the offline models.dev list may appear; the live
-    // source must not: no request reaches the subscription upstream.
-    assert_eq!(ids(&scoped)[0], "claude-sonnet");
+    // A signed-out Provider has no scoped suggestions, including catalog Models.
+    assert!(scoped.is_empty());
     assert!(
         scoped.iter().all(|h| h["source"] != "provider"),
         "{scoped:?}"
