@@ -17,8 +17,11 @@ Use form requests to `https://chat.qwen.ai/api/v1/oauth2/device/code` and
 `https://chat.qwen.ai/api/v1/oauth2/token`. The client ID is
 `f0304373b74a44d2b584a3fb70ca9e56`; the scope is
 `openid profile email model.completion`. Keep the PKCE verifier in memory.
-The refresh token rotates. Save the disconnected state before refresh and the
-new token pair before use. An uncertain or invalid refresh needs a new sign-in.
+The refresh token rotates. Save pending state before refresh and the new token
+pair before use. Issue #18 replaces disconnect-before-send with persisted
+backoff and one recovery attempt after a lost response. A definite rejection,
+invalid response or ambiguous recovery requires sign-in. See
+[OAuth refresh](../configuration.md#oauth-refresh).
 
 The token response's `resource_url` selects the inference base. Add HTTPS when
 the scheme is absent, remove trailing slashes, and add `/v1` only once. When

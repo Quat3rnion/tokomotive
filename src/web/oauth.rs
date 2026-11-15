@@ -18,6 +18,7 @@ pub(super) fn router() -> Router<AppState> {
         )
         .route("/admin/providers/{name}/oauth/finish", post(finish))
         .route("/admin/providers/{name}/oauth/disconnect", post(disconnect))
+        .route("/admin/providers/{name}/oauth/refresh", post(refresh))
         .route("/admin/providers/{name}/usage/start", post(usage_start))
         .route("/admin/providers/{name}/usage/paste", post(usage_paste))
         .route(
@@ -29,6 +30,20 @@ pub(super) fn router() -> Router<AppState> {
             "/admin/providers/{name}/usage/disconnect",
             post(usage_disconnect),
         )
+}
+async fn refresh(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let Some(flow) = flow(&st, &name) else {
+        return bad("This Provider does not use OAuth.");
+    };
+    let result = st.oauth.refresh_now(&name, flow).await;
+    st.oauth.emit_refresh_events(&st).await;
+    match result {
+        Ok(()) => saved("/admin/providers", "Sign-in refreshed."),
+        Err(e) if e.is::<crate::oauth::RefreshRetrying>() => {
+            form_error("Sign-in refresh is retrying. Wait for the next scheduled retry.")
+        }
+        Err(_) => form_error("Cannot refresh this credential. Check the sign-in status."),
+    }
 }
 async fn client_metadata(State(st): State<AppState>) -> Response {
     match st.oauth.client_metadata().await {
@@ -275,6 +290,7 @@ async fn exchange(st: AppState, name: String, flow: Flow, callback: String) -> R
     match st.oauth.finish(&name, flow, &callback).await {
         Ok(()) => {
             crate::quota::emit_health_events(&st).await;
+            st.oauth.emit_refresh_events(&st).await;
             if flow == Flow::OpenRouter {
                 tryr!(st.reload_settings().await);
             }

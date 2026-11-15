@@ -1,5 +1,103 @@
 # Configuration reference
 
+## OAuth refresh
+
+Refresh settings are automatic. There is no seed-file setting. Run only one
+Proxy process per database. Each credential has one in-process refresh lock.
+Tokens, pending refresh state and retry times use the encrypted credential
+record. A restart keeps them. Keep the Master Key with the database backup.
+
+The background task checks credentials every 60 seconds. It refreshes at 80%
+of the access lifetime or 10 minutes before expiry, whichever comes first.
+The schedule has up to 30 seconds of early jitter. At most four background
+refreshes run at once. Google user tokens and Entra tokens also have a 30-day
+keep-alive limit. Normal short access lifetimes cause refresh much sooner.
+Vertex service-account tokens use the same schedule, lock and retry policy.
+An upstream 401 can also start one refresh. **Refresh now** uses the same lock
+and does not bypass a retry delay. This POST action requires Admin or Owner
+and the same origin. A Viewer gets HTTP 403.
+
+### Flow rules
+
+The access lifetime below is the issuer's `expires_in`, not a promise that a
+token cannot be revoked sooner. Except for Claude, the current fallback for
+a missing access lifetime is one hour. A flow with no refresh grant and no
+reported expiry has no local expiry. "Unknown" means that the cited source
+does not establish a server guarantee. A local mock does not prove a live
+reuse window.
+
+| Flow | Refresh rotation and reuse | Access lifetime | Idle expiry |
+| --- | --- | --- | --- |
+| ChatGPT token sharing | Replacement required. Reuse grace unknown [1]. | Reported; fallback 1 hour. | Unknown. |
+| Claude | Replacement required. Single-use; no verified grace window [1]. | Reported; required. | Unknown. |
+| Codex, including optional plan usage | Save a replacement when supplied; otherwise keep the old token. Treat a lost response as possible rotation. Upstream reports already-used tokens; no verified grace window [2]. | Reported; fallback 1 hour. | Unknown. |
+| Hugging Face | Save a replacement when supplied; otherwise keep the old token. Rotation and reuse guarantees are not documented in the cited guide [3]. | Reported; fallback 1 hour. | Unknown. |
+| Entra | Replaces on use, but does not revoke the old token on use [4]. | Reported; normally 60 to 90 minutes [5]. | Normally 90 days for this public-client flow; tenant policy or revocation can shorten it [4]. |
+| Google Vertex user OAuth | Reusable refresh token; keep it when the response omits a replacement [6]. | Reported; fallback 1 hour. | Six months without refresh use. Testing clients can expire after 7 days; session controls can require sign-in sooner [6]. |
+| Google Vertex service account | No refresh token. Mint a new access token with a signed JWT [7]. | Reported; normally 1 hour. | No refresh-token idle expiry. Key and account policy still apply. |
+| Gemini CLI / Code Assist | Google reusable refresh token; keep it when omitted [6, 8]. | Reported; fallback 1 hour. | Google six-month inactivity rule and session controls [6]. |
+| Qwen Code | Tokomotive requires a replacement. The pinned client can retain an omitted replacement; no verified reuse grace window [9]. | Reported; fallback 1 hour. | Unknown. |
+| Kimi Code | Replacement required. The pinned client retries transport errors, but does not establish a server grace window [10]. | Reported; fallback 1 hour. | Unknown. |
+| GitHub Copilot | No refresh grant. Use the GitHub OAuth bearer directly; no short-lived Copilot exchange [11]. | No expiry reported in this flow. | GitHub can revoke a bearer unused for one year [12]. Sign in again; there is no refresh-token keep-alive. |
+| OpenRouter | PKCE creates a normal API key. No refresh grant [13]. | API-key settings. | API-key settings. |
+
+Sources, checked 2026-11-15:
+
+1. [Subscription protocol and limits](adr/0003-subscription-providers.md).
+   The ChatGPT sharing flow came from the owner's earlier project. This is
+   not an issuer guarantee of refresh-token reuse.
+2. [Codex refresh manager at the pinned commit](https://github.com/openai/codex/blob/52ff3d1a353953ccc08a39bdfc66a5fda9b08d0e/codex-rs/login/src/auth/manager.rs).
+3. [Hugging Face OAuth](https://huggingface.co/docs/hub/oauth).
+4. [Microsoft refresh-token lifetime and replacement](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens).
+5. [Microsoft access-token lifetime](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens#token-lifetime).
+6. [Google OAuth refresh and expiration](https://developers.google.com/identity/protocols/oauth2#expiration).
+7. [Google service-account grants](https://developers.google.com/identity/protocols/oauth2/service-account).
+8. [Pinned Gemini CLI protocol](adr/0009-gemini-cli.md).
+9. [Pinned Qwen refresh client](https://github.com/QwenLM/qwen-code/blob/6f754be6548903e545e6ff0ed43a34927fe3bfb9/packages/core/src/qwen/qwenOAuth2.ts).
+10. [Pinned Kimi refresh client](https://github.com/MoonshotAI/kimi-code/blob/f082f04a093a3e71a2263c5461d52507dc31f83a/packages/oauth/src/oauth.ts).
+11. [Copilot direct-bearer decision and source](adr/0006-github-copilot.md).
+12. [GitHub token expiration and revocation](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation).
+13. [OpenRouter PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth).
+
+### Refresh outcomes
+
+- A token endpoint HTTP 400 or 401 with `invalid_grant`, `invalid_token` or
+  `unauthorized_client` disconnects the credential. The page shows fixed
+  text, not the issuer's response. An invalid successful response also
+  disconnects a rotating flow. Sign in again.
+- A connection failure before send, HTTP 429 or HTTP 5xx keeps the credential.
+  A non-rotating flow also keeps it after a timeout or network reset. The
+  persisted retry delay doubles from 30 seconds to a maximum of 15 minutes,
+  with jitter. The access token remains usable until its actual expiry.
+  Requests that need a fresh token get HTTP 503 with
+  `Sign-in refresh is retrying`, in the API error format. A Fallback can still
+  serve the request.
+- A rotating request with no response can have consumed the refresh token.
+  The Proxy keeps the old token and a **Refresh in doubt** marker. After the
+  delay it makes one recovery attempt with that token. A crash during the
+  first request also permits this one attempt. An explicit transient response
+  does not consume the recovery attempt. A second ambiguous result, or a crash
+  during recovery, stops further replay and shows
+  `Refresh token state is unknown; sign in again`. The in-doubt state also
+  stops after 24 hours or 20 attempts, whichever comes first. This limit
+  includes the first ambiguous request and explicit transient recovery replies.
+  An already-used
+  rejection shows `Refresh token was already used; sign in again`.
+
+The bounded recovery attempt is a recovery policy, not a claim that every
+issuer permits reuse. No grace duration is assumed for the rotating flows.
+The Provider card shows access expiry, last refresh, next refresh or retry,
+and the last fixed-text refresh error. Refresh errors do not change the
+**Connected** state unless the credential is disconnected.
+
+`tokomotive_oauth_refresh_total{provider,flow,result}` counts `success`,
+`transient`, `in_doubt` and `disconnected` outcomes.
+`tokomotive_oauth_access_expiry_seconds{provider,flow}` reports remaining access
+lifetime in seconds when credentials are checked. Logs contain only Provider,
+flow and fixed result text. Alerts use `oauth_disconnected` and
+`oauth_recovered`, once per transition. Recovery includes a successful retry
+after a transient error. Delivery is best effort, as for other alert webhooks.
+
 ## Guardrails
 
 Use **Guardrails** in the dashboard. Rule sets and their Route, Team and

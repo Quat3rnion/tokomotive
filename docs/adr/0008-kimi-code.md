@@ -16,8 +16,11 @@ inspection and local mocks do not establish live permission.
 Send form requests to `https://auth.kimi.com/api/oauth/device_authorization`
 and `https://auth.kimi.com/api/oauth/token`. Use client ID
 `17e5f671-d194-4dfb-9706-5516cb48c098`. No scope is added. The refresh token
-rotates. The existing single-flight engine saves a disconnected state before
-refresh and saves the new pair before use. A failed refresh needs a new sign-in.
+rotates. The single-flight engine saves pending state before refresh and the
+new pair before use. Issue #18 replaces disconnect-before-send with persisted
+backoff and one recovery attempt after a lost response. A definite rejection,
+invalid response or ambiguous recovery requires sign-in. See
+[OAuth refresh](../configuration.md#oauth-refresh).
 
 The fixed inference base is `https://api.kimi.com/coding/v1`. The pinned
 `region.ts` also lists global hosts `auth.kimi.ai` and `api.kimi.ai/coding/v1`.

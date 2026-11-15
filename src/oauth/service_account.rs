@@ -53,10 +53,12 @@ impl OAuthManager {
         let _guard = self.flight(name, Flow::GoogleVertex).await;
         self.validate(name, Flow::GoogleVertex).await?;
         let mut saved = self.load(name, Flow::GoogleVertex).await?;
+        let recovered = saved.last_error.is_some() || saved.refresh.last_error.is_some();
         saved.options = ClientOptions::default();
         saved.client_id = None;
         saved.credential = None;
         saved.last_error = None;
+        saved.refresh = Default::default();
         saved.service_account = Some(account);
         self.pending
             .lock()
@@ -68,6 +70,9 @@ impl OAuthManager {
             .remove(&(name.into(), Flow::GoogleVertex));
         // Mint once so that the dashboard can report a connected credential.
         self.service_account_token(name, &mut saved, None).await?;
+        if recovered {
+            self.refresh_event(name, Flow::GoogleVertex, true).await;
+        }
         Ok(())
     }
     pub(super) async fn service_account_token(
@@ -80,33 +85,48 @@ impl OAuthManager {
             bail!("Credential rejected; save a service-account key again");
         }
         if let Some(c) = &saved.credential
+            && c.expires_at > self.now()
             && (rejected.is_some_and(|old| old != c.access_token)
-                || (rejected.is_none() && c.expires_at > self.now() + 300_000))
+                || (rejected.is_none() && !self.refresh_due(Flow::GoogleVertex, saved)))
         {
+            self.expiry_metric(name, Flow::GoogleVertex, c.expires_at);
             return Ok(c.access_token.clone());
+        }
+        if saved
+            .refresh
+            .next_retry_at
+            .is_some_and(|at| at > self.now())
+        {
+            return self.usable_or_retrying(saved, rejected);
         }
         let account = saved
             .service_account
             .as_ref()
             .context("Missing service-account key")?;
         let assertion = account.assertion(self.now() / 1000)?;
-        let response = self
-            .http(name)
-            .await?
-            .post(&self.endpoints.google_token)
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-                ("assertion", assertion.as_str()),
-            ])
-            .send()
-            .await
-            .map_err(|e| self.request_error(name, e, "Service-account token request failed"))?;
-        if !response.status().is_success() {
-            bail!("Service-account token request rejected");
-        }
-        let tokens: Tokens = serde_json::from_value(bounded_json(response).await?)
-            .map_err(|_| anyhow::anyhow!("Invalid service-account token response"))?;
-        Self::check_tokens(Flow::GoogleVertex, &tokens)?;
+        let email = account.client_email.clone();
+        let config = FlowConfig {
+            flow_type: FlowType::PkcePaste,
+            authorize: String::new(),
+            device: None,
+            token: self.endpoints.google_token.clone(),
+            client_id: String::new(),
+            client_secret: None,
+            scopes: String::new(),
+            authorize_params: vec![],
+            token_encoding: TokenEncoding::Form,
+            headers: vec![],
+            inference_base: InferenceBase::AdapterPending,
+            refresh: RefreshRule::RefreshToken,
+            redirect: "",
+            instructions: "",
+            device_pkce: false,
+            basic_secret: false,
+        };
+        let Some(tokens) = self.refresh_tokens(name, Flow::GoogleVertex, &config, saved,
+            json!({"grant_type":"urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion":assertion})).await? else {
+            return self.usable_or_retrying(saved, rejected);
+        };
         let token = tokens.access_token.clone();
         saved.credential = Some(Credential {
             access_token: tokens.access_token,
@@ -114,12 +134,13 @@ impl OAuthManager {
             scope: "https://www.googleapis.com/auth/cloud-platform".into(),
             expires_at: self.now() + tokens.expires_in.unwrap_or(3600) * 1000,
             last_refresh: Some(self.now()),
-            account: Some(account.client_email.clone()),
+            account: Some(email),
             plan: None,
             account_id: None,
             inference_base: None,
         });
-        self.save(name, Flow::GoogleVertex, saved).await?;
+        self.refresh_succeeded(name, Flow::GoogleVertex, saved)
+            .await?;
         self.recover_health(name, Flow::GoogleVertex).await?;
         Ok(token)
     }

@@ -24,8 +24,10 @@ const SHARING_SCOPE: &str = "chatgpt.tokens.use.direct";
 
 mod code_assist;
 mod config;
+mod refresh;
 mod service_account;
 pub use config::{ClientOptions, FlowConfig, FlowType, InferenceBase, RefreshRule, TokenEncoding};
+pub use refresh::{RefreshRetrying, start_background};
 
 /// Stable storage identity, not a protocol enum. The registry supplies the data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -165,6 +167,8 @@ struct Saved {
     last_error: Option<String>,
     #[serde(default)]
     options: ClientOptions,
+    #[serde(default)]
+    refresh: refresh::RefreshState,
 }
 #[derive(Serialize, Deserialize)]
 struct Credential {
@@ -187,6 +191,10 @@ pub struct Status {
     pub expires_at: Option<i64>,
     pub last_refresh: Option<i64>,
     pub last_error: Option<String>,
+    pub last_refresh_error: Option<String>,
+    pub next_retry_at: Option<i64>,
+    pub next_refresh_at: Option<i64>,
+    pub refresh_in_doubt: bool,
 }
 #[derive(Clone, Serialize)]
 pub struct Started {
@@ -246,6 +254,7 @@ struct Tokens {
 type Identity = (String, Flow);
 type FlightLocks = Mutex<HashMap<Identity, Arc<Mutex<()>>>>;
 type UsageCache = Mutex<HashMap<String, (i64, Option<PlanUsage>)>>;
+type RefreshEvents = Mutex<HashMap<(String, Flow, bool), crate::alerts::Event>>;
 #[derive(Clone)]
 pub struct OAuthManager {
     db: Db,
@@ -259,6 +268,8 @@ pub struct OAuthManager {
     usage_cache: Arc<UsageCache>,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     configs: HashMap<Flow, FlowConfig>,
+    refresh_timeout: Duration,
+    refresh_events: Arc<RefreshEvents>,
 }
 fn random(bytes: usize) -> String {
     let mut v = vec![0; bytes];
@@ -501,10 +512,17 @@ impl OAuthManager {
             usage_cache: Arc::default(),
             clock: Arc::new(db::now_ms),
             configs: HashMap::new(),
+            refresh_timeout: Duration::from_secs(30),
+            refresh_events: Arc::default(),
         })
     }
     pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.clock = Arc::new(clock);
+        self
+    }
+    /// Trusted process-construction seam for endpoint timeout tests.
+    pub fn with_refresh_timeout(mut self, timeout: Duration) -> Self {
+        self.refresh_timeout = timeout;
         self
     }
     pub fn with_egress(mut self, egress: crate::egress::Egress) -> Self {
@@ -733,6 +751,20 @@ impl OAuthManager {
         self.validate(name, flow).await?;
         let s = self.load(name, flow).await?;
         let c = s.credential.as_ref();
+        let refreshable = c.is_some()
+            && s.last_error.is_none()
+            && (s.service_account.is_some()
+                || self
+                    .config(flow, &s)
+                    .is_ok_and(|c| c.refresh != RefreshRule::None));
+        let next_refresh_at = refreshable
+            .then(|| {
+                s.refresh
+                    .next_retry_at
+                    .or(s.refresh.next_refresh_at)
+                    .or_else(|| c.map(|c| c.expires_at.saturating_sub(600_000)))
+            })
+            .flatten();
         Ok(Status {
             connected: c.is_some() && s.last_error.is_none(),
             account: c.and_then(|c| c.account.clone()),
@@ -740,6 +772,10 @@ impl OAuthManager {
             expires_at: c.map(|c| c.expires_at),
             last_refresh: c.and_then(|c| c.last_refresh),
             last_error: s.last_error,
+            last_refresh_error: s.refresh.last_error,
+            next_retry_at: s.refresh.next_retry_at,
+            next_refresh_at,
+            refresh_in_doubt: s.refresh.pending,
         })
     }
     pub async fn disconnect(&self, name: &str, flow: Flow) -> Result<()> {
@@ -752,6 +788,7 @@ impl OAuthManager {
         s.credential = None;
         s.service_account = None;
         s.last_error = None;
+        s.refresh = Default::default();
         self.save(name, flow, &s).await
     }
     pub async fn start(&self, name: &str, flow: Flow) -> Result<Started> {
@@ -841,8 +878,16 @@ impl OAuthManager {
             .credential
             .as_ref()
             .context("Subscription disconnected; sign in again")?;
-        if rejected.is_some_and(|old| old != c.access_token)
-            || (rejected.is_none() && c.expires_at > self.now() + 300_000)
+        self.expiry_metric(name, flow, c.expires_at);
+        if self.doubt_exhausted(&s) {
+            return self
+                .refresh_disconnect(name, flow, &mut s, refresh::UNKNOWN)
+                .await;
+        }
+        if c.expires_at > self.now()
+            && (rejected.is_some_and(|old| old != c.access_token)
+                || (rejected.is_none()
+                    && (config.refresh == RefreshRule::None || !self.refresh_due(flow, &s))))
         {
             return Ok(c.access_token.clone());
         }
@@ -850,29 +895,54 @@ impl OAuthManager {
         if config.refresh == RefreshRule::None || refresh.is_empty() {
             bail!("Sign in again to renew this credential");
         }
+        if s.refresh.next_retry_at.is_some_and(|at| at > self.now()) {
+            return self.usable_or_retrying(&s, rejected);
+        }
         let client = s.client_id.clone().context("Missing OAuth client")?;
-        // Commit before sending: a crash or an ambiguous failure must not replay
-        // a refresh token that the issuer may already have consumed.
-        s.last_error = Some("Refresh did not complete; sign in again".into());
-        self.save(name, flow, &s).await?;
-        let t = self.tokens(name,flow,json!({"grant_type":"refresh_token","client_id":client,"refresh_token":refresh,"resource":self.endpoints.openai_resource})).await?;
+        let t = match self.refresh_tokens(name, flow, &config, &mut s, json!({"grant_type":"refresh_token","client_id":client,"refresh_token":refresh,"resource":self.endpoints.openai_resource})).await? {
+            Some(t) => t,
+            None => return self.usable_or_retrying(&s, rejected),
+        };
         let inference_base = if let InferenceBase::TokenResource { field, .. } =
             &config.inference_base
             && !t.extra.contains_key(field)
         {
             s.credential.as_ref().and_then(|c| c.inference_base.clone())
         } else {
-            self.derive_inference(name, &config, &t).await?
+            match self.derive_inference(name, &config, &t).await {
+                Ok(base) => base,
+                Err(_) => {
+                    return self
+                        .refresh_disconnect(
+                            name,
+                            flow,
+                            &mut s,
+                            "Invalid refresh response; sign in again",
+                        )
+                        .await;
+                }
+            }
         };
         let c = s.credential.as_mut().expect("credential checked");
         let scope = t.scope.unwrap_or_else(|| c.scope.clone());
         if flow == Flow::Chatgpt && !has_scope(&scope) {
-            bail!("ChatGPT token sharing scope was not granted");
+            return self
+                .refresh_disconnect(name, flow, &mut s, "Refresh scope rejected; sign in again")
+                .await;
         }
         let refresh = match t.refresh_token {
             Some(v) => v,
             None if config.refresh == RefreshRule::RefreshToken => refresh,
-            None => bail!("Missing rotating refresh token"),
+            None => {
+                return self
+                    .refresh_disconnect(
+                        name,
+                        flow,
+                        &mut s,
+                        "Invalid refresh response; sign in again",
+                    )
+                    .await;
+            }
         };
         c.access_token = t.access_token;
         c.refresh_token = refresh;
@@ -882,7 +952,7 @@ impl OAuthManager {
         c.inference_base = inference_base;
         let token = c.access_token.clone();
         s.last_error = None;
-        self.save(name, flow, &s).await?;
+        self.refresh_succeeded(name, flow, &mut s).await?;
         self.recover_health(name, flow).await?;
         Ok(token)
     }
@@ -903,9 +973,11 @@ impl OAuthManager {
         if s.credential
             .as_ref()
             .is_some_and(|c| c.access_token == token)
+            && s.last_error.is_none()
         {
             s.last_error = Some("Provider rejected refreshed credentials; sign in again".into());
             self.save(name, flow, &s).await?;
+            self.refresh_event(name, flow, false).await;
         }
         Ok(())
     }
@@ -1139,7 +1211,9 @@ impl OAuthManager {
         }
         let mut s = self.load(name, flow).await?;
         s.client_id = Some(client);
+        let recovered = s.last_error.is_some() || s.refresh.last_error.is_some();
         s.last_error = None;
+        s.refresh = Default::default();
         s.credential = Some(Credential {
             access_token: tokens.access_token,
             refresh_token: refresh,
@@ -1155,7 +1229,16 @@ impl OAuthManager {
             account_id,
             inference_base,
         });
+        if config.refresh != RefreshRule::None {
+            self.schedule_refresh(flow, &mut s);
+        }
         self.save(name, flow, &s).await?;
+        if recovered {
+            self.refresh_event(name, flow, true).await;
+        }
+        if let Some(c) = &s.credential {
+            self.expiry_metric(name, flow, c.expires_at);
+        }
         self.usage_cache.lock().await.remove(name);
         self.recover_health(name, flow).await?;
         Ok(())

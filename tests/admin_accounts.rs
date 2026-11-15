@@ -14,10 +14,17 @@ impl Drop for App {
     }
 }
 async fn app() -> App {
+    app_with_endpoints(Default::default()).await
+}
+async fn app_with_endpoints(endpoints: tokomotive::oauth::OAuthEndpoints) -> App {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg: Config = toml::from_str("").unwrap();
     cfg.server.database = format!("sqlite://{}/db.sqlite", dir.path().display());
-    let st = tokomotive::init(&cfg, None).await.unwrap();
+    let db = tokomotive::db::connect(&cfg.server.database).await.unwrap();
+    tokomotive::db::seed(&db, &cfg).await.unwrap();
+    let st = AppState::new_with_oauth_endpoints(&cfg, db, None, endpoints)
+        .await
+        .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let router = tokomotive::router(st.clone());
@@ -39,6 +46,109 @@ async fn app() -> App {
             .unwrap(),
         task,
     }
+}
+
+#[tokio::test]
+async fn refresh_now_works_for_admin_rejects_viewer_and_cross_origin_and_hides_secrets() {
+    use axum::{Json, Router, routing::post};
+    use serde_json::json;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokomotive::oauth::{Flow, OAuthEndpoints};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let mock = tokio::spawn(async move {
+        axum::serve(l, Router::new().route("/token", post(move || {let seen = seen.clone(); async move {
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            Json(json!({"access_token":format!("private-access-{n}"),"refresh_token":format!("private-refresh-{n}"),"expires_in":3600}))
+        }}))).await.unwrap();
+    });
+    let a = app_with_endpoints(OAuthEndpoints {
+        claude_token: format!("{base}/token"),
+        claude_resource: base,
+        ..Default::default()
+    })
+    .await;
+    let owner = a.setup().await;
+    add(&a, &owner, "operator", "admin").await;
+    add(&a, &owner, "reader", "viewer").await;
+    let admin = a.login("operator", "account-password").await;
+    let viewer = a.login("reader", "account-password").await;
+    assert_eq!(
+        a.post(
+            "/admin/providers",
+            &admin,
+            &[
+                ("name", "sub"),
+                ("kind", "anthropic"),
+                ("base_url", "https://api.anthropic.com"),
+                ("auth", "claude")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+    let start = a.st.oauth.start("sub", Flow::Claude).await.unwrap();
+    let q: std::collections::HashMap<_, _> = reqwest::Url::parse(&start.authorize_url)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    a.st.oauth
+        .finish("sub", Flow::Claude, &format!("code#{}", q["state"]))
+        .await
+        .unwrap();
+    let path = "/admin/providers/sub/oauth/refresh";
+    assert_eq!(a.post(path, &viewer, &[]).await.status(), 403);
+    assert_eq!(
+        a.c.post(format!("{}{path}", a.url))
+            .header("cookie", &admin)
+            .header("origin", "https://other.example")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(a.post(path, &admin, &[]).await.status(), 303);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let html =
+        a.c.get(format!("{}/admin/providers", a.url))
+            .header("cookie", &admin)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+    for text in [
+        "Access expires",
+        "Last refresh",
+        "Next refresh",
+        "Refresh now",
+    ] {
+        assert!(html.contains(text), "{text}");
+    }
+    for secret in ["private-access", "private-refresh"] {
+        assert!(!html.contains(secret));
+    }
+    let html =
+        a.c.get(format!("{}/admin/providers", a.url))
+            .header("cookie", &viewer)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+    assert!(!html.contains("Refresh now"));
+    mock.abort();
 }
 fn cookie(r: &reqwest::Response) -> String {
     r.headers()
@@ -515,6 +625,11 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
     let admin = a.login("operator", "account-password").await;
     let paths = mutations();
     assert!(paths.len() > 50);
+    assert!(
+        paths
+            .iter()
+            .any(|p| p == "/admin/providers/{name}/oauth/refresh")
+    );
     for exception in [
         "/admin/login",
         "/setup",

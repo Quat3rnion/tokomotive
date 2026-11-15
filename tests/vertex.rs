@@ -186,7 +186,13 @@ async fn service_account_signs_rs256_caches_and_renews_an_encrypted_credential()
         "service-0"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    now.fetch_add(3_400_000, Ordering::SeqCst);
+    now.fetch_add(3_000_000, Ordering::SeqCst);
+    oauth.refresh_due_credentials().await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "service-account background refresh before expiry"
+    );
     let (a, b) = tokio::join!(
         oauth.token("v", Flow::GoogleVertex, None),
         oauth.token("v", Flow::GoogleVertex, None)

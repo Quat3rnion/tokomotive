@@ -10,8 +10,11 @@
   {% if let Some(v) = s.plan %}<div><dt>Plan</dt><dd>{{ v }}</dd></div>{% endif %}
   {% if let Some(v) = s.expires %}<div><dt>Access expires</dt><dd><time datetime="{{ v.iso }}">{{ v }}</time></dd></div>{% endif %}
   {% if let Some(v) = s.last_refresh %}<div><dt>Last refresh</dt><dd><time datetime="{{ v.iso }}">{{ v }}</time></dd></div>{% endif %}
+  {% if let Some(v) = s.next_refresh %}<div><dt>Next refresh</dt><dd><time datetime="{{ v.iso }}">{{ v }}</time></dd></div>{% endif %}
 </dl>
 {% if let Some(e) = s.last_error %}<p class="bad">Last error: {{ e }}</p>{% endif %}
+{% if let Some(e) = s.last_refresh_error %}<p class="hint warn-note">Last refresh error: {{ e }}</p>{% endif %}
+{% if s.refresh_in_doubt %}<p class="hint warn-note">Refresh in doubt. One recovery attempt can use the saved refresh token.</p>{% endif %}
 {% endmacro %}
 
 {% block content %}
@@ -192,6 +195,7 @@
   {% call status_list(s) %}
   <div class="row">
     <form method="post" action="/admin/providers/{{ p.name }}/oauth/start" hx-post="/admin/providers/{{ p.name }}/oauth/start" hx-target="next .signin" hx-swap="innerHTML"><button{% if s.connected %} class="ghost"{% endif %} data-busy="Starting..." aria-label="{% if s.connected %}Reconnect{% else %}Sign in to{% endif %} {{ p.name }}">{% if p.auth == "codex" || p.auth == "hugging_face" || p.auth == "entra" || p.auth == "github_copilot" || p.auth == "qwen_code" || p.auth == "kimi_code" %}Sign in with a device code{% else if s.connected %}Reconnect{% else %}Sign in{% endif %}</button><div class="form-error" role="alert" tabindex="-1"></div></form>
+    {% if s.connected && s.refreshable %}<form method="post" action="/admin/providers/{{ p.name }}/oauth/refresh"><button class="ghost" data-busy="Refreshing..." aria-label="Refresh sign-in for {{ p.name }}">Refresh now</button><div class="form-error" role="alert" tabindex="-1"></div></form>{% endif %}
     {% if s.connected %}<form method="post" action="/admin/providers/{{ p.name }}/oauth/disconnect" data-confirm="Disconnect {{ p.name }}? Requests to this Provider fail until you sign in again."><button class="danger" aria-label="Disconnect {{ p.name }}">Disconnect</button></form>{% endif %}
   </div>
   <div class="signin"></div>

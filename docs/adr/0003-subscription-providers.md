@@ -31,10 +31,14 @@ risk on 2026-11-13. An API-key Provider remains the alternative.
 The Provider kind remains the wire format: `openai` or `anthropic`. A separate
 `auth` field selects `api_key`, `chatgpt` or `claude`. Subscription credentials
 are encrypted in SQLite with the existing Master Key. Sign-in attempts stay
-in memory for 10 minutes. Refresh is single-flight for each credential. Before
-refresh, the Proxy saves a disconnected state. This prevents replay of a
-refresh token after a crash or an uncertain response. It saves the new tokens
-before it uses them. A failed refresh needs a new sign-in.
+in memory for 10 minutes. Refresh is single-flight for each credential.
+As of issue #18, the Proxy saves pending state before a rotating refresh and
+saves the new pair before use. A temporary failure keeps the credential with
+backoff. A lost response permits one recovery attempt, also after a restart.
+A definite rejection or an ambiguous recovery requires sign-in. The periodic
+task refreshes idle Providers. See [OAuth refresh](../configuration.md#oauth-refresh)
+for the current classification and per-flow limits. This replaces the initial
+disconnect-before-send policy.
 
 Subscription Providers require explicit Provider Access for each Virtual Key.
 An absent or empty list allows all API-key Providers, but no Subscription

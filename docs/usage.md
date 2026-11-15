@@ -1954,7 +1954,7 @@ notice and can break the service terms.
 5. For Claude, copy the final `code#state`. Return to the Tokomotive tab. Paste
    the URL or `code#state` in the field and select **Connect**. Complete this
    step within 10 minutes. Start again if the attempt expires or fails.
-6. Check **Connected**, the account, the plan, the expiry and the last error.
+6. Check **Connected**, the account, the plan, the access expiry and the last error.
    Account or plan metadata can show **not available** if the issuer omits it.
 7. Open **Keys**. Enter this Provider name in **Provider Access** for each Virtual
    Key that needs it. Select any API-key Providers that the same key must use.
@@ -2017,9 +2017,21 @@ enter comma-separated Provider names. The server accepts both forms:
   disallowed Providers. Update Provider Access after a Provider rename.
 
 Tokens are encrypted with the Master Key and are never shown in HTML or logs.
-The Proxy refreshes them before expiry and retries once after an upstream 401.
-A failed refresh disconnects the Provider and counts as a Circuit Breaker
-failure. Routes can use their Fallbacks. Sign in again to restore the Provider.
+The background task refreshes idle Providers too. It checks every minute and
+refreshes at 80% of the access lifetime or 10 minutes before expiry. The
+Provider card shows **Last refresh**, **Next refresh**, and a fixed-text refresh
+error. An Admin can select **Refresh now**. A Viewer cannot use this action.
+The Proxy also retries once after an upstream 401.
+
+A temporary refresh failure keeps the credential and schedules a retry, from
+30 seconds up to 15 minutes later. **Refresh now** respects this delay. The
+access token works until its actual expiry. If a request needs a fresh token
+during the delay, it gets HTTP 503, `Sign-in refresh is retrying`, unless a
+Fallback serves it. A lost rotating-token response shows **Refresh in doubt**.
+The Proxy can make one recovery attempt with the old refresh token, also after
+a restart. A definite rejection or an uncertain recovery needs a new sign-in.
+Do not repeatedly reconnect during a temporary outage. Check the status first.
+See [OAuth refresh rules and issuer limits](configuration.md#oauth-refresh).
 Only one Proxy process may use a database, because refresh coordination is in
 memory. Keep the database and Master Key together in backups.
 
@@ -2222,6 +2234,14 @@ enter the client ID each time you save. An empty client secret keeps the saved
 secret. Saving client settings disconnects that login. Sign in again after saving.
 Back up the Master Key with the database.
 
+Hugging Face, Entra and Google sign-ins use the same
+[background refresh and retry policy](configuration.md#oauth-refresh).
+Check access expiry, last refresh, next refresh and refresh errors on the
+Provider card. Select **Refresh now** to request an early refresh. Only an
+Admin or Owner can do this. It does not bypass a retry delay. A temporary
+failure does not require a new sign-in. OpenRouter creates an API key instead;
+it has no token refresh.
+
 ### Sign in with OpenRouter
 
 1. Add an API-key Provider with API format **OpenAI** and base URL
@@ -2319,8 +2339,9 @@ the cards. This is not a subscription.
 Instead of user sign-in, open **Service-account JSON key** and paste the key
 file. Select **Save service-account key**. This replaces user sign-in. The key
 is encrypted and is not shown again. The Proxy signs an RS256 JWT and exchanges
-it for a cloud-platform access token. It caches the token until 5 minutes before
-expiry. Saving OAuth client settings removes the service-account key.
+it for a cloud-platform access token. The background task renews it at 80% of
+its lifetime or 10 minutes before expiry, with the same retry policy as user
+sign-in. Saving OAuth client settings removes the service-account key.
 
 The Provider accepts canonical Chat Completions and Messages POST paths. Use
 `claude-*` model names for Anthropic; other names select Gemini. A Deployment
@@ -2481,6 +2502,12 @@ Each Provider needs explicit Provider Access on each Virtual Key. Cost is 0;
 Price uses the Rate Cards. Tokens stay encrypted in SQLite. Do not share the
 device code. Keep the sign-in panel open until it connects. These three flows
 have no redirect-paste fallback. Disconnect removes the login, not the Provider.
+
+Qwen and Kimi use the [background refresh and recovery policy](configuration.md#oauth-refresh).
+Check **Last refresh**, **Next refresh** and the refresh error on the Provider
+card. A timeout can show **Refresh in doubt** before one recovery attempt.
+GitHub Copilot has no refresh grant in this integration. Sign in again if its
+bearer is revoked.
 
 ### Sign in with GitHub Copilot
 

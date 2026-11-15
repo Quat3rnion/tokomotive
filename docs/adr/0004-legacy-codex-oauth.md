@@ -79,7 +79,9 @@ when another attempt starts or status is read. Restart loses attempts.
 
 All sign-in and status endpoints require Admin and same-origin POSTs. Device
 credentials and token responses never enter HTML or logs. Saved tokens use
-the existing encrypted storage and single-flight, fail-closed refresh.
+the existing encrypted storage and single-flight refresh. Issue #18 adds
+persisted backoff and one bounded recovery attempt after a lost rotating
+response. See [OAuth refresh](../configuration.md#oauth-refresh).
 
 No device flow is advertised for the user-owned ChatGPT token-sharing client:
 OpenAI's discovery document lists only authorization-code and refresh grants

@@ -243,11 +243,11 @@ async fn attempts_expire_and_reject_malformed_pasted_urls_before_exchange() {
 }
 
 #[tokio::test]
-async fn refresh_failure_disconnects_and_cannot_replay_after_reload() {
+async fn transient_refresh_keeps_credential_and_recovers_after_backoff() {
     use axum::{http::StatusCode, response::IntoResponse};
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicI64, AtomicUsize, Ordering},
     };
     use tokomotive::{
         oauth::{Flow, OAuthEndpoints, OAuthManager},
@@ -260,7 +260,8 @@ async fn refresh_failure_disconnects_and_cannot_replay_after_reload() {
     let mock = tokio::spawn(async move {
         axum::serve(listener,Router::new().route("/token",post(move || {let seen=seen.clone();async move {
         if seen.fetch_add(1,Ordering::SeqCst)==0 {Json(json!({"access_token":"access","refresh_token":"refresh","expires_in":1})).into_response()}
-        else {(StatusCode::INTERNAL_SERVER_ERROR,"sensitive upstream body").into_response()}
+        else if seen.load(Ordering::SeqCst)==2 {(StatusCode::SERVICE_UNAVAILABLE,"sensitive upstream body").into_response()}
+        else {Json(json!({"access_token":"renewed","refresh_token":"rotated","expires_in":3600})).into_response()}
     }}))).await.unwrap()
     });
     let db = db::connect("sqlite::memory:").await.unwrap();
@@ -271,7 +272,13 @@ async fn refresh_failure_disconnects_and_cannot_replay_after_reload() {
         ..Default::default()
     };
     let key = SecretKey::from_bytes([2; 32]);
-    let auth = Arc::new(OAuthManager::new(db.clone(), key.clone(), endpoints.clone()).unwrap());
+    let clock = Arc::new(AtomicI64::new(1_000_000));
+    let c = clock.clone();
+    let auth = Arc::new(
+        OAuthManager::new(db.clone(), key.clone(), endpoints.clone())
+            .unwrap()
+            .with_clock(move || c.load(Ordering::SeqCst)),
+    );
     let a = auth.start("sub", Flow::Claude).await.unwrap();
     let q: std::collections::HashMap<_, _> = reqwest::Url::parse(&a.authorize_url)
         .unwrap()
@@ -285,21 +292,137 @@ async fn refresh_failure_disconnects_and_cannot_replay_after_reload() {
     for _ in 0..16 {
         let auth = auth.clone();
         tasks.spawn(async move {
-            assert!(auth.token("sub", Flow::Claude, None).await.is_err());
+            assert_eq!(
+                auth.token("sub", Flow::Claude, None).await.unwrap(),
+                "access"
+            );
         });
     }
     while let Some(r) = tasks.join_next().await {
         r.unwrap();
     }
-    let reloaded = OAuthManager::new(db, key, endpoints).unwrap();
-    assert!(reloaded.token("sub", Flow::Claude, None).await.is_err());
-    let status = reloaded.status("sub", Flow::Claude).await.unwrap();
-    assert!(!status.connected);
+    let c = clock.clone();
+    let reloaded = OAuthManager::new(db, key, endpoints)
+        .unwrap()
+        .with_clock(move || c.load(Ordering::SeqCst));
     assert_eq!(
-        status.last_error.as_deref(),
-        Some("Refresh did not complete; sign in again")
+        reloaded.token("sub", Flow::Claude, None).await.unwrap(),
+        "access"
+    );
+    let status = reloaded.status("sub", Flow::Claude).await.unwrap();
+    assert!(status.connected);
+    assert!(status.last_error.is_none());
+    assert_eq!(
+        status.last_refresh_error.as_deref(),
+        Some("Sign-in refresh is retrying")
+    );
+    let retry = status.next_retry_at.unwrap();
+    assert!((1_030_000..=1_045_000).contains(&retry));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    clock.store(1_002_000, Ordering::SeqCst);
+    assert_eq!(
+        reloaded
+            .token("sub", Flow::Claude, None)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "Sign-in refresh is retrying"
+    );
+    clock.store(retry, Ordering::SeqCst);
+    assert_eq!(
+        reloaded.token("sub", Flow::Claude, None).await.unwrap(),
+        "renewed"
+    );
+    assert!(
+        reloaded
+            .status("sub", Flow::Claude)
+            .await
+            .unwrap()
+            .last_refresh_error
+            .is_none()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    mock.abort();
+}
+
+#[tokio::test]
+async fn api_returns_503_in_its_error_format_while_refresh_is_retrying() {
+    use axum::{http::StatusCode, response::IntoResponse};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokomotive::{
+        oauth::{Flow, OAuthEndpoints},
+        state::AppState,
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let mock = tokio::spawn(async move {
+        axum::serve(l, Router::new().route("/token",post(move || { let seen=seen.clone(); async move {
+            if seen.fetch_add(1,Ordering::SeqCst)==0 {Json(json!({"access_token":"secret-access", "refresh_token":"secret-refresh","expires_in":1})).into_response()}
+            else {(StatusCode::SERVICE_UNAVAILABLE,"secret-issuer-error").into_response()}
+        }}))).await.unwrap();
+    });
+    let cfg:Config=toml::from_str("[server]\ndatabase='sqlite::memory:'\n[[providers]]\nname='sub'\nkind='anthropic'\nauth='claude'\nbase_url='https://api.anthropic.com'\n[[models]]\nname='m'\nprovider='sub'\ncost={input=0,output=0}\n[[users]]\nname='user'\nkeys=['vk-refresh']\nkey_allowed_providers=['sub']").unwrap();
+    let db = db::connect("sqlite::memory:").await.unwrap();
+    db::seed(&db, &cfg).await.unwrap();
+    let st = AppState::new_with_oauth_endpoints(
+        &cfg,
+        db,
+        None,
+        OAuthEndpoints {
+            claude_token: format!("{base}/token"),
+            claude_resource: base,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let a = st.oauth.start("sub", Flow::Claude).await.unwrap();
+    let q: std::collections::HashMap<_, _> = reqwest::Url::parse(&a.authorize_url)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    st.oauth
+        .finish("sub", Flow::Claude, &format!("code#{}", q["state"]))
+        .await
+        .unwrap();
+    assert!(
+        st.oauth
+            .token("sub", Flow::Claude, Some("secret-access"))
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let state = st.clone();
+    let server =
+        tokio::spawn(async move { axum::serve(l, tokomotive::router(state)).await.unwrap() });
+    let r = reqwest::Client::new()
+        .post(format!("{base}/v1/chat/completions"))
+        .bearer_auth("vk-refresh")
+        .json(&json!({"model":"m","messages":[{"role":"user","content":"hello"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 503);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["message"], "Sign-in refresh is retrying");
+    assert_eq!(body["error"]["type"], "api_error");
+    assert!(
+        st.oauth
+            .status("sub", Flow::Claude)
+            .await
+            .unwrap()
+            .connected
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    server.abort();
     mock.abort();
 }
 

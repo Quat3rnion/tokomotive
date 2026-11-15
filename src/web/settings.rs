@@ -1161,6 +1161,10 @@ struct StatusView {
     expires: Option<super::views::Stamp>,
     last_refresh: Option<super::views::Stamp>,
     last_error: Option<String>,
+    next_refresh: Option<super::views::Stamp>,
+    last_refresh_error: Option<String>,
+    refresh_in_doubt: bool,
+    refreshable: bool,
 }
 struct UsageView {
     label: String,
@@ -1267,6 +1271,10 @@ fn status_view(status: crate::oauth::Status) -> StatusView {
         expires: stamp(status.expires_at),
         last_refresh: stamp(status.last_refresh),
         last_error: status.last_error,
+        next_refresh: stamp(status.next_refresh_at),
+        last_refresh_error: status.last_refresh_error,
+        refresh_in_doubt: status.refresh_in_doubt,
+        refreshable: status.next_refresh_at.is_some(),
     }
 }
 

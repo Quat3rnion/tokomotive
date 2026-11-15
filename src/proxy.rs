@@ -1265,6 +1265,7 @@ async fn handle_inner(
         .iter()
         .all(|c| !st.deployment_available(c, &table.settings));
     let mut upstream = None;
+    let mut oauth_retrying = false;
     let mut translation_error = None;
     let mut strip_usage_chunk = false;
     let mut direction = None;
@@ -1507,13 +1508,21 @@ async fn handle_inner(
             upstream_endpoint = target_endpoint;
             let flow = crate::oauth::Flow::from_auth(provider.auth);
             let oauth_token = if let Some(flow) = flow {
-                match oauth.token(&provider.name, flow, None).await {
+                let refreshed = oauth.token(&provider.name, flow, None).await;
+                oauth.emit_refresh_events(&st).await;
+                match refreshed {
                     Ok(token) => {
                         crate::quota::emit_health_events(&st).await;
                         Some(token)
                     }
-                    Err(_) => {
-                        ctx.trace.result(attempt, Some(401), attempt_started);
+                    Err(e) => {
+                        let retrying = e.is::<crate::oauth::RefreshRetrying>();
+                        oauth_retrying |= retrying;
+                        ctx.trace.result(
+                            attempt,
+                            Some(if retrying { 503 } else { 401 }),
+                            attempt_started,
+                        );
                         permit.record(false);
                         upstream = None;
                         break;
@@ -1583,7 +1592,9 @@ async fn handle_inner(
                     .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
                 && (ctx.attempts as usize) < table.settings.max_attempts
             {
-                match oauth.token(&provider.name, flow, Some(key)).await {
+                let refreshed = oauth.token(&provider.name, flow, Some(key)).await;
+                oauth.emit_refresh_events(&st).await;
+                match refreshed {
                     Ok(token) => {
                         crate::quota::emit_health_events(&st).await;
                         ctx.attempts += 1;
@@ -1636,9 +1647,12 @@ async fn handle_inner(
                             .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
                         {
                             let _ = oauth.reject(&provider.name, flow, &token).await;
+                            oauth.emit_refresh_events(&st).await;
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        oauth_retrying |= e.is::<crate::oauth::RefreshRetrying>();
+                        upstream = None;
                         permit.record(false);
                         break;
                     }
@@ -1683,6 +1697,14 @@ async fn handle_inner(
         previous_route = Some(candidate.route.clone());
     }
     let Some(upstream) = upstream else {
+        if oauth_retrying {
+            ctx.finish(Outcome::failed(503));
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                "Sign-in refresh is retrying",
+            );
+        }
         if ctx.attempts == 0 && skipped_accounts {
             ctx.finish(Outcome::failed(429));
             let body = if endpoint == Endpoint::Messages {
