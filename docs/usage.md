@@ -430,6 +430,106 @@ from anthropic import Anthropic
 client = Anthropic(base_url="http://127.0.0.1:8787", api_key="sk-toko-...")
 ```
 
+### Google GenAI SDK
+
+Use the Proxy origin, without `/v1beta`, as the base URL. Use a Route name
+or a permitted Model name in `model`.
+
+```python
+from google import genai
+
+client = genai.Client(
+    api_key="sk-toko-...",
+    http_options={"base_url": "http://127.0.0.1:8787"},
+)
+response = client.models.generate_content(model="chat", contents="Hello")
+print(response.text)
+```
+
+The Proxy accepts these paths under `/v1beta` and `/v1`:
+
+- `POST /models/{model}:generateContent`
+- `POST /models/{model}:streamGenerateContent`
+- `POST /models/{model}:countTokens`
+- `POST /models/{model}:embedContent`
+- `POST /models/{model}:batchEmbedContents`
+- `GET /models` and `GET /models/{model}`
+
+Discovery under `/v1beta` always uses Gemini format. Under `/v1`, an
+`x-goog-api-key` header or a `key` query parameter selects Gemini first.
+Otherwise, `anthropic-version` selects Anthropic. A `google-genai` user agent
+selects Gemini only when these headers are absent. Other requests keep the
+OpenAI format. This rule changes only the two discovery paths.
+
+The Virtual Key can use `x-goog-api-key`, `?key=`, or Bearer authentication.
+The Proxy removes the query key before routing, traces, cache lookup and body
+capture. Prefer the header. Streaming with `?alt=sse` returns SSE. Without
+`alt=sse`, streaming returns an incremental JSON array.
+
+Translation supports system text, text parts, base64 image parts, function
+calls and results, function declarations, tool choice, temperature, top-p,
+output limits and stop sequences. JSON response options use the OpenAI
+`response_format` field. A target that cannot apply them returns HTTP 400.
+Other generation options and non-image binary parts return HTTP 400.
+`safetySettings` goes only to Gemini Providers. The response header
+`x-tokomotive-safety-settings` states this limit.
+
+Counts use the native Gemini or Anthropic token-count API when available.
+Other Providers return the marked estimate described below. Counts have no
+inference charge. Embeddings support text with Gemini and OpenAI-compatible
+Providers. Gemini embedding responses do not report token usage; the Ledger
+marks their input-token count as an estimate. The estimate is the UTF-8 text
+length divided by four and rounded up. Embedding task types, titles
+and output dimensions are not translated. Streaming responses use the mapped
+text, function and usage fields; Provider-specific metadata is not retained.
+Non-streaming responses can also lose this metadata after response redaction
+or when retaining it would exceed the response body limit.
+
+### AWS Bedrock SDK
+
+Use a current `boto3` version that supports Bedrock API keys. Set the Virtual
+Key in `AWS_BEARER_TOKEN_BEDROCK`. Do not put AWS credentials in that variable.
+Use an HTTPS endpoint. Put a trusted TLS reverse proxy in front of Tokomotive
+if needed. The AWS SDK rejects Bearer authentication over plain HTTP.
+
+```python
+import os
+import boto3
+
+os.environ["AWS_BEARER_TOKEN_BEDROCK"] = "sk-toko-..."
+client = boto3.client(
+    "bedrock-runtime",
+    region_name="us-east-1",
+    endpoint_url="https://toko.example",
+)
+response = client.converse(
+    modelId="chat",
+    messages=[{"role": "user", "content": [{"text": "Hello"}]}],
+    inferenceConfig={"maxTokens": 128},
+)
+print(response["output"]["message"]["content"])
+```
+
+The Proxy accepts `POST /model/{modelId}/converse` and `converse-stream`.
+Converse supports text, base64 images, system text, tool use and results,
+tool choice and inference limits. Document, video, AWS guardrail and
+Provider-specific request options return HTTP 400. Streaming uses binary AWS
+event-stream frames, with header and message CRC32 checksums.
+
+The Proxy also accepts `invoke` and `invoke-with-response-stream` at the same
+model path. These operations accept only Anthropic Messages bodies with
+`anthropic_version: bedrock-2023-05-31`. Stream chunks use the AWS `chunk`
+event with a base64 `bytes` payload. Other Invoke body formats are not supported.
+
+Client SigV4 signatures are not verified. A SigV4-only request returns HTTP
+401. Use Bearer authentication with a Virtual Key. The Proxy uses its own
+Provider credentials for upstream AWS requests.
+
+Native client requests use the same Model resolver, permissions, Budgets,
+Rate Limits, Guardrails, Ledger and metrics as other clients. The response
+cache also separates client formats and native request options. Errors use
+the Gemini error object or the Bedrock `x-amzn-ErrorType` header.
+
 ### Endpoints that the Proxy accounts
 
 `POST /v1/messages/count_tokens` uses the same Model routing, Model permission,

@@ -11,6 +11,7 @@ pub mod config;
 pub mod db;
 pub mod egress;
 pub mod guardrails;
+pub mod inbound;
 mod ledger_spool;
 pub mod mcp;
 pub mod metrics;
@@ -65,8 +66,17 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(|| async { Redirect::to("/admin") }))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics_endpoint))
-        .route("/v1/models", get(proxy::list_models))
-        .route("/v1/models/{id}", get(proxy::get_model))
+        .route("/v1/models", get(inbound::list_models))
+        .route(
+            "/v1/models/{*rest}",
+            get(inbound::get_model).post(inbound::handle),
+        )
+        .route("/v1beta/models", get(inbound::list_models))
+        .route(
+            "/v1beta/models/{*rest}",
+            get(inbound::get_model).post(inbound::handle),
+        )
+        .route("/model/{*rest}", any(inbound::handle))
         .route("/v1/messages/count_tokens", post(proxy::handle))
         .route("/v1/rerank", post(proxy::handle))
         .route("/v1/audio/transcriptions", post(proxy::handle))

@@ -251,6 +251,46 @@ fn prepare_body(
     Ok((prepared, target, strip))
 }
 
+fn prepare_inbound_body(
+    candidate: &crate::routing::Candidate,
+    endpoint: Endpoint,
+    body: Option<&Value>,
+    native: Option<&crate::inbound::Context>,
+) -> Result<(Option<Value>, Endpoint, bool), translate::TranslateError> {
+    if let (Some(native), Some(body)) = (native, body) {
+        let mut body = body.clone();
+        if let Some(prepared) = native.prepare(candidate.provider.kind, &body)? {
+            return Ok((
+                Some(if endpoint == Endpoint::Embeddings {
+                    // Batch embedding requests carry a model resource in each item.
+                    let model = candidate.model.as_deref().unwrap_or_default();
+                    crate::inbound::rewrite_embedding_models(prepared, model)
+                } else {
+                    prepared
+                }),
+                if native.is_gemini_aux() {
+                    endpoint
+                } else {
+                    Endpoint::Other
+                },
+                false,
+            ));
+        }
+        if endpoint == Endpoint::CountTokens
+            && native.format == crate::inbound::Format::Gemini
+            && candidate.provider.kind == ProviderKind::Anthropic
+        {
+            body = translate::translate_request(Direction::ChatToMessages, &body)?;
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("max_tokens");
+                obj.remove("stream");
+            }
+        }
+        return prepare_body(candidate, endpoint, Some(&body));
+    }
+    prepare_body(candidate, endpoint, body)
+}
+
 fn bearer(headers: &HeaderMap) -> Option<String> {
     if let Some(v) = headers
         .get(header::AUTHORIZATION)
@@ -696,6 +736,7 @@ fn worst_case_price(
         .and_then(|body| {
             translate::output_token_limit(body)
                 .or_else(|| body.get("generationConfig")?.get("maxOutputTokens"))
+                .or_else(|| body.get("inferenceConfig")?.get("maxTokens"))
         })
         .and_then(Value::as_i64)
         .unwrap_or(default_output)
@@ -730,6 +771,35 @@ pub async fn handle(
     response
 }
 
+pub(crate) async fn handle_native(
+    st: AppState,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+    native: crate::inbound::Context,
+) -> Response {
+    let guardrails = crate::guardrails::Session::default();
+    let mut completion = guardrails.completion();
+    let anthropic = matches!(
+        Endpoint::from_path(uri.path()),
+        Endpoint::Messages | Endpoint::CountTokens
+    );
+    let response = handle_inner_native(
+        st,
+        method,
+        uri,
+        headers,
+        Ok(body),
+        guardrails.clone(),
+        Some(native),
+    )
+    .await;
+    let response = guardrails.response(response, anthropic, false).await;
+    completion.disarm();
+    response
+}
+
 async fn handle_inner(
     st: AppState,
     method: Method,
@@ -737,6 +807,19 @@ async fn handle_inner(
     headers: HeaderMap,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
     guardrails: crate::guardrails::Session,
+) -> Response {
+    handle_inner_native(st, method, uri, headers, body, guardrails, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_inner_native(
+    st: AppState,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+    guardrails: crate::guardrails::Session,
+    native: Option<crate::inbound::Context>,
 ) -> Response {
     let started = Instant::now();
     let ts_ms = db::now_ms();
@@ -936,7 +1019,13 @@ async fn handle_inner(
             c.provider.kind = kind;
         }
     }
-    candidates.retain(|c| compatible(c.provider.kind, endpoint));
+    candidates.retain(|c| {
+        compatible(c.provider.kind, endpoint)
+            || (endpoint == Endpoint::Embeddings
+                && c.provider.kind == ProviderKind::Gemini
+                && c.provider.auth == crate::provider::ProviderAuth::ApiKey
+                && native.is_some())
+    });
     let denied = candidates
         .iter()
         .find(|c| !provider_allowed(&auth, &c.provider))
@@ -1061,6 +1150,7 @@ async fn handle_inner(
                 return None;
             }
             let identity = serde_json::json!([
+                native.as_ref().map(crate::inbound::Context::cache_identity),
                 r.name,
                 r.strategy,
                 r.cache,
@@ -1121,7 +1211,9 @@ async fn handle_inner(
             } else {
                 c.model.as_deref()
             };
-            let Ok((prepared, target, _)) = prepare_body(c, endpoint, json_body.as_ref()) else {
+            let Ok((prepared, target, _)) =
+                prepare_inbound_body(c, endpoint, json_body.as_ref(), native.as_ref())
+            else {
                 continue;
             };
             let len = if extra::audio_upload(endpoint) {
@@ -1300,7 +1392,12 @@ async fn handle_inner(
             continue;
         };
         let oauth = st.oauth.clone().with_egress(egress.clone());
-        if endpoint == Endpoint::CountTokens && !extra::native_count(provider) {
+        if endpoint == Endpoint::CountTokens
+            && !extra::native_count(provider)
+            && !(provider.kind == ProviderKind::Gemini
+                && provider.auth == crate::provider::ProviderAuth::ApiKey
+                && native.is_some())
+        {
             permit.record(true);
             ctx.provider = provider.clone();
             ctx.upstream_model = candidate.model.clone();
@@ -1309,7 +1406,7 @@ async fn handle_inner(
         }
         let dir = translation(provider.kind, endpoint);
         let (prepared, target_endpoint, strip) =
-            match prepare_body(candidate, endpoint, json_body.as_ref()) {
+            match prepare_inbound_body(candidate, endpoint, json_body.as_ref(), native.as_ref()) {
                 Ok(v) => v,
                 Err(e) => {
                     ctx.trace.skip(candidate, None, "translation");
@@ -1423,6 +1520,22 @@ async fn handle_inner(
                     "/v1internal:generateContent"
                 }
                 .into();
+            }
+            if provider.kind == ProviderKind::Gemini
+                && let Some(native) = &native
+                && native.is_gemini_aux()
+                && provider.auth == crate::provider::ProviderAuth::ApiKey
+            {
+                path = match native
+                    .upstream_path(candidate.model.as_deref().unwrap_or_default(), streamed)
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        translation_error = Some(error);
+                        ctx.trace.skip(candidate, None, "translation");
+                        continue;
+                    }
+                };
             }
         }
         if provider.kind == ProviderKind::Cohere {
@@ -2020,6 +2133,9 @@ async fn handle_inner(
         );
     }
     if kind == ProviderKind::Gemini
+        && !native
+            .as_ref()
+            .is_some_and(crate::inbound::Context::is_gemini_aux)
         && status.is_success()
         && parsed.as_ref().is_none_or(|v| {
             !v["candidates"].is_array() && !v["promptFeedback"]["blockReason"].is_string()
@@ -2032,9 +2148,13 @@ async fn handle_inner(
             "invalid Gemini response",
         );
     }
-    let usage = parsed
-        .as_ref()
-        .and_then(|v| kind.usage_from_json(upstream_endpoint, v));
+    let usage = (endpoint == Endpoint::CountTokens)
+        .then_some(Usage::default())
+        .or_else(|| {
+            parsed
+                .as_ref()
+                .and_then(|v| kind.usage_from_json(upstream_endpoint, v))
+        });
     let model = parsed.as_ref().and_then(model_of);
     let estimated = usage.is_none()
         && status.is_success()
@@ -2044,6 +2164,28 @@ async fn handle_inner(
         let (audio, estimate) =
             extra::audio_usage(parsed.as_ref(), audio_upload.as_ref().unwrap().file_bytes);
         (Some(audio), estimate)
+    } else if endpoint == Endpoint::Embeddings
+        && kind == ProviderKind::Gemini
+        && native.is_some()
+        && status.is_success()
+        && usage.is_none()
+    {
+        let bytes = json_body
+            .as_ref()
+            .and_then(|v| v["input"].as_array())
+            .map_or(0, |a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::len)
+                    .sum::<usize>()
+            });
+        (
+            Some(Usage {
+                input: bytes.div_ceil(4) as i64,
+                ..Default::default()
+            }),
+            true,
+        )
     } else {
         (usage, estimated)
     };
@@ -2083,6 +2225,20 @@ async fn handle_inner(
             status.as_u16(),
             &bytes,
         ))
+    } else if kind == ProviderKind::Gemini
+        && status.is_success()
+        && native
+            .as_ref()
+            .is_some_and(crate::inbound::Context::is_gemini_aux)
+    {
+        Bytes::from(
+            native
+                .as_ref()
+                .unwrap()
+                .auxiliary_response(parsed.as_ref().unwrap_or(&Value::Null))
+                .unwrap()
+                .to_string(),
+        )
     } else if endpoint != Endpoint::Rerank
         && matches!(
             kind,
@@ -2139,6 +2295,13 @@ async fn handle_inner(
         } else {
             Bytes::from(translate::translate_error(dir, status.as_u16(), &bytes))
         }
+    } else {
+        bytes
+    };
+    let bytes = if status.is_success()
+        && let (Some(native), Some(raw)) = (&native, &parsed)
+    {
+        native.retain_response(kind, raw, &bytes)
     } else {
         bytes
     };

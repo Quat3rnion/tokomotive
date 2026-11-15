@@ -50,6 +50,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Supports OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/responses`,
   `/v1/embeddings`, `/v1/images/generations`, `/v1/images/edits`) and the
   Anthropic API (`/v1/messages`), with and without streaming.
+- Accepts [Google GenAI and AWS Bedrock clients](docs/usage.md#google-genai-sdk),
+  with native JSON, SSE and AWS event-stream responses and Virtual Key access.
 - Counts input tokens at `POST /v1/messages/count_tokens`. Non-Anthropic
   deployments return a marked estimate without an inference charge.
 - Routes `POST /v1/rerank` to Cohere or compatible Providers, with search-unit

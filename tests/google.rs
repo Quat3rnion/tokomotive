@@ -102,13 +102,38 @@ async fn code_assist_proxy_envelopes_json_and_sse_and_enforces_access() {
         let text = r.text().await.unwrap();
         assert!(text.contains("answer"), "{text}");
     }
+    for stream in [false, true] {
+        let operation = if stream {
+            "streamGenerateContent?alt=sse"
+        } else {
+            "generateContent"
+        };
+        let response = http
+            .post(format!("{url}/v1beta/models/gemini-2.5-pro:{operation}"))
+            .bearer_auth("allowed")
+            .json(&json!({"contents":[{"role":"user","parts":[{"text":"hello"}]}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(response.text().await.unwrap().contains("answer"));
+    }
     st.flush().await;
     let rows: Vec<(i64, i64, i64, i64)> =
         sqlx::query_as("SELECT input,output,cache_read,cost_micros FROM ledger")
             .fetch_all(&db)
             .await
             .unwrap();
-    assert_eq!(rows, vec![(10, 3, 2, 0), (10, 3, 2, 0)]);
+    assert_eq!(rows, vec![(10, 3, 2, 0); 4]);
+    let response = http
+        .post(format!("{url}/v1beta/models/gemini-2.5-pro:countTokens"))
+        .bearer_auth("allowed")
+        .json(&json!({"contents":[{"parts":[{"text":"hello"}]}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-tokomotive-estimate"], "true");
     for (key, path) in [
         ("blocked", "/v1/chat/completions"),
         ("allowed", "/evil/chat/completions"),

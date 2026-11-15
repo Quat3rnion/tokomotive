@@ -212,6 +212,68 @@ keys=["sk-test"]
             }
         }
     }
+    for native in ["converse", "gemini", "invoke"] {
+        for stream in [false, true] {
+            let model = "aws/arn:aws:bedrock:us-east-1:123456789012:inference-profile/test";
+            let (path, body) = if native == "gemini" {
+                (
+                    format!(
+                        "/v1beta/models/{model}:{}?alt=sse",
+                        if stream {
+                            "streamGenerateContent"
+                        } else {
+                            "generateContent"
+                        }
+                    ),
+                    json!({"contents":[{"role":"user","parts":[{"text":"Hi"}]}]}),
+                )
+            } else if native == "invoke" {
+                (
+                    format!(
+                        "/model/{}/{}",
+                        crate::sigv4::encode(model, false),
+                        if stream {
+                            "invoke-with-response-stream"
+                        } else {
+                            "invoke"
+                        }
+                    ),
+                    json!({"anthropic_version":"bedrock-2023-05-31","max_tokens":10,"messages":[{"role":"user","content":"Hi"}]}),
+                )
+            } else {
+                (
+                    format!(
+                        "/model/{}/{}",
+                        crate::sigv4::encode(model, false),
+                        if stream {
+                            "converse-stream"
+                        } else {
+                            "converse"
+                        }
+                    ),
+                    json!({"messages":[{"role":"user","content":[{"text":"Hi"}]}],"inferenceConfig":{"maxTokens":10}}),
+                )
+            };
+            let response = http
+                .post(format!("{proxy}{path}"))
+                .bearer_auth("sk-test")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "{native} {stream}");
+            let bytes = response.bytes().await.unwrap();
+            if stream && native != "gemini" {
+                let mut decoder = crate::eventstream::Decoder::default();
+                let frames = decoder.feed(&bytes).unwrap();
+                decoder.finish().unwrap();
+                assert!(!frames.is_empty());
+            } else {
+                let text = std::str::from_utf8(&bytes).unwrap();
+                assert!(text.contains("Hello") && text.contains("weather"), "{text}");
+            }
+        }
+    }
     for (model, status) in [("denied", 403), ("unauthorized", 401)] {
         crate::quota::reenable(&st, "aws", "default").await.unwrap();
         let before = count.load(std::sync::atomic::Ordering::SeqCst);
@@ -226,7 +288,7 @@ keys=["sk-test"]
     .fetch_all(&st.db)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 10);
     assert!(rows.iter().all(|r| *r == (10, 3, 20, 5)));
     task.abort();
     upstream.abort();
