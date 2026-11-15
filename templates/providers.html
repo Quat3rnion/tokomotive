@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "picker.html" as picker %}
+{% import "provider_limits.html" as limits %}
 {% block title %}Providers - Tokomotive{% endblock %}
 {% block nav_providers %}aria-current="page"{% endblock %}
 
@@ -101,6 +102,10 @@
       <div class="field"><label for="p-{{ p.name }}-default-model">Default model (optional)</label>{% call picker::model(p.default_model_id(), "default_model", p.default_model, "single", "provider,model,models.dev", "model_provider", "Choose a model", "", "", false) %}<p class="hint">Use this model when the client sends only this Provider name.</p></div>
       <div class="field"><label for="p-{{ p.name }}-priority">Priority (optional)</label><input id="p-{{ p.name }}-priority" name="priority" type="number" min="-32768" max="32767" step="1" value="{{ p.priority }}"><p class="hint">Lower numbers come first for a shared model ID. Blank is 0. Then API-key Providers come before subscriptions, then name order.</p></div>
     </fieldset>
+    <details><summary>Advanced request limits</summary>
+      <p class="hint">Blank fields inherit Settings &gt; Server and router. Zero disables the connect timeout, stream idle timeout or concurrency cap. Zero wait rejects at once. Retries use the next key, then repeat the pool. The overall attempt cap still applies.</p>
+      {% call limits::fields(p.limit_fields(), p.name, p.jitter()) %}
+    </details>
     <div class="form-error" role="alert" tabindex="-1"></div>
     <div><button aria-label="Save Provider {{ p.name }}">Save</button></div>
   </form>

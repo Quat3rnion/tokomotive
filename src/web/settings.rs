@@ -222,8 +222,145 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     })
 }
 
+#[derive(Default, Deserialize)]
+struct ProviderLimitsForm {
+    request_timeout_ms: Option<String>,
+    connect_timeout_ms: Option<String>,
+    stream_idle_timeout_ms: Option<String>,
+    max_concurrent: Option<String>,
+    max_wait_ms: Option<String>,
+    max_retries: Option<String>,
+    backoff_base_ms: Option<String>,
+    backoff_max_ms: Option<String>,
+    backoff_jitter: Option<String>,
+}
+impl ProviderLimitsForm {
+    fn parse(
+        &self,
+        previous: &crate::provider_limits::Limits,
+    ) -> anyhow::Result<crate::provider_limits::Limits> {
+        fn number<T: std::str::FromStr + Copy>(
+            value: &Option<String>,
+            old: Option<T>,
+        ) -> anyhow::Result<Option<T>> {
+            match value.as_deref().map(str::trim) {
+                None => Ok(old),
+                Some("") => Ok(None),
+                Some(value) => value.parse().map(Some).map_err(|_| {
+                    anyhow::anyhow!("Enter a whole number, 0 or more, or leave the limit blank.")
+                }),
+            }
+        }
+        let limits = crate::provider_limits::Limits {
+            request_timeout_ms: number(&self.request_timeout_ms, previous.request_timeout_ms)?,
+            connect_timeout_ms: number(&self.connect_timeout_ms, previous.connect_timeout_ms)?,
+            stream_idle_timeout_ms: number(
+                &self.stream_idle_timeout_ms,
+                previous.stream_idle_timeout_ms,
+            )?,
+            max_concurrent: number(&self.max_concurrent, previous.max_concurrent)?,
+            max_wait_ms: number(&self.max_wait_ms, previous.max_wait_ms)?,
+            max_retries: number(&self.max_retries, previous.max_retries)?,
+            backoff_base_ms: number(&self.backoff_base_ms, previous.backoff_base_ms)?,
+            backoff_max_ms: number(&self.backoff_max_ms, previous.backoff_max_ms)?,
+            backoff_jitter: match self.backoff_jitter.as_deref() {
+                None => previous.backoff_jitter,
+                Some("") => None,
+                Some("true") => Some(true),
+                Some("false") => Some(false),
+                _ => anyhow::bail!("Choose Inherit, On or Off for backoff jitter."),
+            },
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+}
+struct LimitField {
+    name: &'static str,
+    label: &'static str,
+    value: String,
+    min: u8,
+}
+fn limit_fields(limits: &crate::provider_limits::Limits) -> Vec<LimitField> {
+    [
+        (
+            "request_timeout_ms",
+            "Request timeout (ms)",
+            limits.request_timeout_ms,
+            1,
+        ),
+        (
+            "connect_timeout_ms",
+            "Connect timeout (ms)",
+            limits.connect_timeout_ms,
+            0,
+        ),
+        (
+            "stream_idle_timeout_ms",
+            "Stream idle timeout (ms)",
+            limits.stream_idle_timeout_ms,
+            0,
+        ),
+        (
+            "max_concurrent",
+            "Maximum concurrent requests",
+            limits.max_concurrent.map(|n| n as u64),
+            0,
+        ),
+        (
+            "max_wait_ms",
+            "Maximum concurrency wait (ms)",
+            limits.max_wait_ms,
+            0,
+        ),
+        (
+            "max_retries",
+            "Maximum Provider retries",
+            limits.max_retries.map(|n| n as u64),
+            0,
+        ),
+        (
+            "backoff_base_ms",
+            "Backoff base (ms)",
+            limits.backoff_base_ms,
+            0,
+        ),
+        (
+            "backoff_max_ms",
+            "Backoff maximum (ms)",
+            limits.backoff_max_ms,
+            0,
+        ),
+    ]
+    .into_iter()
+    .map(|(name, label, value, min)| LimitField {
+        name,
+        label,
+        value: value.map(|n| n.to_string()).unwrap_or_default(),
+        min,
+    })
+    .collect()
+}
+fn jitter_value(limits: &crate::provider_limits::Limits) -> &'static str {
+    match limits.backoff_jitter {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "",
+    }
+}
+impl SettingsPage {
+    fn limit_fields(&self) -> Vec<LimitField> {
+        limit_fields(&self.settings.provider_defaults)
+    }
+    fn jitter(&self) -> &'static str {
+        jitter_value(&self.settings.provider_defaults)
+    }
+}
+
 #[derive(Deserialize)]
 struct ServerForm {
+    #[serde(flatten)]
+    provider_limits: ProviderLimitsForm,
     unknown_model_policy: Option<String>,
     unknown_model_route: Option<String>,
     writer_timeout_secs: Option<u64>,
@@ -267,6 +404,7 @@ impl ServerForm {
             .upstream_timeout_secs
             .parse()
             .context("Enter the upstream timeout as a whole number of seconds, 1 or more.")?;
+        cfg.server.provider_defaults = self.provider_limits.parse(&cfg.server.provider_defaults)?;
         if let Some(value) = &self.reserve_output_tokens {
             cfg.server.reserve_output_tokens = value
                 .parse()
@@ -337,6 +475,7 @@ impl ServerForm {
                 .unwrap_or(store::default_ledger_spool_max_bytes()),
             cache: Default::default(),
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
+            provider_defaults: cfg.server.provider_defaults.clone(),
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             audio_upload_limit_mib: cfg.server.audio_upload_limit_mib,
             file_upload_limit_mib: cfg.server.file_upload_limit_mib,
@@ -1056,6 +1195,7 @@ struct AddedSignin {
     panel: String,
 }
 struct ProviderView {
+    limits: crate::provider_limits::Limits,
     default_model: String,
     priority: String,
     proxy_mode: String,
@@ -1085,6 +1225,12 @@ struct ProviderView {
     usage: Vec<UsageView>,
 }
 impl ProviderView {
+    fn limit_fields(&self) -> Vec<LimitField> {
+        limit_fields(&self.limits)
+    }
+    fn jitter(&self) -> &'static str {
+        jitter_value(&self.limits)
+    }
     fn default_model_id(&self) -> String {
         format!("p-{}-default-model", self.name)
     }
@@ -1408,7 +1554,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,default_model,priority,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region,proxy_mode FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,default_model,priority,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region,proxy_mode,limits_json FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -1513,6 +1659,7 @@ async fn providers(
             vec![]
         };
         providers.push(ProviderView {
+            limits: tryr!(serde_json::from_str(row.get("limits_json"))),
             default_model: row
                 .get::<Option<String>, _>("default_model")
                 .unwrap_or_default(),
@@ -1624,6 +1771,8 @@ async fn providers(
 
 #[derive(Deserialize)]
 struct ProviderForm {
+    #[serde(flatten)]
+    limits: ProviderLimitsForm,
     default_model: Option<String>,
     priority: Option<String>,
     /// The guided form: "card" opens the new card, "signin" also starts
@@ -1856,10 +2005,21 @@ async fn save_provider(
         }),
         None => previous.and_then(|p| p.priority),
     };
+    let previous_limits = cfg
+        .providers
+        .iter()
+        .find(|p| Some(&p.name) == old.as_ref())
+        .map(|p| p.limits.clone())
+        .unwrap_or_default();
+    let limits = match f.limits.parse(&previous_limits) {
+        Ok(limits) => limits,
+        Err(e) => return form_error(e),
+    };
     if let Some(name) = &old {
         cfg.providers.retain(|p| &p.name != name);
     }
     cfg.providers.push(ProviderCfg {
+        limits: limits.clone(),
         default_model: default_model.clone(),
         priority,
         name: f.name.clone(),
@@ -1976,9 +2136,10 @@ async fn save_provider(
         );
     }
     tryr!(
-        sqlx::query("UPDATE providers SET default_model=?,priority=? WHERE name=?")
+        sqlx::query("UPDATE providers SET default_model=?,priority=?,limits_json=? WHERE name=?")
             .bind(default_model)
             .bind(priority)
+            .bind(tryr!(serde_json::to_string(&limits)))
             .bind(&f.name)
             .execute(&mut *tx)
             .await

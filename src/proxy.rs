@@ -57,11 +57,13 @@ pub(crate) async fn read_capped(
         anyhow::bail!("upstream body is larger than {max} bytes");
     }
     let mut out = bytes::BytesMut::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| crate::egress::request_error(provider, e))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        if e.is_timeout() {
+            anyhow::Error::new(crate::provider_limits::RequestTimeout)
+        } else {
+            crate::egress::request_error(provider, e)
+        }
+    })? {
         if out.len() + chunk.len() > max {
             anyhow::bail!("upstream body is larger than {max} bytes");
         }
@@ -453,6 +455,7 @@ fn skip_header(name: &HeaderName) -> bool {
 
 /// Request context that is needed to write the Ledger Entry.
 struct Ctx {
+    provider_permit: Option<crate::provider_limits::Permit>,
     route: String,
     guardrails: crate::guardrails::Session,
     cache_plan: Option<crate::cache::Plan>,
@@ -1190,6 +1193,7 @@ async fn handle_inner(
     )
     .await;
     let mut ctx = Ctx {
+        provider_permit: None,
         route: first.route.clone(),
         guardrails,
         cache_plan,
@@ -1272,6 +1276,7 @@ async fn handle_inner(
     let mut upstream_endpoint = endpoint;
     let mut previous_route = None;
     let mut skipped_accounts = false;
+    let mut limited_candidates = 0;
     let mut retry_at: Option<i64> = None;
     'deployments: for candidate in &candidates {
         if ctx.attempts as usize >= table.settings.max_attempts {
@@ -1282,6 +1287,15 @@ async fn handle_inner(
             continue;
         };
         let provider = &candidate.provider;
+        let Some(provider_permit) = provider
+            .gate
+            .acquire(&provider.name, provider.limits.max_wait_ms.unwrap_or(0))
+            .await
+        else {
+            limited_candidates += 1;
+            ctx.trace.skip(candidate, None, "concurrency_limited");
+            continue;
+        };
         let Some(egress) = provider.egress.as_ref() else {
             continue;
         };
@@ -1467,7 +1481,7 @@ async fn handle_inner(
         if let Some(session) = &session {
             session.order_keys(provider, &mut order);
         }
-        for idx in order {
+        order.retain(|&idx| {
             if let Some(skip) = quota_schedule.skip(
                 provider,
                 idx,
@@ -1485,11 +1499,33 @@ async fn handle_inner(
                 if let Some(t) = skip.until {
                     retry_at = Some(retry_at.map_or(t, |old| old.min(t)));
                 }
-                continue;
+                return false;
+            }
+            true
+        });
+        let provider_cap = provider
+            .limits
+            .max_retries
+            .map(|n| n.saturating_add(1))
+            .unwrap_or(usize::MAX);
+        let tries = provider
+            .limits
+            .max_retries
+            .map(|n| n.saturating_add(1))
+            .unwrap_or(order.len())
+            .min(table.settings.max_attempts);
+        let mut provider_attempts = 0;
+        for idx in order.iter().copied().cycle().take(tries) {
+            if provider_attempts >= provider_cap {
+                break;
             }
             if ctx.attempts as usize >= table.settings.max_attempts {
                 break 'deployments;
             }
+            if provider_attempts > 0 {
+                provider.limits.backoff(provider_attempts).await;
+            }
+            provider_attempts += 1;
             if ctx.attempts > 0 {
                 metrics::counter!("llm_upstream_retries_total", "provider" => ctx.provider.name.clone()).increment(1);
             }
@@ -1581,7 +1617,35 @@ async fn handle_inner(
                     req.body(upstream_body.clone())
                 }
             };
-            let mut result = send(req).send().await;
+            let timeout_ms = provider
+                .limits
+                .request_timeout_ms
+                .unwrap_or_else(|| st.settings().upstream_timeout_secs.saturating_mul(1000));
+            let send_request = |req: reqwest::RequestBuilder| async move {
+                let req = if !streamed && !codex {
+                    req.timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
+                } else {
+                    req
+                };
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms.max(1)),
+                    send(req).send(),
+                )
+                .await
+            };
+            let mut result = match send_request(req).await {
+                Ok(result) => result,
+                Err(_) => {
+                    ctx.trace.result(attempt, None, attempt_started);
+                    ctx.trace.classify_last("request_timeout");
+                    metrics::counter!("tokomotive_provider_timeouts_total", "provider" => provider.name.clone(), "kind" => "request").increment(1);
+                    permit.record(false);
+                    if permit.is_probe() {
+                        break;
+                    }
+                    continue;
+                }
+            };
             ctx.trace.result(
                 attempt,
                 result.as_ref().ok().map(|r| r.status().as_u16()),
@@ -1595,6 +1659,7 @@ async fn handle_inner(
                     .as_ref()
                     .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
                 && (ctx.attempts as usize) < table.settings.max_attempts
+                && provider_attempts < provider_cap
             {
                 let refreshed = oauth.token(&provider.name, flow, Some(key)).await;
                 oauth.emit_refresh_events(&st).await;
@@ -1602,6 +1667,8 @@ async fn handle_inner(
                     Ok(token) => {
                         crate::quota::emit_health_events(&st).await;
                         ctx.attempts += 1;
+                        provider.limits.backoff(provider_attempts).await;
+                        provider_attempts += 1;
                         attempt = ctx.trace.begin(candidate, idx);
                         attempt_started = Instant::now();
                         metrics::counter!("llm_upstream_retries_total", "provider" => provider.name.clone()).increment(1);
@@ -1639,7 +1706,16 @@ async fn handle_inner(
                             permit.record(false);
                             break;
                         };
-                        result = send(req).send().await;
+                        result = match send_request(req).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                ctx.trace.result(attempt, None, attempt_started);
+                                ctx.trace.classify_last("request_timeout");
+                                metrics::counter!("tokomotive_provider_timeouts_total", "provider" => provider.name.clone(), "kind" => "request").increment(1);
+                                permit.record(false);
+                                break;
+                            }
+                        };
                         ctx.trace.result(
                             attempt,
                             result.as_ref().ok().map(|r| r.status().as_u16()),
@@ -1684,6 +1760,7 @@ async fn handle_inner(
                     }
                     upstream = Some(r);
                     if healthy {
+                        ctx.provider_permit = Some(provider_permit);
                         if upstream.as_ref().is_some_and(|r| r.status().is_success())
                             && let Some(session) = &session
                         {
@@ -1694,6 +1771,15 @@ async fn handle_inner(
                     }
                 }
                 Err(e) => {
+                    if e.is_timeout() {
+                        let kind = if e.is_connect() { "connect" } else { "request" };
+                        ctx.trace.classify_last(if e.is_connect() {
+                            "connect_timeout"
+                        } else {
+                            "request_timeout"
+                        });
+                        metrics::counter!("tokomotive_provider_timeouts_total", "provider" => provider.name.clone(), "kind" => kind).increment(1);
+                    }
                     permit.record(false);
                     egress.connect_error(&provider.name, &e);
                     tracing::warn!(provider = %provider.name, class = crate::egress::error_class(&e), "upstream request failed");
@@ -1706,6 +1792,14 @@ async fn handle_inner(
         previous_route = Some(candidate.route.clone());
     }
     let Some(upstream) = upstream else {
+        if limited_candidates == candidates.len() && !candidates.is_empty() {
+            ctx.finish(Outcome::failed(429));
+            return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "1")], axum::Json(if endpoint == Endpoint::Messages {
+                json!({"type":"error","error":{"type":"rate_limit_error","message":"All Providers are concurrency_limited"}})
+            } else {
+                json!({"error":{"type":"rate_limit_error","message":"All Providers are concurrency_limited"}})
+            })).into_response();
+        }
         if oauth_retrying {
             ctx.finish(Outcome::failed(503));
             return error(
@@ -1871,7 +1965,11 @@ async fn handle_inner(
 
     let bytes = match read_capped(upstream, MAX_UPSTREAM_BODY, &ctx.provider.name).await {
         Ok(b) => b,
-        Err(_) => {
+        Err(e) => {
+            if e.is::<crate::provider_limits::RequestTimeout>() {
+                ctx.trace.classify_last("request_timeout");
+                metrics::counter!("tokomotive_provider_timeouts_total", "provider" => ctx.provider.name.clone(), "kind" => "request").increment(1);
+            }
             tracing::warn!(provider = %ctx.provider.name, class = "body", "upstream body read failed");
             ctx.finish(Outcome::failed(502));
             return error(
@@ -2302,7 +2400,15 @@ async fn collect_codex(
         let mut tracker = ProviderKind::Openai.new_stream_tracker(Endpoint::Responses, false);
         let mut stream = upstream.bytes_stream();
         let mut failed = false;
-        while let Some(chunk) = stream.next().await {
+        while let Some(chunk) = match crate::provider_limits::next_chunk(&mut stream, ctx.provider.limits.stream_idle_timeout_ms).await {
+            Ok(item) => item,
+            Err(_) => {
+                ctx.trace.classify_last("stream_idle_timeout");
+                metrics::counter!("tokomotive_provider_timeouts_total", "provider" => ctx.provider.name.clone(), "kind" => "stream_idle").increment(1);
+                failed = true;
+                None
+            }
+        } {
             let Ok(chunk) = chunk else {
                 failed = true;
                 break;
@@ -2418,7 +2524,34 @@ fn stream_response(
             } else {
                 0
             });
-        while let Some(item) = stream.next().await {
+        let mut idle_timeout = false;
+        while let Some(item) = match crate::provider_limits::next_chunk(
+            &mut stream,
+            ctx.provider.limits.stream_idle_timeout_ms,
+        )
+        .await
+        {
+            Ok(item) => item,
+            Err(_) => {
+                idle_timeout = true;
+                upstream_failed = true;
+                ctx.trace.classify_last("stream_idle_timeout");
+                metrics::counter!("tokomotive_provider_timeouts_total", "provider" => ctx.provider.name.clone(), "kind" => "stream_idle").increment(1);
+                let event = if ctx.endpoint == Endpoint::Messages {
+                    "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"stream_idle_timeout\"}}\n\n"
+                } else {
+                    "data: {\"error\":{\"type\":\"api_error\",\"message\":\"stream_idle_timeout\"}}\n\n"
+                };
+                ctx.trace.response(event.as_bytes());
+                if !client_gone {
+                    client_gone = tx
+                        .send(Ok(Bytes::from_static(event.as_bytes())))
+                        .await
+                        .is_err();
+                }
+                None
+            }
+        } {
             match item {
                 Ok(chunk) => {
                     source_body.feed(&chunk);
@@ -2452,8 +2585,12 @@ fn stream_response(
                 }
             }
         }
-        let rest = tracker.finish();
-        let rest = if let Some(t) = translator.as_mut() {
+        let rest = if idle_timeout {
+            Vec::new()
+        } else {
+            tracker.finish()
+        };
+        let rest = if let Some(t) = translator.as_mut().filter(|_| !idle_timeout) {
             let mut out = t.feed(&rest);
             out.extend(t.finish());
             out
@@ -2467,7 +2604,8 @@ fn stream_response(
         }
         client_gone |= tx.is_closed();
         let estimated = status.is_success() && !tracker.usage_final;
-        let code = if translator.as_ref().is_some_and(ProxyStream::failed)
+        let code = if idle_timeout
+            || translator.as_ref().is_some_and(ProxyStream::failed)
             || (upstream_failed && !tracker.usage_final)
         {
             502

@@ -1,0 +1,8 @@
+{% macro fields(fields, id, jitter) %}
+<div class="fields">
+{% for f in fields %}
+  <div class="field"><label for="{{ id }}-{{ f.name }}">{{ f.label }}</label><input id="{{ id }}-{{ f.name }}" name="{{ f.name }}" type="number" min="{{ f.min }}" step="1" value="{{ f.value }}" placeholder="Inherit" inputmode="numeric"></div>
+{% endfor %}
+  <div class="field"><label for="{{ id }}-backoff-jitter">Backoff jitter</label><select id="{{ id }}-backoff-jitter" name="backoff_jitter"><option value=""{% if jitter == "" %} selected{% endif %}>Inherit</option><option value="true"{% if jitter == "true" %} selected{% endif %}>On</option><option value="false"{% if jitter == "false" %} selected{% endif %}>Off</option></select></div>
+</div>
+{% endmacro %}

@@ -1,0 +1,1 @@
+ALTER TABLE providers ADD COLUMN limits_json TEXT NOT NULL DEFAULT '{}';

@@ -225,6 +225,16 @@ impl RequestTrace {
             c.append(bytes);
         }
     }
+    pub fn classify_last(&mut self, class: &str) {
+        if let Some(a) = self
+            .attempts
+            .iter_mut()
+            .rev()
+            .find(|a| a.skip_reason.is_empty())
+        {
+            a.error_class = class.into();
+        }
+    }
     pub fn finish(&mut self, status: u16, ttft: Option<i64>, ts: i64) {
         if let Some(a) = self
             .attempts
@@ -234,7 +244,7 @@ impl RequestTrace {
         {
             a.latency_ms = (db::now_ms() - a.started_ms).max(a.latency_ms);
             a.ttft_ms = ttft.map(|t| (t - (a.started_ms - ts)).max(0));
-            if status >= 400 && a.status.is_some_and(|s| s < 400) {
+            if status >= 400 && a.status.is_some_and(|s| s < 400) && a.error_class.is_empty() {
                 a.error_class = error_class(status).into();
             }
         }

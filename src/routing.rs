@@ -91,6 +91,7 @@ impl RouterTable {
                         tracing::warn!(provider = %p.name, "no API key is set for this provider");
                     }
                     let mut provider = Provider::new(&p.name, p.kind, &p.base_url, keys);
+                    provider.limits = p.limits.clone();
                     provider.auth = p.auth;
                     provider.default_model = p.default_model.clone();
                     provider.priority = p.priority;

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "picker.html" as picker %}
+{% import "provider_limits.html" as limits %}
 {% block title %}Settings - Tokomotive{% endblock %}
 {% block nav_settings %}aria-current="page"{% endblock %}
 {% block content %}
@@ -76,6 +77,10 @@
       <div class="field"><label for="s-affinity-capacity">Session affinity capacity</label><input id="s-affinity-capacity" type="number" min="1" name="session_affinity_capacity" value="{{ settings.router.session_affinity_capacity }}" required inputmode="numeric" aria-describedby="s-affinity-capacity-help"><p class="hint" id="s-affinity-capacity-help">Maximum session pins in this process. When full, remove the least recently used pin. Default: 100000.</p></div>
     </div>
   </fieldset>
+  <details><summary>Default Provider request limits</summary>
+    <p class="hint">Providers inherit these values unless their Advanced fields set an override. Blank request timeout uses Upstream timeout. Blank connect timeout is 15000 ms. Blank idle timeout and concurrency are unlimited. Blank wait and backoff base are zero. Blank retries tries each key once. Blank backoff maximum is 30000 ms. Blank jitter is Off. For streams, request timeout limits response headers only; idle timeout limits gaps between bytes.</p>
+    {% call limits::fields(self.limit_fields(), "s-limits", self.jitter()) %}
+  </details>
   <fieldset aria-describedby="s-cache-help">
     <legend>Exact response cache</legend>
     <p class="hint" id="s-cache-help">Enable the cache on each Route. Stored responses use the Master Key. Limits include encryption and metadata. Zero entries or bytes disables storage.</p>

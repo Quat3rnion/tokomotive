@@ -101,6 +101,7 @@ struct Clients {
 }
 
 pub struct Policy {
+    limited: std::sync::Mutex<HashMap<(Option<String>, u64), reqwest::Client>>,
     global: Option<String>,
     providers: HashMap<String, Option<String>>,
     identities: HashMap<String, String>,
@@ -169,6 +170,7 @@ impl Policy {
         let models = build(global.as_deref(), 60, Purpose::Models)?;
         let webhook = build(global.as_deref(), 10, Purpose::Webhook)?;
         Ok(Self {
+            limited: Default::default(),
             global,
             providers,
             identities: HashMap::new(),
@@ -232,6 +234,37 @@ impl Policy {
 }
 
 impl Egress {
+    /// Connect timeout is a client policy. Cache by proxy and timeout within
+    /// one settings generation. Streaming requests have no total body timeout.
+    pub fn limited_client(&self, provider: &str, connect_ms: u64) -> Result<reqwest::Client> {
+        let policy = self.0.read().expect("egress policy");
+        let proxy = policy
+            .providers
+            .get(provider)
+            .ok_or_else(|| anyhow::anyhow!("Provider egress policy unavailable"))?;
+        let mut clients = policy.limited.lock().expect("limited clients");
+        let key = (proxy.clone(), connect_ms);
+        if let Some(client) = clients.get(&key) {
+            return Ok(client.clone());
+        }
+        let mut builder = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never());
+        if connect_ms > 0 {
+            builder = builder.connect_timeout(Duration::from_millis(connect_ms));
+        }
+        if let Some(proxy) = proxy {
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy).map_err(|_| anyhow::anyhow!("Invalid egress proxy"))?,
+            );
+        }
+        let client = builder
+            .build()
+            .map_err(|_| anyhow::anyhow!("Cannot build egress client"))?;
+        clients.insert(key, client.clone());
+        Ok(client)
+    }
     pub fn new(policy: Policy) -> Self {
         Self(Arc::new(RwLock::new(Arc::new(policy))))
     }

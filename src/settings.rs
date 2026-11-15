@@ -20,6 +20,8 @@ pub struct Settings {
     #[serde(default)]
     pub cache: crate::cache::Limits,
     pub upstream_timeout_secs: u64,
+    #[serde(default)]
+    pub provider_defaults: crate::provider_limits::Limits,
     pub reserve_output_tokens: i64,
     #[serde(default = "crate::config::default_audio_upload_limit_mib")]
     pub audio_upload_limit_mib: usize,
@@ -93,6 +95,7 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             ledger_spool_max_bytes: default_ledger_spool_max_bytes(),
             cache: Default::default(),
             upstream_timeout_secs: cfg.server.upstream_timeout_secs,
+            provider_defaults: cfg.server.provider_defaults.clone(),
             reserve_output_tokens: cfg.server.reserve_output_tokens,
             audio_upload_limit_mib: cfg.server.audio_upload_limit_mib,
             file_upload_limit_mib: cfg.server.file_upload_limit_mib,
@@ -138,12 +141,15 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             .bind(serde_json::to_value(p.key_strategy)?.as_str().context("key strategy")?)
             .execute(&mut *tx)
             .await?;
-            sqlx::query("UPDATE providers SET default_model=?,priority=? WHERE name=?")
-                .bind(&p.default_model)
-                .bind(p.priority)
-                .bind(&p.name)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE providers SET default_model=?,priority=?,limits_json=? WHERE name=?",
+            )
+            .bind(&p.default_model)
+            .bind(p.priority)
+            .bind(serde_json::to_string(&p.limits)?)
+            .bind(&p.name)
+            .execute(&mut *tx)
+            .await?;
         }
         for r in &cfg.routes {
             sqlx::query("INSERT INTO routes(name,config_json) VALUES(?,?)")
@@ -185,6 +191,7 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
         .transpose()?;
     let mut cfg: Config = toml::from_str("")?;
     cfg.router = settings.router.clone();
+    cfg.server.provider_defaults = settings.provider_defaults.clone();
     use sqlx::Row;
     // Runtime validation needs the full configuration; read its cache in batches.
     // Dashboard list handlers use their own bounded queries, not this loader.
@@ -212,6 +219,7 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
                 }
             }
             cfg.providers.push(ProviderCfg {
+                limits: serde_json::from_str(row.get("limits_json"))?,
                 default_model: row.get("default_model"),
                 priority: row.get("priority"),
                 name: row.get("name"),

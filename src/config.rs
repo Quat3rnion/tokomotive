@@ -109,6 +109,7 @@ pub struct Server {
     /// Markup used when a Model has no Price Card.
     pub default_markup_percent: f64,
     pub upstream_timeout_secs: u64,
+    pub provider_defaults: crate::provider_limits::Limits,
     /// When set, `/metrics` needs `Authorization: Bearer <token>`.
     pub metrics_token: Option<String>,
     pub metrics_token_env: Option<String>,
@@ -130,6 +131,7 @@ impl Default for Server {
             admin_password_env: Some("TOKOMOTIVE_ADMIN_PASSWORD".into()),
             default_markup_percent: 0.0,
             upstream_timeout_secs: 600,
+            provider_defaults: Default::default(),
             metrics_token: None,
             metrics_token_env: Some("TOKOMOTIVE_METRICS_TOKEN".into()),
             reserve_output_tokens: 4096,
@@ -144,6 +146,8 @@ impl Default for Server {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
+    #[serde(default)]
+    pub limits: crate::provider_limits::Limits,
     #[serde(default)]
     pub default_model: Option<String>,
     #[serde(default)]
@@ -380,6 +384,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.server.provider_defaults.validate()?;
         if !(1..=63).contains(&self.server.file_upload_limit_mib) {
             bail!("The file upload limit must be whole MiB from 1 to 63.");
         }
@@ -401,6 +406,7 @@ impl Config {
         }
         let mut providers = std::collections::HashSet::new();
         for p in &self.providers {
+            p.limits.validate()?;
             validate_name(&p.name)?;
             if p.default_model.as_ref().is_some_and(|m| {
                 m.trim().is_empty() || m.len() > 200 || m.chars().any(char::is_control)

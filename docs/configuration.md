@@ -376,7 +376,7 @@ first start. Edit them in **Settings** afterward.
 | `admin_password`         | string | none                            | Legacy. A dashboard password in the file. It seeds the hash only when none exists. Use Setup instead. Do not use it in a repository that you commit. |
 | `admin_password_env`     | string | `"TOKOMOTIVE_ADMIN_PASSWORD"` | Name of the variable that holds the dashboard password. The variable has priority over `admin_password`. |
 | `default_markup_percent` | float  | `0`                             | Markup for Models that have no Price Card. The file `config.example.toml` sets it to `20`.                                                               |
-| `upstream_timeout_secs`  | integer | `600`                          | Time limit in seconds for one request to a Provider. The limit includes the time to read the response body. The connect time limit is 15 seconds and is fixed. |
+| `upstream_timeout_secs`  | integer | `600`                          | Default request time limit in seconds. For non-streaming requests, this includes the response body. For streams, it limits the wait for response headers. Provider limits can override it. |
 | `metrics_token`          | string | none                            | The bearer token for `/metrics`, in the file. It seeds once. Later changes belong in **Settings**. |
 | `metrics_token_env`      | string | `"TOKOMOTIVE_METRICS_TOKEN"` | Name of the variable that holds the bearer token. The variable has priority over `metrics_token`.                                                       |
 | `reserve_output_tokens`  | integer | `4096` | Fallback output tokens for a Reservation when the request sets no maximum and the Model has no mapped output limit. Must be non-negative. Does not cap a models.dev output limit. |
@@ -688,6 +688,49 @@ they are not a seed-file key. See [Provider presets](usage.md#provider-presets).
 | `api_key_env`  | string           | none    | Name of the variable that holds one Provider Key. A non-empty variable takes precedence over `api_key`.         |
 | `api_keys`     | array of strings | `[]`    | More Provider Keys, in the file. The Proxy encrypts them when it seeds.                                          |
 | `api_keys_env` | array of strings | `[]`    | Names of variables. Each variable holds one Provider Key.                                                        |
+
+### Provider request limits
+
+Set the defaults in **Settings > Server and router > Default Provider request
+limits**. Set overrides in **Providers > Advanced request limits**. A blank
+Provider field inherits the current default. Changes apply without a restart.
+The optional seed file uses `[server.provider_defaults]` and
+`[providers.limits]`. Both tables accept these fields:
+
+| Field | Default when not set | Rule |
+| --- | --- | --- |
+| `request_timeout_ms` | `upstream_timeout_secs` times 1000 | Positive milliseconds. Includes the body for JSON responses. Limits response headers only for streams. |
+| `connect_timeout_ms` | `15000` | Milliseconds to connect, including the TLS handshake. Zero disables this limit. |
+| `stream_idle_timeout_ms` | `0` | Milliseconds with no upstream bytes. Zero disables this limit. Each received chunk resets the timer. |
+| `max_concurrent` | `0` | In-flight requests for this Provider, across its keys and models. Zero is unlimited. |
+| `max_wait_ms` | `0` | Maximum wait for a concurrency slot. Zero does not wait. |
+| `max_retries` | Each key once | Retries after the first attempt on this Provider. Zero allows one attempt. The next key comes first; then the key pool repeats. |
+| `backoff_base_ms` | `0` | Delay before the first retry. It doubles for each later retry. |
+| `backoff_max_ms` | `30000` | Maximum retry delay. Zero disables the delay. |
+| `backoff_jitter` | `false` | With `true`, choose a random delay from zero through the calculated delay. |
+
+Timeouts, waits and backoff values cannot exceed 86400000 ms (one day).
+The retry limit cannot exceed 10000. The concurrency limit cannot exceed 1000000.
+The router's `max_attempts` remains the overall request cap, including retries
+after an OAuth refresh. No retry starts after stream bytes reach the client.
+When retries are not set, the existing one-pass key pool and OAuth refresh
+retry rules remain in use.
+
+Connect timeouts are client-level in reqwest. The Proxy caches a client for
+each proxy URL and connect timeout within one settings generation. Other
+timeout limits apply to each request. Streams have no total body time limit.
+
+A concurrency rejection is `concurrency_limited`, not a Circuit Breaker
+failure. The Proxy tries the next Deployment or Fallback. It returns 429 with
+`Retry-After: 1` only when all candidates are concurrency-limited. A resized
+limit does not cancel in-flight requests. New requests use the new limit.
+
+Metrics use the `provider` label: `tokomotive_provider_inflight`,
+`tokomotive_provider_limited_total` and `tokomotive_provider_timeouts_total`.
+Limited counter kinds are `wait`, `rejected` and `wait_timeout`.
+Timeout counter kinds are `request`, `connect` and `stream_idle`.
+Attempt traces use `request_timeout`, `connect_timeout`,
+`stream_idle_timeout` and `concurrency_limited`.
 
 ### Google Gemini native API
 

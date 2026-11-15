@@ -144,6 +144,39 @@ Changing a proxy URL is a trusted configuration operation, not a way to grant
 Provider Access to a Virtual Key. Process proxy environment variables do not
 override these explicit connection settings.
 
+## Provider request limits
+
+Open **Settings > Server and router > Default Provider request limits** to
+set defaults. Open a Provider's **Advanced request limits** to set overrides.
+Leave a field blank to inherit the default. Time values use milliseconds.
+Changes apply without a restart.
+
+Use a request timeout for the wait for response headers and for the complete
+non-streaming body. Use a connect timeout for the connection and TLS handshake.
+Use a stream idle timeout to stop a stream that sends no bytes for that time.
+A healthy long stream continues while bytes arrive before each idle deadline.
+On an idle timeout, the Proxy sends an OpenAI error event or an Anthropic
+`event: error`, as required by the client. It records status 502 and estimates
+usage if final usage is not available. It does not mark a connected client as
+disconnected.
+
+Set **Maximum concurrent requests** to cap in-flight requests across all keys
+and models on a Provider. Zero is unlimited. Set **Maximum concurrency wait**
+to allow a bounded wait for a slot. The default is zero: do not wait. When no
+slot is available, the Proxy tries the next Deployment or Fallback. If all
+candidates are limited, it returns 429 with `Retry-After: 1`. This does not
+count as a Circuit Breaker failure. If you lower a cap, existing requests finish;
+new requests wait or move on until the active count is below the new cap.
+
+**Maximum Provider retries** counts retries after the first attempt. Zero
+allows one attempt. With no default or override, the Proxy tries each key once.
+A configured retry count tries the next key, then repeats the pool if needed.
+Backoff starts at the base delay, doubles after each failure, and stops at the
+maximum. Jitter selects a delay from zero through that delay. The router's
+**Maximum attempts** still caps all upstream attempts for the request.
+See [Provider request limits](configuration.md#provider-request-limits) for
+defaults, seed-file fields, metrics and Attempt trace classes.
+
 ## Request diagnostics
 
 Use **Ledger** as the request log. Filter by User, Provider, Model, UTC dates,

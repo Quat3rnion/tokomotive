@@ -16,6 +16,8 @@ use crate::routing::RouterTable;
 
 #[derive(Debug, Clone)]
 pub struct Provider {
+    pub gate: Arc<crate::provider_limits::Gate>,
+    pub limits: crate::provider_limits::Limits,
     pub default_model: Option<String>,
     pub priority: Option<i16>,
     pub name: String,
@@ -37,6 +39,8 @@ pub struct Provider {
 impl Provider {
     pub fn new(name: &str, kind: ProviderKind, base_url: &str, keys: Vec<String>) -> Provider {
         Provider {
+            gate: Default::default(),
+            limits: Default::default(),
             default_model: None,
             priority: None,
             name: name.into(),
@@ -152,6 +156,10 @@ impl AppState {
             crate::egress::Policy::load(&db, &secret_key, settings.upstream_timeout_secs).await?,
         );
         for provider in &mut router_table.providers {
+            provider.limits = provider.limits.inherit(&settings.provider_defaults);
+            provider
+                .gate
+                .resize(provider.limits.max_concurrent.unwrap_or(0));
             provider.egress = Some(egress.snapshot());
         }
         let catalog = db::load_catalog(&db).await?;
@@ -224,7 +232,10 @@ impl AppState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Provider egress policy unavailable"))?;
         egress.validate(&self.db, &provider.name).await?;
-        egress.client(Some(&provider.name), crate::egress::Purpose::Upstream)
+        egress.limited_client(
+            &provider.name,
+            provider.limits.connect_timeout_ms.unwrap_or(15_000),
+        )
     }
     #[cfg(test)]
     pub(crate) fn set_test_http(&self, http: reqwest::Client) {
@@ -260,10 +271,15 @@ impl AppState {
     pub fn set_router_table(&self, mut table: RouterTable) {
         let mut current = self.router_table.write().expect("router table");
         for provider in &mut table.providers {
+            provider.limits = provider.limits.inherit(&self.settings().provider_defaults);
             provider.egress = Some(self.egress.snapshot());
             if let Some(old) = current.providers.iter().find(|p| p.name == provider.name) {
                 provider.next = old.next.clone();
+                provider.gate = old.gate.clone();
             }
+            provider
+                .gate
+                .resize(provider.limits.max_concurrent.unwrap_or(0));
         }
         self.affinity
             .lock()
