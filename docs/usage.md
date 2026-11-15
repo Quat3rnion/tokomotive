@@ -593,6 +593,73 @@ Tests use mock upstreams only. Live AWS account access is not verified.
 
 ### Routing and Translation
 
+#### Model name resolution
+
+The Proxy checks names in this order:
+
+1. A Route name. A Route overrides a catalog Model with the same name.
+2. A catalog Model name or alias. An alias sends the canonical Model name.
+3. `provider/model`, with a configured Provider. The Proxy removes the prefix.
+4. A model ID offered by a connected Provider. The Proxy uses cached live
+   model lists and the configured Provider's models.dev mapping.
+5. A bare Provider name, such as `deepseek`. The Proxy uses its **Default
+   model**. If that field is blank, it returns a hint instead of selecting
+   another Provider.
+6. Reject with HTTP 404. The OpenAI error has `code: model_not_found` and
+   `type: invalid_request_error`. The Anthropic error has `type: error` and
+   `error.type: not_found_error`. Up to five suggestions use the model-picker
+   ranking. Suggestions obey the Virtual Key's Model list and Provider Access.
+
+The Proxy checks exact spelling first across these steps. If no exact match
+exists, it checks case-insensitive spelling in the same order. A
+case-insensitive match must have one unique spelling. Use exact spelling
+when two names differ only by case.
+
+When several connected Providers offer one model ID, lower **Priority** comes
+first. Set Priority on the Provider card, from -32768 to 32767. Blank is 0.
+Next, API-key Providers come before subscriptions. Provider name order breaks
+the final tie. A debug log and **Try a model name** show the chosen Provider
+and the skipped Providers. Subscription Providers are not implicit choices
+without explicit Provider Access. Provider Access also applies to Routes,
+prefixes and Fallbacks.
+
+Set **Default model** on a Provider card to accept its bare name. The model
+picker is scoped to that Provider. This setting does not change its Models,
+Routes or Cost Cards.
+
+The request path never fetches a model list. The in-memory model index is
+rebuilt at startup, on settings or catalog reload, and after a model-picker
+search or live-cache refresh. It keeps at most 50000 Provider/model pairs,
+with at most 5000 models.dev IDs per Provider and 1000 mapped Providers.
+The live source queries at most 10 API-key Providers per search. Successful
+live lists are cached for 10 minutes; failed fetches for 1 minute. A cached
+list can remain in use until the next refresh. New models and credential
+changes can therefore need a picker search or settings reload. models.dev
+data changes only on Sync. Explicit Routes, catalog Models and prefixes do
+not need a live list. These are the stable choices when an index is stale
+or reaches its limit.
+
+On **Routes**, use **Try a model name** with an optional Virtual Key. Admin
+and Viewer accounts can use this read-only tool. It shows the checked steps
+and the result, or the 404 and permitted suggestions. It does not call an
+upstream API or change routing state. Without a key, it uses the normal
+API-key Provider access rule and excludes subscriptions.
+
+Successful proxy responses have `x-tokomotive-route`,
+`x-tokomotive-provider` and `x-tokomotive-model`. These headers identify the
+selected Deployment, including a Fallback or cache hit. They have no keys
+or tokens.
+
+**Migration:** The old silent fallback to an arbitrary Provider is removed.
+Unknown names are rejected by default. If clients need a catch-all, create
+a Route with the required Deployment. In **Settings > Server and router**,
+set **Unknown model names** to **Send to Route** and select that Route.
+The Proxy sends the Route's configured upstream model, not the unknown
+client name. Model permission and Provider Access still apply. Select
+**Reject (default)** to remove the catch-all.
+
+#### API format translation
+
 For **Cohere (v2 Chat)**, add the preset and a Provider Key, then add a Model
 or Route with a Cohere Model ID. Both Chat Completions and Messages clients
 can use JSON and streaming responses, including function tools. The Proxy
@@ -789,10 +856,12 @@ Limits:
 curl $PROXY/v1/models -H "Authorization: Bearer $KEY"
 ```
 
-The list has the catalog Models (`owned_by` is the Provider) and the Routes
-(`owned_by` is `router`). If the key has an allowed-Models list, the Proxy shows
-only the permitted names. A request with the header `anthropic-version` gets the
-Anthropic format. `provider/model` names are not listed, but they work. An
+The list has the catalog Models and aliases (`owned_by` is the Provider),
+Routes (`owned_by` is `router`), indexed model IDs, indexed `provider/model`
+names and Provider names with a Default model. The same resolver and key
+permissions apply to this list and proxy requests. A request with the header
+`anthropic-version` gets the Anthropic format. Other `provider/model` names
+also work, without an index entry. An
 unknown `{id}` gets HTTP 404. These requests do not count against Rate Limits and
 do not make Ledger Entries.
 

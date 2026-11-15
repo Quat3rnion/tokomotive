@@ -5,6 +5,174 @@ use tokomotive::{config::Config, db};
 mod mock_oauth;
 
 #[tokio::test]
+async fn model_resolution_never_implicitly_selects_a_subscription_without_provider_access() {
+    use tokomotive::{
+        oauth::{Flow, OAuthEndpoints},
+        state::AppState,
+    };
+    let mock = mock_oauth::MockOAuth::start().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        axum::serve(listener,Router::new().route("/v1/responses",post(|Json(b):Json<Value>|async move{Json(json!({"model":b["model"],"output":[],"usage":{"input_tokens":1,"output_tokens":1}}))}))).await.unwrap()
+    });
+    let cfg: Config = toml::from_str(&format!(
+        r#"
+[server]
+database="sqlite::memory:"
+mode="simple"
+[[providers]]
+name="aa-sub"
+kind="openai"
+auth="chatgpt"
+base_url="https://api.openai.com"
+default_model="shared-id"
+priority=-1
+[[providers]]
+name="paid"
+kind="openai"
+base_url="{base}"
+api_key="paid-key"
+[[providers]]
+name="disconnected"
+kind="openai"
+base_url="{base}"
+priority=-100
+[[users]]
+name="ordinary"
+keys=["vk-default"]
+[[users]]
+name="explicit"
+keys=["vk-explicit"]
+key_allowed_providers=["aa-sub","paid"]
+"#
+    ))
+    .unwrap();
+    let db = db::connect(&cfg.server.database).await.unwrap();
+    db::seed(&db, &cfg).await.unwrap();
+    let st = AppState::new_with_oauth_endpoints(
+        &cfg,
+        db,
+        None,
+        OAuthEndpoints {
+            issuer: mock.base.clone(),
+            openai_resource: format!("{}/v1", mock.base),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    // Seed a small models.dev mapping; no live model request is needed.
+    for (dev, ids) in [
+        ("fixture-sub", vec!["shared-id", "sub-only"]),
+        ("fixture-paid", vec!["shared-id", "paid-only"]),
+    ] {
+        sqlx::query("INSERT INTO models_dev_providers VALUES(?,?,'','','')")
+            .bind(dev)
+            .bind(dev)
+            .execute(&st.db)
+            .await
+            .unwrap();
+        for id in ids {
+            sqlx::query("INSERT INTO models_dev_models(provider,id,name,canonical_model_id,details) VALUES(?,?,?,?, '{}')").bind(dev).bind(id).bind(id).bind(id).execute(&st.db).await.unwrap();
+        }
+    }
+    sqlx::query("UPDATE providers SET preset=CASE WHEN name='aa-sub' THEN 'fixture-sub' ELSE 'fixture-paid' END").execute(&st.db).await.unwrap();
+    let a = st.oauth.start("aa-sub", Flow::Chatgpt).await.unwrap();
+    let q: std::collections::HashMap<_, _> = reqwest::Url::parse(&a.authorize_url)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    mock.claims.lock().unwrap()["nonce"] = json!(q["nonce"]);
+    st.oauth
+        .finish(
+            "aa-sub",
+            Flow::Chatgpt,
+            &format!(
+                "http://localhost:1455/auth/callback?state={}&code=code&client_id=issued-client",
+                q["state"]
+            ),
+        )
+        .await
+        .unwrap();
+    st.reload_settings().await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let app = tokomotive::router(st.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let c = reqwest::Client::new();
+    for (key, model, status, provider) in [
+        ("vk-default", "shared-id", 200, "paid"),
+        ("vk-default", "paid-only", 200, "paid"),
+        ("vk-default", "deepseek", 404, ""),
+        ("vk-explicit", "deepseek", 404, ""),
+        ("vk-default", "aa-sub", 404, ""),
+        ("vk-default", "sub-only", 404, ""),
+        ("vk-explicit", "shared-id", 200, "aa-sub"),
+        ("vk-explicit", "aa-sub", 200, "aa-sub"),
+        ("vk-explicit", "sub-only", 200, "aa-sub"),
+    ] {
+        let r = c
+            .post(format!("{url}/v1/responses"))
+            .bearer_auth(key)
+            .json(&json!({"model":model,"input":"hi"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status, "{key} {model}");
+        if status == 200 {
+            assert_eq!(r.headers()["x-tokomotive-provider"], provider);
+        } else {
+            let body: Value = r.json().await.unwrap();
+            if key == "vk-default"
+                && let Some(suggestions) = body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .split("Try:")
+                    .nth(1)
+            {
+                assert!(!suggestions.contains("sub-only"));
+                assert!(!suggestions.contains("aa-sub"));
+                assert!(!suggestions.contains("disconnected"));
+            }
+        }
+    }
+    sqlx::query("UPDATE providers SET priority=NULL")
+        .execute(&st.db)
+        .await
+        .unwrap();
+    st.reload_settings().await.unwrap();
+    let r = c
+        .post(format!("{url}/v1/responses"))
+        .bearer_auth("vk-explicit")
+        .json(&json!({"model":"shared-id","input":"hi"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-tokomotive-provider"], "paid");
+    let list: Value = c
+        .get(format!("{url}/v1/models"))
+        .bearer_auth("vk-default")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["owned_by"] != "aa-sub" && m["id"] != "sub-only")
+    );
+    server.abort();
+    upstream.abort();
+}
+
+#[tokio::test]
 async fn attempts_expire_and_reject_malformed_pasted_urls_before_exchange() {
     use std::sync::{
         Arc,
@@ -310,7 +478,7 @@ async fn chatgpt_verifies_registration_and_reuses_the_user_owned_client() {
     let r = reqwest::Client::new()
         .post(format!("{url}/v1/responses"))
         .bearer_auth("vk-chat")
-        .json(&json!({"model":"gpt-test","input":"hello"}))
+        .json(&json!({"model":"chat/gpt-test","input":"hello"}))
         .send()
         .await
         .unwrap();
@@ -833,9 +1001,9 @@ key_allowed_providers=['sub']
     let app = tokomotive::router(st.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let malformed = reqwest::Client::new()
-        .post(format!("{url}/v1/messages"))
+        .post(format!("{url}/v1/chat/completions"))
         .bearer_auth("vk-test")
-        .json(&json!([]))
+        .json(&json!({"model":"m","messages":false}))
         .send()
         .await;
     assert_eq!(malformed.unwrap().status(), 400);
@@ -860,7 +1028,7 @@ key_allowed_providers=['sub']
     let rejected:i64=sqlx::query_scalar("SELECT COUNT(*) FROM ledger l JOIN request_attempts a ON a.ledger_id=l.id WHERE l.status=400 AND l.attempts=0 AND l.input=0 AND l.output=0 AND l.price_micros=0 AND a.error_class='translation'").fetch_one(&st.db).await.unwrap();
     assert_eq!(rejected, 1);
     let r=reqwest::Client::new().post(format!("{url}/v1/chat/completions")).bearer_auth("vk-test")
-        .json(&json!({"model":"unknown","messages":[{"role":"system","content":"original system"},{"role":"user","content":"abcdHello world, this is a test"}]})).send().await.unwrap();
+        .json(&json!({"model":"sub/unknown","messages":[{"role":"system","content":"original system"},{"role":"user","content":"abcdHello world, this is a test"}]})).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let _ = r.bytes().await.unwrap();
     st.flush().await;

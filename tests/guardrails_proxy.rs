@@ -189,6 +189,40 @@ async fn request_redaction_reaches_upstream_and_capture_in_simple_mode() {
 }
 
 #[tokio::test]
+async fn resolved_route_controls_apply_to_case_insensitive_and_catch_all_names() {
+    let e = env("openai").await;
+    e.attach("email", Action::Block, Direction::Request, "route")
+        .await;
+    let mut settings = (*e.st.settings()).clone();
+    settings.router.unknown_model_route = Some("chat".into());
+    tokomotive::settings::put(
+        &e.st.db,
+        "runtime_settings",
+        &serde_json::to_string(&settings).unwrap(),
+    )
+    .await
+    .unwrap();
+    e.st.reload_settings().await.unwrap();
+    for model in ["CHAT", "unknown"] {
+        let r = reqwest::Client::new()
+            .post(format!("{}/v1/chat/completions", e.url))
+            .bearer_auth("sk-alice")
+            .json(
+                &json!({"model":model,"messages":[{"role":"user","content":"alice@example.com"}]}),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400, "{model}");
+        assert_eq!(
+            r.json::<Value>().await.unwrap()["error"]["code"],
+            "guardrail_blocked"
+        );
+    }
+    assert!(e.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn attachment_union_block_wins_and_formats_never_echo_match() {
     for (kind, path) in [("openai", "chat/completions"), ("anthropic", "messages")] {
         let e = env(kind).await;

@@ -54,7 +54,7 @@ keys = ["vk-cap"]
     let r = reqwest::Client::new()
         .post(format!("{url}/v1/chat/completions"))
         .bearer_auth("vk-cap")
-        .json(&serde_json::json!({"model": "m", "messages": []}))
+        .json(&serde_json::json!({"model": "p/m", "messages": []}))
         .send()
         .await
         .unwrap();

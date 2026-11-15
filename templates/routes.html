@@ -42,6 +42,18 @@
 </div></fieldset>
 {% endmacro %}
 {% block content %}
+<section class="panel" aria-labelledby="try-model-h">
+  <h2 id="try-model-h">Try a model name</h2>
+  <p class="hint">Read-only. No upstream request is sent. Without a Virtual Key, use all API-key Providers and no subscriptions. The picker shows the first 200 keys.</p>
+  <form method="post" action="/admin/routes/try" hx-post="/admin/routes/try" hx-target="#model-resolution" class="stack">
+    <div class="fields">
+      <div class="field"><label for="try-model">Model name</label>{% call picker::model("try-model", "model", "", "single", "-", "", "deepseek", "", "", true) %}</div>
+      <div class="field"><label for="try-key">Virtual Key (optional)</label><select id="try-key" name="key_id"><option value="">No Virtual Key</option>{% for (id,label) in key_choices %}<option value="{{ id }}">{{ label }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="form-error" role="alert" tabindex="-1"></div><button>Try model name</button>
+  </form>
+  <div id="model-resolution" role="status" aria-live="polite"></div>
+</section>
 <h1>Routes</h1>
 <p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
 {% include "search.html" %}

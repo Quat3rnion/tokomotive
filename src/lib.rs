@@ -26,6 +26,7 @@ pub mod provider_types;
 pub mod proxy;
 pub mod quota;
 pub mod ratelimit;
+pub mod resolve;
 pub mod routing;
 pub mod settings;
 pub mod state;

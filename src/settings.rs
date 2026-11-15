@@ -138,6 +138,12 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
             .bind(serde_json::to_value(p.key_strategy)?.as_str().context("key strategy")?)
             .execute(&mut *tx)
             .await?;
+            sqlx::query("UPDATE providers SET default_model=?,priority=? WHERE name=?")
+                .bind(&p.default_model)
+                .bind(p.priority)
+                .bind(&p.name)
+                .execute(&mut *tx)
+                .await?;
         }
         for r in &cfg.routes {
             sqlx::query("INSERT INTO routes(name,config_json) VALUES(?,?)")
@@ -206,6 +212,8 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
                 }
             }
             cfg.providers.push(ProviderCfg {
+                default_model: row.get("default_model"),
+                priority: row.get("priority"),
                 name: row.get("name"),
                 key_strategy: serde_json::from_value(serde_json::json!(
                     row.get::<String, _>("key_strategy")

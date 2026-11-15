@@ -16,6 +16,8 @@ use crate::routing::RouterTable;
 
 #[derive(Debug, Clone)]
 pub struct Provider {
+    pub default_model: Option<String>,
+    pub priority: Option<i16>,
     pub name: String,
     pub key_strategy: crate::config::KeyStrategy,
     pub kind: ProviderKind,
@@ -35,6 +37,8 @@ pub struct Provider {
 impl Provider {
     pub fn new(name: &str, kind: ProviderKind, base_url: &str, keys: Vec<String>) -> Provider {
         Provider {
+            default_model: None,
+            priority: None,
             name: name.into(),
             key_strategy: crate::config::KeyStrategy::default(),
             kind,
@@ -87,6 +91,8 @@ impl Drop for Reservation {
 pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
+    pub(crate) resolution_refresh: tokio::sync::Mutex<()>,
+    pub resolution_index: RwLock<crate::resolve::Index>,
     pub mcp: crate::mcp::Sessions,
     pub db: Db,
     pub limiter: crate::ratelimit::RateLimiter,
@@ -155,7 +161,9 @@ impl AppState {
         let observability = crate::observability::Observer::new(
             crate::observability::load(&db, &secret_key).await?,
         )?;
-        Ok(AppState(Arc::new(Inner {
+        let state = AppState(Arc::new(Inner {
+            resolution_refresh: tokio::sync::Mutex::new(()),
+            resolution_index: RwLock::new(crate::resolve::Index::default()),
             mcp: crate::mcp::Sessions::default(),
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
@@ -179,7 +187,9 @@ impl AppState {
             model_sources: crate::model_search::Registry::with_builtin(),
             pending: AtomicUsize::new(0),
             idle: Notify::new(),
-        })))
+        }));
+        state.refresh_resolution_index().await?;
+        Ok(state)
     }
 
     pub fn catalog(&self) -> Arc<Catalog> {
@@ -239,6 +249,7 @@ impl AppState {
     pub async fn reload_catalog(&self) -> Result<()> {
         let c = db::load_catalog(&self.db).await?;
         *self.catalog.write().expect("catalog lock") = Arc::new(c);
+        self.refresh_resolution_index().await?;
         Ok(())
     }
 
@@ -259,6 +270,8 @@ impl AppState {
             .expect("session affinity")
             .configure(&table);
         *current = Arc::new(table);
+        *self.resolution_index.write().expect("resolution index") =
+            crate::resolve::Index::default();
     }
 
     /// Reserve `amount` of a User's Budget if `spent` plus all open

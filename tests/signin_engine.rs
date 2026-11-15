@@ -432,17 +432,15 @@ async fn operator_configures_google_secret_then_pastes_pkce_with_routing_availab
         )
         .is_empty()
     );
-    assert_eq!(
+    assert!(
         st.candidates(
             &tokomotive::routing::RouterTable::from_config(&cfg),
             &st.catalog(),
             None,
             Endpoint::ChatCompletions,
             false
-        )[0]
-        .provider
-        .name,
-        "vertex"
+        )
+        .is_empty()
     );
     let html = c
         .get(format!("{url}/admin/providers"))

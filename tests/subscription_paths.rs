@@ -18,7 +18,7 @@ use tokomotive::state::AppState;
 async fn raw(addr: &str, method: &str, path: &str) -> u16 {
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer vk-test\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer vk-test\r\ncontent-type: application/json\r\ncontent-length: 13\r\nconnection: close\r\n\r\n{{\"model\":\"m\"}}"
     );
     s.write_all(req.as_bytes()).await.unwrap();
     let mut out = Vec::new();

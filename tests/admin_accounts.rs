@@ -526,7 +526,11 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
     for path in paths {
         if matches!(
             path.as_str(),
-            "/admin/login" | "/setup" | "/admin/logout" | "/admin/settings/password"
+            "/admin/login"
+                | "/setup"
+                | "/admin/logout"
+                | "/admin/settings/password"
+                | "/admin/routes/try"
         ) {
             continue;
         }
@@ -619,6 +623,42 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
     );
     let viewer = a.login("reader", "viewer-password").await;
     assert_eq!(a.post("/admin/logout", &viewer, &[]).await.status(), 303);
+}
+
+#[tokio::test]
+async fn viewer_can_try_model_resolution_without_mutation_or_upstream_calls() {
+    let a = app().await;
+    let owner = a.setup().await;
+    add(&a, &owner, "reader", "viewer").await;
+    let viewer = a.login("reader", "account-password").await;
+    let page =
+        a.c.get(format!("{}/admin/routes", a.url))
+            .header("cookie", &viewer)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+    assert!(page.contains("Try a model name"));
+    assert!(page.contains("action=\"/admin/routes/try\""));
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_audit")
+        .fetch_one(&a.st.db)
+        .await
+        .unwrap();
+    let r = a
+        .post("/admin/routes/try", &viewer, &[("model", "deepseek")])
+        .await;
+    assert_eq!(r.status(), 200);
+    let html = r.text().await.unwrap();
+    assert!(html.contains("404"));
+    assert!(html.contains("catalog Model or alias"));
+    assert!(html.contains("model_not_found"));
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_audit")
+        .fetch_one(&a.st.db)
+        .await
+        .unwrap();
+    assert_eq!(after, before);
 }
 
 #[tokio::test]

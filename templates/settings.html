@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "picker.html" as picker %}
 {% block title %}Settings - Tokomotive{% endblock %}
 {% block nav_settings %}aria-current="page"{% endblock %}
 {% block content %}
@@ -65,6 +66,8 @@
   <fieldset>
     <legend>Router</legend>
     <div class="fields">
+      <div class="field"><label for="s-unknown">Unknown model names</label><select id="s-unknown" name="unknown_model_policy"><option value="reject"{% if settings.router.unknown_model_route.is_none() %} selected{% endif %}>Reject (default)</option><option value="route"{% if settings.router.unknown_model_route.is_some() %} selected{% endif %}>Send to Route</option></select><p class="hint">Reject returns HTTP 404. Send to Route uses only the selected Route. Key permissions still apply.</p></div>
+      <div class="field"><label for="s-unknown-route">Route for unknown model names</label>{% call picker::entity("s-unknown-route", "unknown_model_route", settings.router.unknown_model_route.as_deref().unwrap_or(""), "routes", route_choices, "Choose a Route", false) %}</div>
       <div class="field"><label for="s-quota">Quota exhaustion threshold (%)</label><input id="s-quota" name="quota_exhausted_percent" type="number" min="0" max="100" step="any" value="{{ settings.router.quota_exhausted_percent }}" required><p class="hint">Skip an account at this used percentage until its quota resets. Default: 98%.</p></div>
       <div class="field"><label for="s-threshold">Failure threshold</label><input id="s-threshold" type="number" min="1" name="failure_threshold" value="{{ settings.router.failure_threshold }}" required inputmode="numeric" aria-describedby="s-threshold-help"><p class="hint" id="s-threshold-help">Failures in a row (connection errors, 5xx, or 429 without a known reset) before the Proxy stops using a Provider and model for a cooldown.</p></div>
       <div class="field"><label for="s-cooldown">Cooldown (seconds)</label><input id="s-cooldown" type="number" min="0" name="cooldown_secs" value="{{ settings.router.cooldown_secs }}" required inputmode="numeric" aria-describedby="s-cooldown-help"><p class="hint" id="s-cooldown-help">After the cooldown, one probe request tests whether the Provider works again.</p></div>

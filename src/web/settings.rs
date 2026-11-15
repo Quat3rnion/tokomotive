@@ -28,6 +28,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/search/provider-types", get(search_provider_types))
         .route("/admin/provider-form", get(provider_form))
         .route("/admin/routes", get(routes).post(create_route))
+        .route("/admin/routes/try", post(try_model))
         .route("/admin/routes/{name}", post(update_route))
         .route("/admin/routes/{name}/delete", post(delete_route))
         .route("/admin/settings", get(settings_page).post(save_settings))
@@ -167,6 +168,7 @@ async fn delete_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    route_choices: Option<Vec<db::ControlChoice>>,
     egress_label: String,
     egress_set: bool,
     observability: std::sync::Arc<crate::observability::Settings>,
@@ -187,6 +189,7 @@ struct SettingsPage {
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
     render(SettingsPage {
+        route_choices: tryr!(db::small_choices(&st.db, "routes").await),
         egress_label: st
             .egress
             .label(None)
@@ -221,6 +224,8 @@ async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct ServerForm {
+    unknown_model_policy: Option<String>,
+    unknown_model_route: Option<String>,
     writer_timeout_secs: Option<u64>,
     ledger_spool_max_bytes: Option<u64>,
     cache_max_entries: Option<u64>,
@@ -293,6 +298,20 @@ impl ServerForm {
             .max_attempts
             .parse()
             .context("Enter the maximum attempts as a whole number, 1 or more.")?;
+        if let Some(policy) = &self.unknown_model_policy {
+            cfg.router.unknown_model_route = match policy.as_str() {
+                "reject" => None,
+                "route" => {
+                    let name = self.unknown_model_route.as_deref().unwrap_or("").trim();
+                    anyhow::ensure!(
+                        cfg.routes.iter().any(|r| r.name == name),
+                        "Choose an existing Route for unknown model names."
+                    );
+                    Some(name.into())
+                }
+                _ => anyhow::bail!("Choose Reject or Send to Route."),
+            };
+        }
         if let Some(value) = &self.quota_exhausted_percent {
             cfg.router.quota_exhausted_percent = value
                 .parse()
@@ -462,6 +481,7 @@ async fn change_password(
 #[derive(Template)]
 #[template(path = "routes.html")]
 struct RoutesPage {
+    key_choices: Vec<(i64, String)>,
     provider_choices: Option<Vec<db::ControlChoice>>,
     pager: Pager,
     base: Base,
@@ -639,11 +659,101 @@ async fn routes(
         .map(|p| p.name)
         .collect();
     render(RoutesPage {
+        key_choices: tryr!(sqlx::query_as("SELECT k.id,u.name || ' / ' || k.label FROM virtual_keys k JOIN users u ON u.id=k.user_id ORDER BY u.name,k.label,k.id LIMIT 200").fetch_all(&st.db).await),
         provider_choices: tryr!(db::small_choices(&st.db, "providers").await),
         pager,
         base: Base::new(&st),
         routes,
         providers,
+    })
+}
+
+#[derive(Deserialize)]
+struct TryModelForm {
+    model: String,
+    key_id: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "resolution.html")]
+struct ResolutionView {
+    steps: Vec<String>,
+    result: String,
+}
+
+async fn try_model(_: Admin, State(st): State<AppState>, Form(f): Form<TryModelForm>) -> Response {
+    if f.model.len() > 200 {
+        return bad("Use at most 200 characters for a model name.");
+    }
+    let (models, providers): (Vec<String>, Vec<String>) = if let Some(id) =
+        f.key_id.filter(|id| !id.is_empty())
+    {
+        let id = match id.parse::<i64>() {
+            Ok(id) => id,
+            Err(_) => return bad("Choose a Virtual Key."),
+        };
+        let row: Option<(Option<String>, Option<String>)> = tryr!(
+            sqlx::query_as("SELECT allowed_models,allowed_providers FROM virtual_keys WHERE id=?")
+                .bind(id)
+                .fetch_optional(&st.db)
+                .await
+        );
+        let Some((models, providers)) = row else {
+            return bad("Virtual Key not found.");
+        };
+        (
+            tryr!(serde_json::from_str(models.as_deref().unwrap_or("[]"))),
+            tryr!(serde_json::from_str(providers.as_deref().unwrap_or("[]"))),
+        )
+    } else {
+        (vec![], vec![])
+    };
+    let access = crate::resolve::Access {
+        models: &models,
+        providers: &providers,
+    };
+    let table = st.router_table();
+    let catalog = st.catalog();
+    let index = st.resolution_index.read().expect("resolution index");
+    let r = crate::resolve::resolve(&table, &catalog, &index, f.model.trim(), access);
+    let result = if !r.allowed(access, f.model.trim(), &catalog) && r.target.is_some() {
+        "403: this API key may not use this model".into()
+    } else {
+        match &r.target {
+            Some(crate::resolve::Target::Route(route)) => {
+                let providers = table
+                    .reachable_providers(&catalog, route)
+                    .iter()
+                    .filter(|p| access.provider(p))
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if providers.is_empty() {
+                    "403: this API key may not use the Route's Providers".into()
+                } else {
+                    format!("Route: {route}. Providers: {providers}.")
+                }
+            }
+            Some(crate::resolve::Target::Model { provider, model }) => {
+                if table
+                    .providers
+                    .iter()
+                    .any(|p| &p.name == provider && access.provider(p))
+                {
+                    format!("Provider: {provider}. Model: {model}.")
+                } else {
+                    "403: this API key may not use this Provider".into()
+                }
+            }
+            None => format!(
+                "404 model_not_found: {}",
+                crate::resolve::message(&table, &catalog, &index, f.model.trim(), access, &r)
+            ),
+        }
+    };
+    render(ResolutionView {
+        steps: r.steps,
+        result,
     })
 }
 
@@ -867,6 +977,11 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
 async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
     let _guard = st.settings_write.lock().await;
     let cfg = tryr!(runtime(&st).await);
+    if cfg.router.unknown_model_route.as_ref() == Some(&name) {
+        return form_error(
+            "This Route handles unknown model names. Select Reject or another Route in Settings first.",
+        );
+    }
     if cfg.routes.iter().any(|r| r.fallbacks.contains(&name)) {
         return form_error(
             "Another Route uses this Route as a Fallback. Remove that Fallback first.",
@@ -941,6 +1056,8 @@ struct AddedSignin {
     panel: String,
 }
 struct ProviderView {
+    default_model: String,
+    priority: String,
     proxy_mode: String,
     proxy_label: String,
     key_strategy: String,
@@ -968,6 +1085,9 @@ struct ProviderView {
     usage: Vec<UsageView>,
 }
 impl ProviderView {
+    fn default_model_id(&self) -> String {
+        format!("p-{}-default-model", self.name)
+    }
     fn has_unset_env(&self) -> bool {
         self.keys.iter().any(|k| k.env_set == Some(false))
     }
@@ -1280,7 +1400,7 @@ async fn providers(
     };
     let mut providers = Vec::new();
     let records = tryr!(
-        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region,proxy_mode FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
+        sqlx::query("SELECT name,kind,auth,base_url,include_usage,key_header,key_strategy,default_model,priority,bedrock_credentials IS NOT NULL AS aws_saved,project_id,region,proxy_mode FROM providers WHERE instr(lower(name),lower(?)) > 0 ORDER BY name LIMIT ? OFFSET ?")
             .bind(&q.q).bind(q.limit()+1).bind(q.offset())
             .fetch_all(&st.db)
             .await
@@ -1385,6 +1505,13 @@ async fn providers(
             vec![]
         };
         providers.push(ProviderView {
+            default_model: row
+                .get::<Option<String>, _>("default_model")
+                .unwrap_or_default(),
+            priority: row
+                .get::<Option<i16>, _>("priority")
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
             proxy_mode: row.get("proxy_mode"),
             proxy_label: st
                 .egress
@@ -1489,6 +1616,8 @@ async fn providers(
 
 #[derive(Deserialize)]
 struct ProviderForm {
+    default_model: Option<String>,
+    priority: Option<String>,
     /// The guided form: "card" opens the new card, "signin" also starts
     /// the sign-in. Empty for the old form (back to the list).
     #[serde(default)]
@@ -1689,10 +1818,42 @@ async fn save_provider(
         None
     };
     let mut cfg = tryr!(runtime(&st).await);
+    let previous = old
+        .as_ref()
+        .and_then(|name| cfg.providers.iter().find(|p| &p.name == name));
+    let default_model = f
+        .default_model
+        .as_deref()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            f.default_model
+                .is_none()
+                .then(|| previous.and_then(|p| p.default_model.clone()))
+                .flatten()
+        });
+    if default_model
+        .as_ref()
+        .is_some_and(|s| s.len() > 200 || s.chars().any(char::is_control))
+    {
+        return form_error(
+            "Default model must have at most 200 characters and no control characters.",
+        );
+    }
+    let priority = match f.priority.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(n) => Some(match n.parse::<i16>() {
+            Ok(n) => n,
+            Err(_) => return form_error("Priority must be a whole number from -32768 to 32767."),
+        }),
+        None => previous.and_then(|p| p.priority),
+    };
     if let Some(name) = &old {
         cfg.providers.retain(|p| &p.name != name);
     }
     cfg.providers.push(ProviderCfg {
+        default_model: default_model.clone(),
+        priority,
         name: f.name.clone(),
         key_strategy: crate::config::KeyStrategy::default(),
         kind: f.kind,
@@ -1806,6 +1967,14 @@ async fn save_provider(
                 .await
         );
     }
+    tryr!(
+        sqlx::query("UPDATE providers SET default_model=?,priority=? WHERE name=?")
+            .bind(default_model)
+            .bind(priority)
+            .bind(&f.name)
+            .execute(&mut *tx)
+            .await
+    );
     tryr!(
         sqlx::query("UPDATE providers SET bedrock_credentials=? WHERE name=?")
             .bind(aws_credentials)

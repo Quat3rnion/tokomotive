@@ -192,6 +192,8 @@ pub(super) fn speech_response(
 }
 
 pub(super) fn estimate_count(ctx: Ctx, body: &Value) -> Response {
+    let mut headers = HeaderMap::new();
+    ctx.resolution_headers(&mut headers);
     // Include tools and system text, but not routing and generation settings.
     let payload = json!({"messages":body.get("messages"),"system":body.get("system"),"tools":body.get("tools")});
     let tokens = payload.to_string().len().div_ceil(4);
@@ -199,9 +201,11 @@ pub(super) fn estimate_count(ctx: Ctx, body: &Value) -> Response {
         estimated: true,
         ..Outcome::failed(200)
     });
-    (
+    let mut response = (
         [("x-tokomotive-estimate", "true")],
         axum::Json(json!({"input_tokens":tokens})),
     )
-        .into_response()
+        .into_response();
+    response.headers_mut().extend(headers);
+    response
 }

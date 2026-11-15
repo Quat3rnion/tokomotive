@@ -98,6 +98,7 @@ impl LoginLimiter {
 
 /// These are the only authenticated POST routes available to a Viewer.
 pub(crate) const SELF_SERVICE: &[&str] = &["/admin/logout", "/admin/settings/password"];
+pub(crate) const READ_ONLY_POSTS: &[&str] = &["/admin/routes/try"];
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -173,10 +174,11 @@ pub(super) async fn authorize(
         }
         return next.run(req).await;
     }
-    let mutation = !matches!(
-        *req.method(),
-        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    );
+    let mutation = !READ_ONLY_POSTS.contains(&path.as_str())
+        && !matches!(
+            *req.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+        );
     // Authenticate again only after earlier account changes have committed.
     let _guard = if mutation {
         Some(st.dashboard.mutations.lock().await)
@@ -372,6 +374,9 @@ pub(super) fn visible_forms(html: String, role: &str) -> String {
         };
         let tag = form.split('>').next().unwrap_or_default();
         let read = tag.contains("method=\"get\"")
+            || READ_ONLY_POSTS
+                .iter()
+                .any(|p| tag.contains(&format!("action=\"{p}\"")))
             || SELF_SERVICE
                 .iter()
                 .any(|p| tag.contains(&format!("action=\"{p}\"")));

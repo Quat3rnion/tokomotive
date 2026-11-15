@@ -148,6 +148,24 @@ impl Env {
         req.send().await.unwrap()
     }
 }
+
+#[tokio::test]
+async fn resolution_headers_cover_json_streams_and_cache_hits() {
+    let e = env("key", "openai").await;
+    for stream in [false, true] {
+        for expected in ["miss", "hit"] {
+            let r=e.send("sk-alice","chat/completions",json!({"model":"cached","messages":[{"role":"user","content":"hi"}],"stream":stream}),None).await;
+            assert_eq!(r.status(), 200);
+            assert_eq!(r.headers()["x-tokomotive-cache"], expected);
+            assert_eq!(r.headers()["x-tokomotive-route"], "cached");
+            assert_eq!(r.headers()["x-tokomotive-provider"], "p");
+            assert_eq!(r.headers()["x-tokomotive-model"], "m");
+            r.bytes().await.unwrap();
+            e.st.flush().await;
+        }
+    }
+    assert_eq!(e.calls.load(Ordering::SeqCst), 2);
+}
 fn body() -> Value {
     json!({"model":"cached","messages":[{"role":"user","content":"hello"}]})
 }

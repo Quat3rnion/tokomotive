@@ -30,6 +30,7 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RouterCfg {
+    pub unknown_model_route: Option<String>,
     pub failure_threshold: usize,
     pub cooldown_secs: u64,
     pub max_attempts: usize,
@@ -41,6 +42,7 @@ pub struct RouterCfg {
 impl Default for RouterCfg {
     fn default() -> Self {
         Self {
+            unknown_model_route: None,
             failure_threshold: 3,
             cooldown_secs: 30,
             max_attempts: 8,
@@ -142,6 +144,10 @@ impl Default for Server {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i16>,
     pub name: String,
     #[serde(default)]
     pub key_strategy: KeyStrategy,
@@ -396,6 +402,11 @@ impl Config {
         let mut providers = std::collections::HashSet::new();
         for p in &self.providers {
             validate_name(&p.name)?;
+            if p.default_model.as_ref().is_some_and(|m| {
+                m.trim().is_empty() || m.len() > 200 || m.chars().any(char::is_control)
+            }) {
+                bail!("Default model must have 1 to 200 characters and no control characters.");
+            }
             for env in p.api_key_env.iter().chain(&p.api_keys_env) {
                 validate_provider_env(env)?;
             }
@@ -514,6 +525,14 @@ impl Config {
             bail!("The session affinity lifetime and capacity must be positive.");
         }
         let mut names = std::collections::HashSet::new();
+        if self
+            .router
+            .unknown_model_route
+            .as_ref()
+            .is_some_and(|name| !self.routes.iter().any(|r| &r.name == name))
+        {
+            bail!("Choose an existing Route for unknown model names.");
+        }
         for r in &self.routes {
             validate_name(&r.name)?;
             if !names.insert(&r.name) {

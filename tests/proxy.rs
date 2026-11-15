@@ -191,6 +191,394 @@ async fn env() -> Env {
 }
 
 #[tokio::test]
+async fn unknown_model_never_falls_back_to_an_unrelated_provider() {
+    let e = env().await;
+    for (path, anthropic) in [("/v1/chat/completions", false), ("/v1/messages", true)] {
+        let response = e
+            .http
+            .post(format!("{}{path}", e.proxy))
+            .bearer_auth("sk-alice")
+            .json(&json!({"model":"deepseek", "messages":[], "max_tokens":10}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(
+            body["error"]["type"],
+            if anthropic {
+                "not_found_error"
+            } else {
+                "invalid_request_error"
+            }
+        );
+        if !anthropic {
+            assert_eq!(body["error"]["code"], "model_not_found");
+        }
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("gpt-4o")
+        );
+    }
+    assert!(e.seen.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn provider_name_uses_only_its_operator_default_and_reports_resolution() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name="deepseek"
+kind="openai"
+base_url="http://$UPSTREAM"
+api_key="deepseek-key"
+default_model="deepseek-chat"
+priority=-2
+"#,
+    )
+    .await;
+    for name in ["deepseek", "DEEPSEEK"] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-alice")
+            .json(&json!({"model":name,"messages":[]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()["x-tokomotive-provider"], "deepseek");
+        assert_eq!(r.headers()["x-tokomotive-route"], "deepseek");
+        assert_eq!(r.headers()["x-tokomotive-model"], "deepseek-chat");
+        assert_eq!(r.json::<Value>().await.unwrap()["model"], "deepseek-chat");
+    }
+    sqlx::query("UPDATE providers SET default_model=NULL WHERE name='deepseek'")
+        .execute(&e.st.db)
+        .await
+        .unwrap();
+    e.st.reload_settings().await.unwrap();
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"deepseek"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("Default model"));
+    assert_eq!(e.seen.0.lock().unwrap().len(), 2);
+    tokomotive::db::create_session(&e.st.db, "default-model", 1)
+        .await
+        .unwrap();
+    let c = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let r = c
+        .post(format!("{}/admin/providers/deepseek", e.proxy))
+        .header("cookie", "tokomotive_session=default-model")
+        .form(&[
+            ("name", "deepseek"),
+            ("kind", "openai"),
+            (
+                "base_url",
+                e.cfg
+                    .providers
+                    .iter()
+                    .find(|p| p.name == "deepseek")
+                    .unwrap()
+                    .base_url
+                    .as_str(),
+            ),
+            ("default_model", "deepseek-reasoner"),
+            ("priority", "-3"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"deepseek"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-tokomotive-model"], "deepseek-reasoner");
+    assert_eq!(
+        e.st.router_table()
+            .providers
+            .iter()
+            .find(|p| p.name == "deepseek")
+            .unwrap()
+            .priority,
+        Some(-3)
+    );
+}
+
+#[tokio::test]
+async fn cached_live_model_resolution_uses_priority_and_model_discovery_agrees() {
+    let e = env_with_routes(
+        r#"
+[[providers]]
+name="deepseek"
+kind="openai"
+base_url="http://$UPSTREAM"
+api_key="deepseek-key"
+priority=-1
+"#,
+    )
+    .await;
+    // Warm the real Provider list cache through the dashboard picker.
+    tokomotive::db::create_session(&e.st.db, "resolve", 1)
+        .await
+        .unwrap();
+    let r = e
+        .http
+        .get(format!("{}/admin/search/models?q=live-id", e.proxy))
+        .header("cookie", "tokomotive_session=resolve")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let key_id: i64 = sqlx::query_scalar("SELECT id FROM virtual_keys WHERE key_hash=?")
+        .bind(tokomotive::db::hash_key("sk-alice"))
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
+    let tried = e
+        .http
+        .post(format!("{}/admin/routes/try", e.proxy))
+        .header("cookie", "tokomotive_session=resolve")
+        .header("hx-request", "true")
+        .form(&[("model", "live-id".into()), ("key_id", key_id.to_string())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tried.status(), 200);
+    let trace = tried.text().await.unwrap();
+    assert!(trace.contains("Chosen Provider: deepseek"));
+    assert!(trace.contains("Skipped Providers: anthropic, openai, pool"));
+    for name in ["live-id", "LIVE-ID"] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-alice")
+            .json(&json!({"model":name}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{name}");
+        assert_eq!(r.headers()["x-tokomotive-provider"], "deepseek");
+        assert_eq!(r.headers()["x-tokomotive-model"], "live-id");
+    }
+    let list: Value = e
+        .http
+        .get(format!("{}/v1/models", e.proxy))
+        .bearer_auth("sk-alice")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "live-id")
+    );
+    assert!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "deepseek/live-id")
+    );
+    // Removing the priority returns to API-key Providers in name order.
+    sqlx::query("UPDATE providers SET priority=NULL WHERE name='deepseek'")
+        .execute(&e.st.db)
+        .await
+        .unwrap();
+    e.st.reload_settings().await.unwrap();
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"live-id","messages":[],"max_tokens":10}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-tokomotive-provider"], "anthropic");
+}
+
+#[tokio::test]
+async fn operator_can_explicitly_send_unknown_names_to_a_route() {
+    let e = env_with_routes(
+        r#"
+[[routes]]
+name="safe"
+deployments=[{provider="openai",model="gpt-4o"}]
+"#,
+    )
+    .await;
+    tokomotive::db::create_session(&e.st.db, "resolve", 1)
+        .await
+        .unwrap();
+    let c = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let r = c
+        .post(format!("{}/admin/settings", e.proxy))
+        .header("cookie", "tokomotive_session=resolve")
+        .form(&[
+            ("upstream_timeout_secs", "30"),
+            ("session_days", "7"),
+            ("failure_threshold", "3"),
+            ("cooldown_secs", "30"),
+            ("max_attempts", "8"),
+            ("unknown_model_policy", "route"),
+            ("unknown_model_route", "safe"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"deepseek"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-tokomotive-route"], "safe");
+    assert_eq!(r.headers()["x-tokomotive-model"], "gpt-4o");
+}
+
+#[tokio::test]
+async fn resolution_order_aliases_prefixes_and_unique_case_matching() {
+    let e = env_with_routes(
+        r#"
+[[routes]]
+name="gpt-4o"
+deployments=[{provider="pool",model="route-model"}]
+[[routes]]
+name="Foo"
+deployments=[{provider="openai",model="upper"}]
+[[routes]]
+name="foo"
+deployments=[{provider="openai",model="lower"}]
+[[models]]
+name="canonical"
+provider="openai"
+aliases=["friendly"]
+cost={input=1}
+[[models]]
+name="other"
+provider="openai"
+aliases=["canonical"]
+cost={input=1}
+"#,
+    )
+    .await;
+    for (name, provider, upstream) in [
+        ("gpt-4o", "pool", "route-model"),
+        ("canonical", "openai", "canonical"),
+        ("friendly", "openai", "canonical"),
+        ("FRIENDLY", "openai", "canonical"),
+        ("OPENAI/arbitrary-id", "openai", "arbitrary-id"),
+        ("Foo", "openai", "upper"),
+        ("foo", "openai", "lower"),
+    ] {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-alice")
+            .json(&json!({"model":name}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{name}");
+        assert_eq!(r.headers()["x-tokomotive-provider"], provider);
+        assert_eq!(r.headers()["x-tokomotive-model"], upstream);
+    }
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"FOO"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("ambiguous"));
+    // Suggestions and discovery apply canonical Model permission and Provider Access.
+    sqlx::query(
+        "UPDATE virtual_keys SET allowed_models='[\"canonical\"]',allowed_providers='[\"openai\"]'",
+    )
+    .execute(&e.st.db)
+    .await
+    .unwrap();
+    let r = e
+        .http
+        .post(format!("{}/v1/chat/completions", e.proxy))
+        .bearer_auth("sk-alice")
+        .json(&json!({"model":"unknown"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let body: Value = r.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("canonical"));
+    assert!(!msg.contains("gpt-4o"));
+    assert!(!msg.contains("Foo"));
+    let list: Value = e
+        .http
+        .get(format!("{}/v1/models", e.proxy))
+        .bearer_auth("sk-alice")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["data"].as_array().unwrap().len(), 2);
+    for model in list["data"].as_array().unwrap() {
+        let r = e
+            .http
+            .post(format!("{}/v1/chat/completions", e.proxy))
+            .bearer_auth("sk-alice")
+            .json(&json!({"model":model["id"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    let model: Value = e
+        .http
+        .get(format!("{}/v1/models/FRIENDLY", e.proxy))
+        .bearer_auth("sk-alice")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(model["id"], "canonical");
+}
+
+#[tokio::test]
 async fn dashboard_body_deadline_does_not_cut_long_proxy_streams() {
     let e = env().await;
     let start = std::time::Instant::now();
@@ -386,7 +774,7 @@ async fn simple_mode_dashboard_shows_usage_without_financial_controls() {
         .unwrap();
     for body in [
         json!({"model":"gpt-pool"}),
-        json!({"model":"new-model", "metadata":{"omit_usage":true}}),
+        json!({"model":"openai/new-model", "metadata":{"omit_usage":true}}),
     ] {
         assert_eq!(
             e.http
@@ -752,6 +1140,10 @@ deployments = [{provider="gemini",model="gemini-2.5-flash"}]
 async fn env_with_config(routes: &str, with_models: bool) -> Env {
     let seen = Seen::default();
     let upstream = axum::Router::new()
+        .route(
+            "/v1/models",
+            axum::routing::get(|| async { Json(json!({"data":[{"id":"live-id"}]})) }),
+        )
         .route("/v1/chat/completions", post(mock_openai))
         .route("/v1beta/models/{model}", post(mock_gemini))
         .route("/v1/messages", post(mock_anthropic))
@@ -1533,10 +1925,10 @@ async fn provider_prefix_rewrites_prices_and_accepts_canonical_or_exact_allowlis
 }
 
 #[tokio::test]
-async fn no_catalog_or_routes_forwards_and_records_unpriced_usage() {
+async fn no_catalog_or_routes_requires_a_known_provider_prefix_for_unpriced_usage() {
     let e = env_with_config("", false).await;
     assert!(e.cfg.models.is_empty() && e.cfg.routes.is_empty());
-    for model in ["openai/new-model", "unknown/new-model"] {
+    for model in ["openai/new-model", "openai/unknown/new-model"] {
         let r = e
             .http
             .post(format!("{}/v1/chat/completions", e.proxy))
@@ -1845,7 +2237,7 @@ async fn unpriced_model_is_flagged_then_repriced() {
         .http
         .post(format!("{}/v1/chat/completions", e.proxy))
         .bearer_auth("sk-carol")
-        .json(&json!({"model": "gpt-9-preview"}))
+        .json(&json!({"model": "openai/gpt-9-preview"}))
         .send()
         .await
         .unwrap();

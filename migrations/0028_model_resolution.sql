@@ -1,0 +1,2 @@
+ALTER TABLE providers ADD COLUMN default_model TEXT;
+ALTER TABLE providers ADD COLUMN priority INTEGER CHECK (priority BETWEEN -32768 AND 32767);

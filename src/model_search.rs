@@ -62,6 +62,10 @@ impl ModelHit {
 
 /// A source of model IDs. `name()` is also the key of the `src=` filter.
 pub trait ModelSource: Send + Sync {
+    /// Network-free snapshot for request resolution. IDs are upstream IDs.
+    fn cached_models(&self, _providers: &[crate::state::Provider]) -> Vec<(String, String)> {
+        vec![]
+    }
     fn name(&self) -> &'static str;
     /// Return at most `limit` candidates for `q`. Must be fast and must not
     /// block: read in-memory data only. The registry ranks the result.
@@ -241,7 +245,7 @@ impl Registry {
 
     /// Credential and health reads are shared by all sources for five seconds,
     /// and invalidated immediately when the settings snapshot changes.
-    async fn prepare_connections(&self, state: &AppState) {
+    pub(crate) async fn prepare_connections(&self, state: &AppState) {
         let _guard = self.connection_lock.lock().await;
         let table = state.router_table();
         if self
@@ -335,6 +339,19 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    pub(crate) fn cached_models(
+        &self,
+        providers: &[crate::state::Provider],
+    ) -> Vec<(String, String)> {
+        self.sources
+            .read()
+            .expect("model sources")
+            .iter()
+            .flat_map(|s| s.cached_models(providers))
+            .take(crate::resolve::MAX_OFFERS)
+            .collect()
+    }
+
     /// A non-selectable picker note, from the same credential snapshot.
     pub fn connection_note(&self, provider: Option<&str>) -> String {
         let connections = self.connections.read().expect("model connections");
@@ -393,6 +410,9 @@ impl Registry {
                 tokio::time::timeout(PREPARE_BUDGET, futures_util::future::join_all(warm)).await;
         }
         let groups = sources.iter().map(|s| s.search(ctx, q, limit)).collect();
+        if let Err(e) = ctx.state.refresh_resolution_index().await {
+            tracing::warn!(error=%e, "model resolution index refresh failed");
+        }
         merge(q, groups, limit)
     }
 }
@@ -642,6 +662,20 @@ impl ProviderSource {
 }
 
 impl ModelSource for ProviderSource {
+    fn cached_models(&self, providers: &[crate::state::Provider]) -> Vec<(String, String)> {
+        let cache = self.cache.read().expect("provider model cache");
+        providers
+            .iter()
+            .filter_map(|p| {
+                cache
+                    .get(&p.name)
+                    .filter(|c| c.stamp == stamp(p))
+                    .map(|c| (p, c))
+            })
+            .flat_map(|(p, c)| c.models.iter().map(|m| (p.name.clone(), m.id.clone())))
+            .take(crate::resolve::MAX_OFFERS)
+            .collect()
+    }
     fn name(&self) -> &'static str {
         "provider"
     }
@@ -683,7 +717,7 @@ impl ModelSource for ProviderSource {
                     if !still_stale {
                         return;
                     }
-                    let got = fetch_list(state, p.clone(), timeout).await;
+                    let got = fetch_list(state.clone(), p.clone(), timeout).await;
                     if got.is_none() {
                         tracing::debug!(provider = %p.name, "provider model list unavailable");
                     }
@@ -696,6 +730,9 @@ impl ModelSource for ProviderSource {
                             models: Arc::new(got.unwrap_or_default()),
                         },
                     );
+                    if let Err(e) = state.refresh_resolution_index().await {
+                        tracing::warn!(error=%e, "model resolution index refresh failed");
+                    }
                 });
                 async move {
                     let _ = job.await;

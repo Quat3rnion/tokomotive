@@ -34,6 +34,15 @@ fn formatted_error(status: StatusCode, kind: &str, msg: &str, anthropic: bool) -
     (status, axum::Json(body)).into_response()
 }
 
+fn model_not_found(message: &str, anthropic: bool) -> Response {
+    let body = if anthropic {
+        json!({"type":"error", "error":{"type":"not_found_error", "message":message}})
+    } else {
+        json!({"error":{"type":"invalid_request_error", "code":"model_not_found", "message":message}})
+    };
+    (StatusCode::NOT_FOUND, axum::Json(body)).into_response()
+}
+
 /// The largest non-streaming upstream body that the Proxy reads. The same
 /// as the request body limit; base64 images can make responses large.
 const MAX_UPSTREAM_BODY: usize = 64 * 1024 * 1024;
@@ -335,6 +344,23 @@ async fn models_response(
     };
     let catalog = st.catalog();
     let table = st.router_table();
+    let access = crate::resolve::Access {
+        models: &auth.allowed_models,
+        providers: &auth.allowed_providers,
+    };
+    if let Some(id) = id {
+        let index = st.resolution_index.read().expect("resolution index");
+        let r = crate::resolve::resolve(&table, &catalog, &index, &id, access);
+        if r.allowed(access, &id, &catalog)
+            && let Some(owner) = r.owner(&table, &catalog, access)
+        {
+            return axum::Json(model_description(&r.canonical, &owner, anthropic)).into_response();
+        }
+        return model_not_found(
+            &crate::resolve::message(&table, &catalog, &index, &id, access, &r),
+            anthropic,
+        );
+    }
     if anthropic && q.after_id.is_some() && q.before_id.is_some() {
         return formatted_error(
             StatusCode::BAD_REQUEST,
@@ -343,9 +369,7 @@ async fn models_response(
             true,
         );
     }
-    let limit = if id.is_some() {
-        1
-    } else if anthropic {
+    let limit = if anthropic {
         q.limit.unwrap_or(50).clamp(1, 200) as usize
     } else {
         1000
@@ -354,26 +378,19 @@ async fn models_response(
     let mut models = std::collections::BTreeMap::new();
     let mut count = 0;
     // Routing snapshots are already resident. Keep only one bounded response window.
-    for (name, owner) in catalog
-        .models
-        .iter()
-        .filter(|m| !table.routes.iter().any(|r| r.name == m.name))
-        .map(|m| (&m.name, m.provider.as_str()))
-        .chain(table.routes.iter().map(|r| (&r.name, "router")))
-    {
-        if id.as_ref().is_some_and(|id| id != name)
-            || anthropic && q.after_id.as_ref().is_some_and(|after| name <= after)
-            || anthropic && q.before_id.as_ref().is_some_and(|before| name >= before)
-            || !table.allowed(&catalog, &auth.allowed_models, Some(name))
-            || !table
-                .reachable_providers(&catalog, name)
-                .iter()
-                .any(|p| provider_allowed(&auth, p))
+    for (name, owner) in crate::resolve::names(
+        &table,
+        &catalog,
+        &st.resolution_index.read().expect("resolution index"),
+        access,
+    ) {
+        if anthropic && q.after_id.as_ref().is_some_and(|after| &name <= after)
+            || anthropic && q.before_id.as_ref().is_some_and(|before| &name >= before)
         {
             continue;
         }
         count += 1;
-        models.insert(name.clone(), owner.to_owned());
+        models.insert(name, owner);
         if models.len() > limit + 1 {
             if reverse {
                 models.pop_first();
@@ -382,7 +399,7 @@ async fn models_response(
             }
         }
     }
-    if !anthropic && id.is_none() && count > 1000 {
+    if !anthropic && count > 1000 {
         tracing::warn!(count, cap = 1000, "OpenAI Model list exceeds server cap");
     }
     let has_more = models.len() > limit;
@@ -393,29 +410,22 @@ async fn models_response(
             models.pop_last();
         }
     }
-    let data: Vec<Value> = models.into_iter()
-        .map(|(name, owner)| {
-            if anthropic {
-                json!({"type":"model", "id":name, "display_name":name, "created_at":"1970-01-01T00:00:00Z"})
-            } else {
-                json!({"id":name, "object":"model", "created":0, "owned_by":owner})
-            }
-        }).collect();
-    if let Some(id) = id {
-        return match data.into_iter().find(|m| m["id"].as_str() == Some(&id)) {
-            Some(model) => axum::Json(model).into_response(),
-            None => formatted_error(
-                StatusCode::NOT_FOUND,
-                "not_found_error",
-                "model not found",
-                anthropic,
-            ),
-        };
-    }
+    let data: Vec<Value> = models
+        .into_iter()
+        .map(|(name, owner)| model_description(&name, &owner, anthropic))
+        .collect();
     if anthropic {
         axum::Json(json!({"first_id": data.first().map(|m| &m["id"]), "last_id": data.last().map(|m| &m["id"]), "data":data, "has_more":has_more})).into_response()
     } else {
         axum::Json(json!({"object":"list", "data":data})).into_response()
+    }
+}
+
+fn model_description(name: &str, owner: &str, anthropic: bool) -> Value {
+    if anthropic {
+        json!({"type":"model", "id":name, "display_name":name, "created_at":"1970-01-01T00:00:00Z"})
+    } else {
+        json!({"id":name, "object":"model", "created":0, "owned_by":owner})
     }
 }
 
@@ -443,6 +453,7 @@ fn skip_header(name: &HeaderName) -> bool {
 
 /// Request context that is needed to write the Ledger Entry.
 struct Ctx {
+    route: String,
     guardrails: crate::guardrails::Session,
     cache_plan: Option<crate::cache::Plan>,
     cache_hit_price: Option<i64>,
@@ -490,6 +501,20 @@ impl Outcome {
 }
 
 impl Ctx {
+    fn resolution_headers(&self, headers: &mut HeaderMap) {
+        for (key, value) in [
+            ("x-tokomotive-route", self.route.as_str()),
+            ("x-tokomotive-provider", self.provider.name.as_str()),
+            (
+                "x-tokomotive-model",
+                self.upstream_model.as_deref().unwrap_or_default(),
+            ),
+        ] {
+            if let Ok(value) = HeaderValue::from_str(value) {
+                headers.insert(key, value);
+            }
+        }
+    }
     fn finish(mut self, mut o: Outcome) {
         self.trace.finish(o.status, o.ttft_ms, self.ts_ms);
         if self.endpoint == Endpoint::CountTokens {
@@ -844,13 +869,35 @@ async fn handle_inner(
     let settings = st.settings();
     let simple = settings.mode == "simple";
 
-    if !table.allowed(&catalog, &auth.allowed_models, requested_model.as_deref()) {
+    let access = crate::resolve::Access {
+        models: &auth.allowed_models,
+        providers: &auth.allowed_providers,
+    };
+    let name = requested_model.as_deref().unwrap_or_default();
+    let resolution = {
+        let index = st.resolution_index.read().expect("resolution index");
+        let resolution = crate::resolve::resolve(&table, &catalog, &index, name, access);
+        if resolution.target.is_none() {
+            return model_not_found(
+                &crate::resolve::message(&table, &catalog, &index, name, access, &resolution),
+                endpoint == Endpoint::Messages
+                    || endpoint == Endpoint::CountTokens
+                    || headers.contains_key("anthropic-version"),
+            );
+        }
+        resolution
+    };
+    if !resolution.allowed(access, name, &catalog) {
         return error(
             StatusCode::FORBIDDEN,
             "permission_error",
             "this API key may not use this model",
         );
     }
+    let resolved_route = match &resolution.target {
+        Some(crate::resolve::Target::Route(name)) => Some(name.as_str()),
+        _ => None,
+    };
 
     let scopes: Vec<_> = [
         (Scope::Key(auth.key_id), auth.key_limits),
@@ -878,13 +925,7 @@ async fn handle_inner(
     }
 
     let anthropic_hint = headers.contains_key("anthropic-version");
-    let mut candidates = st.candidates(
-        &table,
-        &catalog,
-        requested_model.as_deref(),
-        endpoint,
-        anthropic_hint,
-    );
+    let mut candidates = st.resolved_candidates(&table, &catalog, &resolution);
     for c in &mut candidates {
         if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex
             && let Ok((kind, _)) = crate::vertex::model(c.model.as_deref().unwrap_or_default())
@@ -917,7 +958,7 @@ async fn handle_inner(
     );
     let mut session = st.session_order(
         &table,
-        requested_model.as_deref(),
+        resolved_route,
         auth.user_id,
         &headers,
         json_body.as_ref(),
@@ -941,14 +982,7 @@ async fn handle_inner(
     };
 
     // Request rules run before cache identity/lookup and before body capture.
-    match crate::guardrails::load(
-        &st.db,
-        requested_model.as_deref(),
-        auth.team_id,
-        auth.key_id,
-    )
-    .await
-    {
+    match crate::guardrails::load(&st.db, resolved_route, auth.team_id, auth.key_id).await {
         Ok(engine) => guardrails.configure(engine),
         Err(e) => {
             tracing::error!(error=%e,"guardrail load failed");
@@ -1009,7 +1043,7 @@ async fn handle_inner(
     let cache_plan = table
         .routes
         .iter()
-        .find(|r| Some(r.name.as_str()) == requested_model.as_deref())
+        .find(|r| Some(r.name.as_str()) == resolved_route)
         .and_then(|r| {
             if !r.cache.enabled {
                 return None;
@@ -1149,13 +1183,14 @@ async fn handle_inner(
     let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let trace = crate::observability::RequestTrace::new(
         &st,
-        requested_model.as_deref(),
+        resolved_route,
         auth.key_id,
         &body,
         table.settings.max_attempts,
     )
     .await;
     let mut ctx = Ctx {
+        route: first.route.clone(),
         guardrails,
         cache_plan,
         cache_hit_price: None,
@@ -1186,6 +1221,14 @@ async fn handle_inner(
             .provider
             .clone();
         ctx.upstream_model = entry.upstream_model;
+        let mut resolution_headers = HeaderMap::new();
+        ctx.route = candidates
+            .iter()
+            .find(|c| c.provider.name == ctx.provider.name && c.model == ctx.upstream_model)
+            .expect("cached candidate")
+            .route
+            .clone();
+        ctx.resolution_headers(&mut resolution_headers);
         ctx.finish(Outcome {
             status: 200,
             model: entry.model,
@@ -1198,6 +1241,7 @@ async fn handle_inner(
         metrics::counter!("llm_cache_hits_total").increment(1);
         metrics::counter!("llm_cache_hit_bytes_total").increment(bytes.len() as u64);
         let mut response = Response::new(Body::from(bytes));
+        response.headers_mut().extend(resolution_headers);
         response.headers_mut().insert(
             header::CONTENT_TYPE,
             HeaderValue::from_str(&entry.content_type)
@@ -1245,6 +1289,7 @@ async fn handle_inner(
             permit.record(true);
             ctx.provider = provider.clone();
             ctx.upstream_model = candidate.model.clone();
+            ctx.route = candidate.route.clone();
             return extra::estimate_count(ctx, json_body.as_ref().unwrap());
         }
         let dir = translation(provider.kind, endpoint);
@@ -1452,6 +1497,7 @@ async fn handle_inner(
             }
             ctx.provider = provider.clone();
             ctx.upstream_model = candidate.model.clone();
+            ctx.route = candidate.route.clone();
             ctx.attempts += 1;
             ctx.provider_key = idx.map(|i| i as i64);
             let mut attempt = ctx.trace.begin(candidate, idx);
@@ -1684,6 +1730,9 @@ async fn handle_inner(
         }
     }
     out_headers.insert("x-tokomotive-cache", HeaderValue::from_static(cache_status));
+    if status.is_success() {
+        ctx.resolution_headers(&mut out_headers);
+    }
     if endpoint == Endpoint::AudioSpeech && status.is_success() {
         let characters = json_body
             .as_ref()

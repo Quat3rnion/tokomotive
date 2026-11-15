@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::catalog::Catalog;
 use crate::config::{Config, Strategy};
-use crate::provider::{Endpoint, ProviderKind};
+use crate::provider::Endpoint;
 use crate::state::{AppState, Provider};
 
 #[derive(Clone)]
@@ -18,6 +18,7 @@ pub struct RouterTable {
 
 #[derive(Clone)]
 pub struct RouterSettings {
+    pub unknown_model_route: Option<String>,
     pub failure_threshold: usize,
     pub cooldown_secs: u64,
     pub max_attempts: usize,
@@ -63,30 +64,20 @@ impl RouterTable {
             .filter(|p| names.contains(&p.name.as_str()))
             .collect()
     }
-    fn prefixed<'a>(&'a self, model: &'a str) -> Option<(&'a Provider, &'a str)> {
-        let (name, rest) = model.split_once('/')?;
-        if rest.is_empty() {
-            return None;
-        }
-        Some((self.providers.iter().find(|p| p.name == name)?, rest))
-    }
-
     pub fn allowed(&self, catalog: &Catalog, allowed: &[String], model: Option<&str>) -> bool {
-        if allowed.is_empty() {
-            return true;
-        }
-        let Some(model) = model else {
-            return false;
+        let access = crate::resolve::Access {
+            models: allowed,
+            providers: &[],
         };
-        if self.routes.iter().any(|r| r.name == model) {
-            return allowed.iter().any(|a| a == model);
-        }
-        if catalog.resolve(model).is_none()
-            && let Some((_, rest)) = self.prefixed(model)
-        {
-            return catalog.allowed(allowed, Some(model)) || catalog.allowed(allowed, Some(rest));
-        }
-        catalog.allowed(allowed, Some(model))
+        let name = model.unwrap_or_default();
+        crate::resolve::resolve(
+            self,
+            catalog,
+            &crate::resolve::Index::default(),
+            name,
+            access,
+        )
+        .allowed(access, name, catalog)
     }
 
     pub fn from_config(cfg: &Config) -> Self {
@@ -101,6 +92,8 @@ impl RouterTable {
                     }
                     let mut provider = Provider::new(&p.name, p.kind, &p.base_url, keys);
                     provider.auth = p.auth;
+                    provider.default_model = p.default_model.clone();
+                    provider.priority = p.priority;
                     provider.key_strategy = p.key_strategy;
                     provider.project_id = p.project_id.clone();
                     provider.region = p.region.clone();
@@ -132,6 +125,7 @@ impl RouterTable {
                 })
                 .collect(),
             settings: RouterSettings {
+                unknown_model_route: cfg.router.unknown_model_route.clone(),
                 failure_threshold: cfg.router.failure_threshold,
                 cooldown_secs: cfg.router.cooldown_secs,
                 max_attempts: cfg.router.max_attempts,
@@ -139,28 +133,6 @@ impl RouterTable {
                 session_affinity_capacity: cfg.router.session_affinity_capacity,
             },
         }
-    }
-
-    fn pick_provider(
-        &self,
-        catalog: &Catalog,
-        model: Option<&str>,
-        endpoint: Endpoint,
-        anthropic_hint: bool,
-    ) -> Option<Provider> {
-        if let Some(name) = model.and_then(|m| catalog.provider_for(m)) {
-            return self.providers.iter().find(|p| p.name == name).cloned();
-        }
-        let kind = endpoint.native_kind().unwrap_or(if anthropic_hint {
-            ProviderKind::Anthropic
-        } else {
-            ProviderKind::Openai
-        });
-        self.providers
-            .iter()
-            .find(|p| p.kind == kind)
-            .or_else(|| self.providers.first())
-            .cloned()
     }
 }
 
@@ -328,11 +300,30 @@ impl AppState {
         table: &RouterTable,
         catalog: &Catalog,
         model: Option<&str>,
-        endpoint: Endpoint,
-        anthropic_hint: bool,
+        _endpoint: Endpoint,
+        _anthropic_hint: bool,
+    ) -> Vec<Candidate> {
+        let resolution = crate::resolve::resolve(
+            table,
+            catalog,
+            &self.resolution_index.read().expect("resolution index"),
+            model.unwrap_or_default(),
+            crate::resolve::Access::default(),
+        );
+        self.resolved_candidates(table, catalog, &resolution)
+    }
+
+    pub fn resolved_candidates(
+        &self,
+        table: &RouterTable,
+        catalog: &Catalog,
+        resolution: &crate::resolve::Resolution,
     ) -> Vec<Candidate> {
         let mut out = Vec::new();
-        if let Some(route) = model.and_then(|m| table.routes.iter().find(|r| r.name == m)) {
+        if let Some(crate::resolve::Target::Route(name)) = &resolution.target {
+            let Some(route) = table.routes.iter().find(|r| &r.name == name) else {
+                return out;
+            };
             out.extend(self.route_deployments(table, route));
             for name in &route.fallbacks {
                 if name == &route.name {
@@ -344,7 +335,7 @@ impl AppState {
                     if let Some(provider) = table.providers.iter().find(|p| p.name == m.provider) {
                         out.push(Candidate {
                             provider: provider.clone(),
-                            model: Some(name.clone()),
+                            model: Some(m.name.clone()),
                             rewrite: true,
                             route: name.clone(),
                         });
@@ -353,23 +344,14 @@ impl AppState {
                     tracing::warn!(route = %route.name, fallback = %name, "unknown fallback; skipped");
                 }
             }
-        } else if let Some((provider, rest)) = model
-            .filter(|m| catalog.resolve(m).is_none())
-            .and_then(|m| table.prefixed(m))
+        } else if let Some(crate::resolve::Target::Model { provider, model }) = &resolution.target
+            && let Some(provider) = table.providers.iter().find(|p| &p.name == provider)
         {
             out.push(Candidate {
                 provider: provider.clone(),
-                model: Some(rest.to_owned()),
+                model: Some(model.clone()),
                 rewrite: true,
-                route: model.unwrap_or_default().to_owned(),
-            });
-        } else if let Some(provider) = table.pick_provider(catalog, model, endpoint, anthropic_hint)
-        {
-            out.push(Candidate {
-                provider,
-                model: model.map(str::to_owned),
-                rewrite: false,
-                route: model.unwrap_or_default().to_owned(),
+                route: resolution.canonical.clone(),
             });
         }
         let mut seen = HashSet::new();
@@ -417,6 +399,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ProviderKind;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -450,6 +433,7 @@ mod tests {
             route: "test".into(),
         };
         let settings = RouterSettings {
+            unknown_model_route: None,
             failure_threshold: 1,
             cooldown_secs: 30,
             max_attempts: 8,
@@ -492,6 +476,7 @@ mod tests {
             route: "test".into(),
         };
         let settings = RouterSettings {
+            unknown_model_route: None,
             failure_threshold: 1,
             cooldown_secs: 0,
             max_attempts: 8,
