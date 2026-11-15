@@ -2027,9 +2027,14 @@ A temporary refresh failure keeps the credential and schedules a retry, from
 30 seconds up to 15 minutes later. **Refresh now** respects this delay. The
 access token works until its actual expiry. If a request needs a fresh token
 during the delay, it gets HTTP 503, `Sign-in refresh is retrying`, unless a
-Fallback serves it. A lost rotating-token response shows **Refresh in doubt**.
+Fallback serves it. These local retry responses do not change the Circuit
+Breaker. A lost rotating-token response shows **Refresh in doubt**, including
+a timeout or reset while the response body is received after HTTP 2xx headers.
+A complete malformed or oversized response still disconnects a rotating flow.
 The Proxy can make one recovery attempt with the old refresh token, also after
 a restart. A definite rejection or an uncertain recovery needs a new sign-in.
+A late 401 for an old access token cannot disable an account after refresh.
+The request retries with the current token.
 Do not repeatedly reconnect during a temporary outage. Check the status first.
 See [OAuth refresh rules and issuer limits](configuration.md#oauth-refresh).
 Only one Proxy process may use a database, because refresh coordination is in

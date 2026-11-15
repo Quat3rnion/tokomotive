@@ -1523,7 +1523,9 @@ async fn handle_inner(
                             Some(if retrying { 503 } else { 401 }),
                             attempt_started,
                         );
-                        permit.record(false);
+                        if !retrying {
+                            permit.record(false);
+                        }
                         upstream = None;
                         break;
                     }
@@ -1585,7 +1587,9 @@ async fn handle_inner(
                 result.as_ref().ok().map(|r| r.status().as_u16()),
                 attempt_started,
             );
-            crate::quota::observe(&st, provider, idx, &result).await;
+            oauth
+                .observe_inference(&st, provider, idx, key, &result)
+                .await;
             if let Some(flow) = flow
                 && result
                     .as_ref()
@@ -1641,7 +1645,9 @@ async fn handle_inner(
                             result.as_ref().ok().map(|r| r.status().as_u16()),
                             attempt_started,
                         );
-                        crate::quota::observe(&st, provider, idx, &result).await;
+                        oauth
+                            .observe_inference(&st, provider, idx, &token, &result)
+                            .await;
                         if result
                             .as_ref()
                             .is_ok_and(|r| r.status() == StatusCode::UNAUTHORIZED)
@@ -1651,9 +1657,12 @@ async fn handle_inner(
                         }
                     }
                     Err(e) => {
-                        oauth_retrying |= e.is::<crate::oauth::RefreshRetrying>();
+                        let retrying = e.is::<crate::oauth::RefreshRetrying>();
+                        oauth_retrying |= retrying;
                         upstream = None;
-                        permit.record(false);
+                        if !retrying {
+                            permit.record(false);
+                        }
                         break;
                     }
                 }

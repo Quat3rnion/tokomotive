@@ -253,8 +253,15 @@ impl OAuthManager {
         if status.is_server_error() || status.as_u16() == 429 {
             return Err(Failure::Transient);
         }
-        let value = bounded_json(response).await.map_err(|_| {
-            if status.is_success() {
+        let value = bounded_json(response).await.map_err(|e| {
+            if status.is_success()
+                && matches!(
+                    e.downcast_ref::<OAuthBodyError>(),
+                    Some(OAuthBodyError::Transport)
+                )
+            {
+                Failure::Ambiguous
+            } else if status.is_success() {
                 Failure::Invalid
             } else {
                 Failure::Transient

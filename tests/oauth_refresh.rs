@@ -1,4 +1,5 @@
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -23,15 +24,20 @@ struct Fixture {
     key: SecretKey,
     config: FlowConfig,
     clock: Arc<AtomicI64>,
-    replies: Arc<Mutex<VecDeque<(StatusCode, Value, Duration)>>>,
+    replies: Arc<Mutex<VecDeque<(StatusCode, Reply, Duration)>>>,
     requests: Arc<Mutex<Vec<Value>>>,
     server: tokio::task::JoinHandle<()>,
     events: Arc<Mutex<Vec<Value>>>,
     max_active: Arc<AtomicUsize>,
 }
+enum Reply {
+    Json(Value),
+    BodyTimeout,
+    Raw(String),
+}
 impl Fixture {
     async fn new(rotating: bool) -> Self {
-        let replies = Arc::new(Mutex::new(VecDeque::<(StatusCode, Value, Duration)>::new()));
+        let replies = Arc::new(Mutex::new(VecDeque::<(StatusCode, Reply, Duration)>::new()));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(Vec::new()));
         let event_sink = events.clone();
@@ -58,7 +64,19 @@ impl Fixture {
                             .expect("unexpected token call");
                         tokio::time::sleep(delay).await;
                         active.fetch_sub(1, Ordering::SeqCst);
-                        (status, Json(body)).into_response()
+                        match body {
+                            Reply::Json(body) => (status, Json(body)).into_response(),
+                            Reply::Raw(body) => (status, body).into_response(),
+                            Reply::BodyTimeout => {
+                                let stream = futures_util::stream::once(async {
+                                    Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                                        b"{\"access_token\":",
+                                    ))
+                                })
+                                .chain(futures_util::stream::pending());
+                                (status, axum::body::Body::from_stream(stream)).into_response()
+                            }
+                        }
                     }
                 }),
             )
@@ -140,13 +158,68 @@ impl Fixture {
         self.replies
             .lock()
             .unwrap()
-            .push_back((status, value, delay));
+            .push_back((status, Reply::Json(value), delay));
     }
     fn success(&self) {
         self.reply(StatusCode::OK, json!({"access_token":"new-secret", "refresh_token":"rotated-secret", "expires_in":3600}), Duration::ZERO);
     }
     fn advance_to_refresh(&self) {
         self.clock.store(4_000_000, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn successful_headers_then_body_timeout_keeps_refresh_recoverable() {
+    for rotating in [true, false] {
+        let mut f = Fixture::new(rotating).await;
+        f.auth = f
+            .auth
+            .clone()
+            .with_refresh_timeout(Duration::from_millis(50));
+        f.replies
+            .lock()
+            .unwrap()
+            .push_back((StatusCode::OK, Reply::BodyTimeout, Duration::ZERO));
+        assert!(
+            f.auth
+                .token("sub", Flow::Claude, Some("secret-access"))
+                .await
+                .unwrap_err()
+                .is::<tokomotive::oauth::RefreshRetrying>()
+        );
+        let s = f.auth.status("sub", Flow::Claude).await.unwrap();
+        assert!(s.connected);
+        assert_eq!(s.refresh_in_doubt, rotating);
+        f.clock.store(s.next_retry_at.unwrap(), Ordering::SeqCst);
+        f.success();
+        assert_eq!(
+            f.auth
+                .token("sub", Flow::Claude, Some("secret-access"))
+                .await
+                .unwrap(),
+            "new-secret"
+        );
+    }
+}
+
+#[tokio::test]
+async fn complete_malformed_or_oversized_refresh_body_disconnects_rotating_flow() {
+    for body in ["{".to_owned(), " ".repeat(262_145)] {
+        let f = Fixture::new(true).await;
+        f.replies
+            .lock()
+            .unwrap()
+            .push_back((StatusCode::OK, Reply::Raw(body), Duration::ZERO));
+        assert!(
+            f.auth
+                .token("sub", Flow::Claude, Some("secret-access"))
+                .await
+                .is_err()
+        );
+        let s = f.auth.status("sub", Flow::Claude).await.unwrap();
+        assert!(!s.connected);
+        assert!(!s.refresh_in_doubt);
+        assert!(s.next_retry_at.is_none());
     }
 }
 impl Drop for Fixture {

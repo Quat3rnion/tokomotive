@@ -13,8 +13,11 @@ The schedule has up to 30 seconds of early jitter. At most four background
 refreshes run at once. Google user tokens and Entra tokens also have a 30-day
 keep-alive limit. Normal short access lifetimes cause refresh much sooner.
 Vertex service-account tokens use the same schedule, lock and retry policy.
-An upstream 401 can also start one refresh. **Refresh now** uses the same lock
-and does not bypass a retry delay. This POST action requires Admin or Owner
+An upstream 401 can also start one refresh. A 401 changes account health only
+if its access token is still current. A late 401 for an older token cannot
+disable a recovered account; the request retries with the current token.
+**Refresh now** uses the same lock and does not bypass a retry delay.
+This POST action requires Admin or Owner
 and the same origin. A Viewer gets HTTP 403.
 
 ### Flow rules
@@ -63,16 +66,19 @@ Sources, checked 2026-11-15:
 
 - A token endpoint HTTP 400 or 401 with `invalid_grant`, `invalid_token` or
   `unauthorized_client` disconnects the credential. The page shows fixed
-  text, not the issuer's response. An invalid successful response also
-  disconnects a rotating flow. Sign in again.
+  text, not the issuer's response. A complete malformed or oversized successful
+  response also disconnects a rotating flow. Sign in again.
 - A connection failure before send, HTTP 429 or HTTP 5xx keeps the credential.
-  A non-rotating flow also keeps it after a timeout or network reset. The
+  A non-rotating flow also keeps it after a timeout, network reset or body
+  transport failure after HTTP 2xx headers. The
   persisted retry delay doubles from 30 seconds to a maximum of 15 minutes,
   with jitter. The access token remains usable until its actual expiry.
   Requests that need a fresh token get HTTP 503 with
-  `Sign-in refresh is retrying`, in the API error format. A Fallback can still
-  serve the request.
-- A rotating request with no response can have consumed the refresh token.
+  `Sign-in refresh is retrying`, in the API error format. This local retry
+  state records neither a success nor a failure in the Circuit Breaker.
+  A Fallback can still serve the request.
+- A rotating request with no complete response can have consumed the refresh
+  token. This includes a timeout, reset or truncated body after HTTP 2xx headers.
   The Proxy keeps the old token and a **Refresh in doubt** marker. After the
   delay it makes one recovery attempt with that token. A crash during the
   first request also permits this one attempt. An explicit transient response

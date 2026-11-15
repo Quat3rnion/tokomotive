@@ -340,19 +340,28 @@ fn trusted_resource(value: &str, hosts: &[String], version: Option<&str>) -> Res
 fn has_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == SHARING_SCOPE)
 }
+#[derive(Debug, thiserror::Error)]
+enum OAuthBodyError {
+    #[error("OAuth response transport failed")]
+    Transport,
+    #[error("Invalid OAuth response")]
+    Invalid,
+    #[error("OAuth response is too large")]
+    Oversized,
+}
 async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| anyhow::anyhow!("Invalid OAuth response"))?
+        .map_err(|_| OAuthBodyError::Transport)?
     {
         if bytes.len() + chunk.len() > 262_144 {
-            bail!("OAuth response is too large");
+            return Err(OAuthBodyError::Oversized.into());
         }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid OAuth response"))
+    serde_json::from_slice(&bytes).map_err(|_| OAuthBodyError::Invalid.into())
 }
 fn id_claims(token: &str) -> Option<Value> {
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(token.split('.').nth(1)?).ok()?).ok()
@@ -966,6 +975,38 @@ impl OAuthManager {
             crate::quota::recover_credentials(&self.db, name, "signin").await?;
         }
         Ok(())
+    }
+    /// Serialize 401 health writes with refresh recovery. A late response for an
+    /// older bearer cannot invalidate the current credential's account health.
+    pub async fn observe_inference(
+        &self,
+        st: &crate::state::AppState,
+        provider: &crate::state::Provider,
+        index: Option<usize>,
+        token: &str,
+        result: &std::result::Result<reqwest::Response, reqwest::Error>,
+    ) {
+        let _guard;
+        if result
+            .as_ref()
+            .is_ok_and(|r| r.status() == reqwest::StatusCode::UNAUTHORIZED)
+            && let Some(flow) = Flow::from_auth(provider.auth)
+        {
+            _guard = self.flight(&provider.name, flow).await;
+            match self.load(&provider.name, flow).await {
+                Ok(saved)
+                    if saved
+                        .credential
+                        .as_ref()
+                        .is_some_and(|c| c.access_token == token) => {}
+                Ok(_) => return,
+                Err(_) => {
+                    tracing::warn!("Could not check OAuth response credential");
+                    return;
+                }
+            }
+        }
+        crate::quota::observe(st, provider, index, result).await;
     }
     pub async fn reject(&self, name: &str, flow: Flow, token: &str) -> Result<()> {
         let _guard = self.flight(name, flow).await;
