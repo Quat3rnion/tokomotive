@@ -7,7 +7,8 @@ const { spawn } = require('node:child_process');
 const { chromium } = require('playwright-core');
 
 async function main() {
-  const scratch = '/arboretum/toko-live-tmp';
+  const scratch = process.env.TMPDIR;
+  assert.ok(scratch, 'Set TMPDIR to the test fixture directory');
   fs.mkdirSync(scratch, { recursive: true });
   const dir = fs.mkdtempSync(path.join(scratch, 'browser-'));
   const mock = http.createServer((req, res) => {

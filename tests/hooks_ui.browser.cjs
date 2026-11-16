@@ -8,7 +8,8 @@ const { spawn } = require('node:child_process');
 const { chromium } = require('playwright-core');
 
 async function hook_result_is_hidden_until_signed_sample_completes() {
-  const scratch = '/arboretum/toko-hooks-tmp';
+  const scratch = process.env.TMPDIR;
+  assert.ok(scratch, 'Set TMPDIR to the test fixture directory');
   fs.mkdirSync(scratch, { recursive: true });
   const dir = fs.mkdtempSync(path.join(scratch, 'ui-'));
   const mock = http.createServer((req, res) => {

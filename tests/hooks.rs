@@ -91,7 +91,7 @@ async fn embedding(Json(v): Json<Value>) -> Json<Value> {
     )
 }
 async fn env() -> Env {
-    let dir = tempfile::tempdir_in("/arboretum/toko-hooks-tmp").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let mock = Arc::new(Mock::default());
     *mock.reply.lock().unwrap() = json!({"decision":"continue"});
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
