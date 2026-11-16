@@ -81,6 +81,30 @@ async fn snapshot(st: &AppState, target: &str) -> anyhow::Result<String> {
         value.insert($table.into(),rows(st,$table,&[$($field),*],$extra).await?);
     }; }
     match target {
+        "hooks" => {
+            table!(
+                "hooks",
+                [
+                    "id",
+                    "name",
+                    "pre_request",
+                    "post_response",
+                    "event",
+                    "include_bodies",
+                    "timeout_ms",
+                    "fail_closed",
+                    "enabled",
+                    "allow_private",
+                    "priority"
+                ],
+                "ORDER BY id"
+            );
+            table!(
+                "hook_attachments",
+                ["id", "hook_id", "route", "team_id", "key_id", "global"],
+                "ORDER BY id"
+            );
+        }
         "users" => {
             table!(
                 "users",
@@ -222,6 +246,7 @@ fn changed_id(target: &str, before: &str, after: &str) -> Option<String> {
         "routes" => ("routes", "name"),
         "accounts" => ("admin_accounts", "id"),
         "alerts" => ("alert_webhooks", "id"),
+        "hooks" => ("hooks", "id"),
         _ => return None,
     };
     let before: Value = serde_json::from_str(before).ok()?;

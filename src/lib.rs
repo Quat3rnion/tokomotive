@@ -12,6 +12,7 @@ pub mod config;
 pub mod db;
 pub mod egress;
 pub mod guardrails;
+pub mod hooks;
 pub mod inbound;
 mod ledger_live;
 mod ledger_spool;

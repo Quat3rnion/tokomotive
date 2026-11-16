@@ -88,6 +88,16 @@ guard_html = s.get(B + "/admin/guardrails", timeout=30).text
 guard_id = re.search(r'action="/admin/guardrails/(\d+)/attach"', guard_html).group(1)
 post(f"/admin/guardrails/{guard_id}/attach", {"route_name": "smart", "team_name": "", "key_id": ""})
 
+# Hooks screen: demo receiver only. Do not print the one-time signing secret.
+hook = post("/admin/hooks", {
+    "name": "Research policy", "url": MOCK + "/hook",
+    "pre_request": "on", "post_response": "on", "event": "on",
+    "timeout_ms": "2000", "priority": "10", "enabled": "on",
+    "fail_closed": "on", "allow_private": "on",
+}).json()
+post(f"/admin/hooks/{hook['id']}/attach", {"route_name": "smart"})
+del hook
+
 USERS = [
     ("maria.keller", "Research", "250", "600", "4000000", True),
     ("jonas.berg", "Research", "100", "300", "", True),

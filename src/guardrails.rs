@@ -628,6 +628,7 @@ struct SessionData {
 /// Shares only rule names with the asynchronous Ledger writer.
 #[derive(Clone, Default)]
 pub(crate) struct Session {
+    pub(crate) hooks: crate::hooks::Session,
     data: Arc<Mutex<SessionData>>,
     notify: Arc<tokio::sync::Notify>,
 }
@@ -640,6 +641,7 @@ impl Completion {
 impl Drop for Completion {
     fn drop(&mut self) {
         if let Some(session) = &self.0 {
+            session.hooks.complete();
             session.complete();
         }
     }
@@ -701,6 +703,16 @@ impl Session {
         verdict.blocked
     }
     pub async fn response(&self, response: Response, anthropic: bool, responses: bool) -> Response {
+        let response = self.hooks.response(response).await;
+        let response = self.response_inner(response, anthropic, responses).await;
+        self.hooks.capture(response).await
+    }
+    async fn response_inner(
+        &self,
+        response: Response,
+        anthropic: bool,
+        responses: bool,
+    ) -> Response {
         let Some(engine) = self.engine() else {
             self.complete();
             return response;

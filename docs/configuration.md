@@ -1,5 +1,25 @@
 # Configuration reference
 
+## Request and response hooks
+
+An Owner or Admin can configure signed external hooks on **Hooks**.
+Select stages, a timeout, a priority and fail-open or fail-closed behavior.
+The timeout defaults to 2000 ms and cannot exceed 30000 ms. Select private
+network access only for a trusted private service. Public HTTP is refused.
+Attach the hook globally, or to Routes, Teams or Virtual Keys.
+
+The server generates the signing secret. Creation and rotation return it
+once as a no-store JSON response, not in HTML. Save it, then return to
+**Hooks**. Stored secrets are encrypted with the Master Key. Hook create,
+edit, delete, attachment changes and secret rotation appear in the audit
+log without the secret.
+
+Streaming skips post-response hooks. An attached post-response hook
+disables both exact and semantic cache storage. Events use a bounded
+best-effort queue and exclude bodies unless **Include bodies in events**
+is selected. See the [version 1 protocol](hooks.md) for limits, network
+policy, stage order and a Python signature-verification example.
+
 ## Single sign-on
 
 An Owner can open **Settings > Single sign-on**. OIDC is optional. The

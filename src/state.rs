@@ -110,6 +110,7 @@ pub struct Inner {
     pub(crate) resolution_refresh: tokio::sync::Mutex<()>,
     pub resolution_index: RwLock<crate::resolve::Index>,
     pub mcp: crate::mcp::Sessions,
+    pub hooks: crate::hooks::Events,
     pub db: Db,
     pub limiter: crate::ratelimit::RateLimiter,
     #[cfg(test)]
@@ -194,6 +195,7 @@ impl AppState {
             resolution_refresh: tokio::sync::Mutex::new(()),
             resolution_index: RwLock::new(crate::resolve::Index::default()),
             mcp: crate::mcp::Sessions::default(),
+            hooks: crate::hooks::Events::default(),
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
             #[cfg(test)]

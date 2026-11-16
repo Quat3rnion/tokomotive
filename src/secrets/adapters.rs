@@ -140,6 +140,26 @@ async fn direct_builder(url: &reqwest::Url, allow_private: bool) -> Result<reqwe
         .timeout(Duration::from_secs(10))
         .resolve_to_addrs(host, &addresses))
 }
+
+/// DNS-pinned webhook transport with the same network policy as secret stores.
+pub(crate) async fn webhook_client(
+    url: &reqwest::Url,
+    allow_private: bool,
+    egress: &Egress,
+) -> Result<reqwest::Client> {
+    let mut builder = direct_builder(url, allow_private).await?;
+    if let Some(proxy) = egress
+        .proxy_for(None)
+        .map_err(|_| Failure("egress unavailable"))?
+    {
+        builder =
+            builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| Failure("egress unavailable"))?);
+    }
+    builder
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| Failure("hook client unavailable"))
+}
 async fn send(request: reqwest::RequestBuilder) -> Result<Value> {
     let response = request
         .send()

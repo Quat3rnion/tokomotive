@@ -649,12 +649,16 @@ impl Ctx {
             if self.guardrails.wait().await {
                 entry.status = 400;
             }
+            if let Some(status) = self.guardrails.hooks.status() {
+                entry.status = status;
+            }
             let pending = crate::ledger_spool::PendingEntry::new(entry.clone())
                 .with_attempts(&self.trace.attempts);
             let written = pending.persist_reserved(&alerts_st, reservation).await;
             match written {
                 None => {}
                 Some(id) => {
+                    self.guardrails.hooks.ledger(id, &entry).await;
                     if let Err(e) = self.guardrails.ledger(&db, id).await {
                         tracing::error!(error=%e,"guardrail ledger write failed");
                     }
@@ -683,6 +687,9 @@ impl Ctx {
         model: Option<String>,
         estimated: bool,
     ) -> Option<crate::cache::Write> {
+        if self.guardrails.hooks.has_post() {
+            return None;
+        }
         if self.cache_plan.is_none() && self.semantic_plan.is_none() {
             return None;
         }
@@ -1104,7 +1111,10 @@ async fn handle_inner_native(
     .into_iter()
     .filter(|(_, limits)| !simple && (limits.rpm.is_some() || limits.tpm.is_some()))
     .collect();
-    if !simple && let Err(limited) = st.limiter.admit(&scopes, db::now_ms()) {
+    if !simple
+        && !guardrails.hooks.pre_done()
+        && let Err(limited) = st.limiter.admit(&scopes, db::now_ms())
+    {
         let scope = match limited.scope {
             Scope::Key(_) => "key",
             Scope::User(_) => "user",
@@ -1122,6 +1132,23 @@ async fn handle_inner_native(
         return response;
     }
 
+    if !guardrails.hooks.pre_done() {
+        let metadata = ["x-tokomotive-meta-project", "x-tokomotive-meta-environment"]
+            .into_iter()
+            .filter_map(|name| {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .filter(|v| v.len() <= 1024)
+                    .map(|v| (name.to_owned(), Value::String(v.to_owned())))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        if guardrails.hooks.configure(&st, resolved_route, auth.team_id, auth.key_id,
+            json!({"endpoint":endpoint.name(),"route":resolved_route,"model":requested_model,"key_id":auth.key_id,"team_id":auth.team_id,"user":auth.user_name,"metadata":metadata,"body":json_body})
+        ).await.is_err() {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "api_error", "Hooks unavailable.");
+        }
+    }
     let anthropic_hint = headers.contains_key("anthropic-version");
     let mut matched_rule = None;
     let rule_table = if let Some(route) = resolved_route {
@@ -1186,9 +1213,12 @@ async fn handle_inner_native(
                         st.observability
                             .export(&entry, &trace, &auth.user_name, &auth.key_name);
                         let state = st.clone();
+                        let hooks = guardrails.hooks.clone();
                         st.spawn_tracked(async move {
-                            let pending = crate::ledger_spool::PendingEntry::new(entry);
-                            pending.persist_reserved(&state, None).await;
+                            let pending = crate::ledger_spool::PendingEntry::new(entry.clone());
+                            if let Some(id) = pending.persist_reserved(&state, None).await {
+                                hooks.ledger(id, &entry).await;
+                            }
                         });
                         return error(StatusCode::FORBIDDEN, "permission_error", message);
                     }
@@ -1368,17 +1398,207 @@ async fn handle_inner_native(
             let state = st.clone();
             let session = guardrails.clone();
             st.spawn_tracked(async move {
-                let pending = crate::ledger_spool::PendingEntry::new(entry);
-                if let Some(id) = pending.persist_reserved(&state, None).await
-                    && let Err(e) = session.ledger(&state.db, id).await
-                {
-                    tracing::error!(error=%e,"guardrail ledger write failed");
+                let pending = crate::ledger_spool::PendingEntry::new(entry.clone());
+                if let Some(id) = pending.persist_reserved(&state, None).await {
+                    session.hooks.ledger(id, &entry).await;
+                    if let Err(e) = session.ledger(&state.db, id).await {
+                        tracing::error!(error=%e,"guardrail ledger write failed");
+                    }
                 }
             });
             return crate::guardrails::blocked(&name, anthropic);
         }
         if audio_upload.is_none() {
             body = Bytes::from(value.to_string());
+        }
+    }
+
+    if !guardrails.hooks.pre_done() {
+        let hook_admission = if !simple && guardrails.hooks.has_pre() {
+            let mut worst = 0;
+            for c in &candidates {
+                let Ok((prepared, target, _)) =
+                    prepare_inbound_body(c, endpoint, json_body.as_ref(), native.as_ref())
+                else {
+                    continue;
+                };
+                let pricing_model =
+                    if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex {
+                        c.model
+                            .as_deref()
+                            .and_then(|n| crate::vertex::model(n).ok())
+                            .map(|(_, id)| id)
+                    } else {
+                        c.model.as_deref()
+                    };
+                let model_id = pricing_model.and_then(|m| catalog.resolve(m)).map(|m| m.id);
+                let output = match crate::models_dev::reservation_output(
+                    &st.db,
+                    model_id,
+                    settings.reserve_output_tokens,
+                )
+                .await
+                {
+                    Ok(n) => n,
+                    Err(_) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "api_error",
+                            "Budget admission unavailable.",
+                        );
+                    }
+                };
+                worst = worst.max(worst_case_price(
+                    &catalog,
+                    auth.team_id,
+                    target,
+                    pricing_model,
+                    prepared.as_ref(),
+                    if extra::audio_upload(endpoint) {
+                        body.len()
+                    } else {
+                        prepared
+                            .as_ref()
+                            .map_or(body.len(), |v| v.to_string().len())
+                    },
+                    output,
+                ));
+            }
+            match crate::budgets::reserve(&st, &auth, worst, ts_ms / 1000).await {
+                Ok(Some(r)) => Some(r),
+                Ok(None) => {
+                    return error(
+                        StatusCode::PAYMENT_REQUIRED,
+                        "budget_exceeded",
+                        "Budget does not cover this request.",
+                    );
+                }
+                Err(_) => {
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "api_error",
+                        "Budget admission unavailable.",
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(value) = &mut json_body {
+            let result = guardrails
+                .hooks
+                .pre(value, |value| {
+                    if audio_upload.is_some() {
+                        return Err("Hooks cannot modify multipart uploads.");
+                    }
+                    if !value.is_object()
+                        || model_of(value).is_none()
+                        || value.to_string().len() > 64 * 1024 * 1024
+                    {
+                        return Err("Hook returned an invalid request body.");
+                    }
+                    if endpoint == Endpoint::ChatCompletions
+                        && translate::validate_chat_limits(value).is_err()
+                    {
+                        return Err("Hook returned conflicting token limits.");
+                    }
+                    if endpoint == Endpoint::CountTokens
+                        && (!value["messages"].is_array()
+                            || value.to_string().len() > extra::COUNT_BODY_LIMIT)
+                    {
+                        return Err("Hook returned an invalid token count request.");
+                    }
+                    if endpoint == Endpoint::Rerank
+                        && (!value["query"].is_string()
+                            || value["documents"].as_array().is_none_or(Vec::is_empty)
+                            || is_stream(value)
+                            || value.to_string().len() > extra::COUNT_BODY_LIMIT)
+                    {
+                        return Err("Hook returned an invalid rerank request.");
+                    }
+                    if endpoint == Endpoint::AudioSpeech
+                        && (value["input"].as_str().is_none_or(str::is_empty)
+                            || value.to_string().len() > extra::COUNT_BODY_LIMIT)
+                    {
+                        return Err("Hook returned an invalid speech request.");
+                    }
+                    let model = model_of(value).unwrap_or_default();
+                    if Some(&model) != requested_model.as_ref() {
+                        let index = st.resolution_index.read().expect("resolution index");
+                        let resolution =
+                            crate::resolve::resolve(&table, &catalog, &index, &model, access);
+                        if resolution.owner(&table, &catalog, access).is_none()
+                            || !resolution.allowed(access, &model, &catalog)
+                        {
+                            return Err("Hook proposed a model not allowed for this key.");
+                        }
+                    }
+                    Ok(())
+                })
+                .await;
+            if let Err(response) = result {
+                let entry = NewEntry {
+                    semantic_cache_hit: false,
+                    semantic_cache_embed: internal_embedding,
+                    route_rule: matched_rule.clone(),
+                    cache_hit: false,
+                    ts_ms,
+                    user_id: auth.user_id,
+                    key_id: auth.key_id,
+                    team_id: auth.team_id,
+                    provider: first.provider.name.clone(),
+                    subscription: false,
+                    endpoint: endpoint.name().into(),
+                    requested_model: requested_model.clone(),
+                    model: first.model.clone(),
+                    status: response.status().as_u16(),
+                    streamed: is_stream(value),
+                    usage: Usage::default(),
+                    reported_cost_micros: None,
+                    quote: Default::default(),
+                    estimated: false,
+                    latency_ms: started.elapsed().as_millis() as i64,
+                    ttft_ms: None,
+                    client_aborted: false,
+                    provider_key: None,
+                    attempts: 0,
+                    session_affinity: None,
+                };
+                let state = st.clone();
+                let session = guardrails.clone();
+                st.spawn_tracked(async move {
+                    session.wait().await;
+                    if let Some(id) = crate::ledger_spool::PendingEntry::new(entry.clone())
+                        .persist_reserved(&state, hook_admission)
+                        .await
+                    {
+                        session.hooks.ledger(id, &entry).await;
+                        let _ = session.ledger(&state.db, id).await;
+                    }
+                });
+                return *response;
+            }
+            drop(hook_admission);
+            if audio_upload.is_none() && model_of(value) != requested_model {
+                // Re-enter the same authenticated surface for model resolution
+                // and Provider Access. Admission and pre hooks run only once.
+                // No body field can replace the original authentication headers.
+                let body = Bytes::from(value.to_string());
+                return Box::pin(handle_inner_native(
+                    st,
+                    method,
+                    uri,
+                    headers,
+                    Ok(body),
+                    guardrails,
+                    native,
+                    internal_embedding,
+                ))
+                .await;
+            }
+            if audio_upload.is_none() {
+                body = Bytes::from(value.to_string());
+            }
         }
     }
 

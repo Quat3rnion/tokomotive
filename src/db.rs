@@ -1097,6 +1097,7 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub hook_summary: String,
     pub semantic_cache_hit: bool,
     pub semantic_cache_embed: bool,
     pub user_id: i64,
@@ -1209,7 +1210,7 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
 }
 
 /// Shared Ledger metadata. Captured bodies and credentials are never selected.
-pub(crate) const LEDGER_SELECT: &str = "SELECT l.user_id, (SELECT label FROM virtual_keys k WHERE k.id=l.key_id) AS key_label, COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
+pub(crate) const LEDGER_SELECT: &str = "SELECT COALESCE((SELECT group_concat(label, ', ') FROM (SELECT DISTINCT CASE WHEN outcome='modified' THEN 'modified by hook '||hook WHEN outcome LIKE 'rejected%' THEN 'rejected by hook '||hook ELSE hook||': '||outcome END AS label FROM hook_calls WHERE ledger_id=l.id AND stage!='event' ORDER BY id)), '') AS hook_summary, l.user_id, (SELECT label FROM virtual_keys k WHERE k.id=l.key_id) AS key_label, COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
             l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit, l.semantic_cache_hit, l.semantic_cache_embed, l.route_rule,l.route_rule_name,l.canary_side

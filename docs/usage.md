@@ -1,5 +1,41 @@
 # Operator guide
 
+## Hooks
+
+Open **Hooks** with an Owner or Admin account. Add a name and URL. Select
+one or more stages: `pre_request`, `post_response` or `event`. Set the
+timeout, priority and failure mode. Save the one-time signing secret
+from the JSON response, then return to the page.
+
+Use the Route and Team pickers or select a Virtual Key to attach a hook.
+Select **Global** to apply it to all admitted requests. Select only one
+target per submission. Add more attachments with separate submissions.
+Matching attachments form a union. Hooks run by priority, then name.
+Use the pager to see more hooks.
+
+**Test signed sample** sends a signed envelope for the selected stage.
+It shows the HTTP status, latency, outcome and parsed decision. It does
+not call a Provider. Configure a receiver to return `continue`, `modify`
+or `reject`. See the [protocol and Python signature example](hooks.md).
+
+Pre-request changes are checked again and are used for cache lookup.
+Post-response changes run before response guardrails. Upstream Cost
+remains in the Ledger if a response hook rejects the answer. The Ledger
+shows which hook modified or rejected the request.
+
+Streaming skips `post_response` but still sends an `event` after the
+request ends. A hook with only `post_response` does not make streaming
+fail. Any attached post-response hook disables exact and semantic cache
+storage. Event bodies are excluded unless explicitly enabled per hook.
+The queue is bounded and drops events when full. Do not use events as
+the sole record for billing or other required delivery.
+
+Use **Rotate secret** to issue a new signing secret. Save the new secret
+and update the receiver. New requests use the new secret. Requests
+already in progress can still use the previous secret for later stages.
+Keep both receiver keys until those requests have ended.
+The HTML page and audit log never show a saved signing secret.
+
 ## Connect Authentik
 
 This example uses Authentik's OAuth2/OpenID provider. The field names follow

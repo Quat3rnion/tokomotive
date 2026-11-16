@@ -1402,6 +1402,7 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub hook_summary: String,
     pub semantic_cache_hit: bool,
     pub semantic_cache_embed: bool,
     pub key_label: String,
@@ -1553,6 +1554,7 @@ impl LedgerView {
             semantic_cache_hit: r.semantic_cache_hit,
             semantic_cache_embed: r.semantic_cache_embed,
             guardrail_rules: r.guardrail_rules.clone(),
+            hook_summary: r.hook_summary.clone(),
             key: r
                 .provider_key
                 .map(|k| key_label(&r.provider, k).unwrap_or_else(|| format!("Key {}", k + 1)))

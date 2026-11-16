@@ -49,6 +49,7 @@ macro_rules! tryform {
 pub(crate) mod accounts;
 mod audit;
 mod guardrails;
+mod hooks;
 mod live;
 mod mcp;
 mod models_dev;
@@ -116,6 +117,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .merge(settings::router())
         .merge(secrets::router())
         .merge(guardrails::router())
+        .merge(hooks::router())
         .merge(route_rules::router())
         .merge(models_dev::router())
         .merge(mcp::router())

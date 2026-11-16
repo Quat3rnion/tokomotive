@@ -1,5 +1,6 @@
 {
   "pending_refresh": [
+    {"page":"/admin/hooks", "reason":"TODO(#30 capture): new signed webhook management screen. Capture hooks.png at the next parent-requested refresh.", "capture":{"image":"hooks.png", "page":"/admin/hooks", "route":"/admin/hooks", "recipe":"full", "caption":"Hooks", "alt":"Signed request, response and event hooks with stage controls, attachment pickers, failure mode and a signed sample test.", "kind":"table"}},
     {"page":"/admin/settings/oidc", "reason":"An Owner-only HTTPS session-cookie control and hint were added under Advanced; the redirect URI copy button now shares an inline row with the field. Keep the promoted oidc.png capture until the next requested refresh."},
     {"page":"/admin/settings/secrets", "reason":"Secret stores now use typed per-store fields. Refresh secrets.png at the next parent-requested capture; keep its promoted capture entry and current image."},
     {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
@@ -36,6 +37,7 @@
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
+    {"route":"/admin/hooks", "reason":"TODO(#30 capture): new screen; final hooks.png entry is staged in pending_refresh until the parent runs the capture pipeline."},
     {"route":"/admin/oidc/start", "reason":"OIDC authorization redirect, not a page."},
     {"route":"/admin/oidc/callback", "reason":"Transient OIDC completion page with a same-origin meta refresh and fallback link, not a persistent dashboard page."},
     {"route":"/admin/oidc/roles", "reason":"Search result fragment for the Single sign-on role picker."},

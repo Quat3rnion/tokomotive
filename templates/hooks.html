@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "picker.html" as picker %}
+{% block title %}Hooks - Tokomotive{% endblock %}
+{% block nav_hooks %}aria-current="page"{% endblock %}
+{% block content %}
+<h1>Hooks</h1>
+<p class="muted">Signed webhooks for trusted extensions. Hooks run by priority, then name. Streaming skips post_response. A post_response attachment disables exact and semantic cache storage.</p>
+<p>New and rotated secrets open once as JSON, not in HTML. Save the secret, then return here. The server stores it encrypted with the Master Key.</p>
+{% for h in hooks %}
+<section class="panel stack" id="hook-{{ h.id }}"><h2>{{ h.name }}</h2>
+<form method="post" action="/admin/hooks" class="stack">
+<input type="hidden" name="id" value="{{ h.id }}">
+<div class="fields">
+<div class="field"><label for="h{{ h.id }}-name">Name</label><input id="h{{ h.id }}-name" name="name" value="{{ h.name }}" maxlength="100" required></div>
+<div class="field wide"><label for="h{{ h.id }}-url">URL</label><input type="url" id="h{{ h.id }}-url" name="url" value="{{ h.url }}" required></div>
+<div class="field"><label for="h{{ h.id }}-timeout">Timeout (ms)</label><input type="number" id="h{{ h.id }}-timeout" name="timeout_ms" value="{{ h.timeout_ms }}" min="1" max="30000" required></div>
+<div class="field"><label for="h{{ h.id }}-priority">Priority (lower first)</label><input type="number" id="h{{ h.id }}-priority" name="priority" value="{{ h.priority }}" required></div>
+</div>
+<fieldset><legend>Stages</legend>
+<label class="check"><input type="checkbox" name="pre_request"{% if h.pre_request %} checked{% endif %}>pre_request (synchronous)</label>
+<label class="check"><input type="checkbox" name="post_response"{% if h.post_response %} checked{% endif %}>post_response (non-streaming only)</label>
+<label class="check"><input type="checkbox" name="event"{% if h.event %} checked{% endif %}>event (asynchronous)</label>
+</fieldset>
+<label class="check"><input type="checkbox" name="include_bodies"{% if h.include_bodies %} checked{% endif %}>Include bodies in events</label>
+<label class="check"><input type="checkbox" name="enabled"{% if h.enabled %} checked{% endif %}>Enabled</label>
+<label class="check"><input type="checkbox" name="fail_closed"{% if h.fail_closed %} checked{% endif %}>Fail closed (reject if the hook fails)</label>
+<label class="check"><input type="checkbox" name="allow_private"{% if h.allow_private %} checked{% endif %}>Allow private addresses and private HTTP</label>
+<button>Save hook</button></form>
+<h3>Attachments</h3>
+<ul class="key-list">{% for a in attachments %}{% if a.hook_id == h.id %}<li>{{ a.target }}<form method="post" action="/admin/hooks/attachments/{{ a.id }}/delete" class="inline"><button class="ghost danger">Delete attachment</button></form></li>{% endif %}{% endfor %}</ul>
+<form method="post" action="/admin/hooks/{{ h.id }}/attach" class="stack subform">
+<p class="hint">Select exactly one target. Add more targets with separate submissions.</p>
+<label class="check"><input type="checkbox" name="global">Global</label>
+<div class="fields">
+<div class="field"><label for="a{{ h.id }}-route">Route</label>{% call picker::entity("a{}-route"|format(h.id), "route_name", "", "routes", routes, "No Route", false) %}</div>
+<div class="field"><label for="a{{ h.id }}-team">Team</label>{% call picker::entity("a{}-team"|format(h.id), "team_name", "", "teams", teams, "No Team", false) %}</div>
+<div class="field"><label for="a{{ h.id }}-key">Virtual Key</label><select id="a{{ h.id }}-key" name="key_id"><option value="">No Virtual Key</option>{% for k in keys %}{% if k.revoked_at.is_none() %}<option value="{{ k.id }}">{{ k.user }} / {{ k.label }} (#{{ k.id }})</option>{% endif %}{% endfor %}</select></div>
+</div><button>Add attachment</button></form>
+<form method="post" action="/admin/hooks/{{ h.id }}/test" class="stack subform" hx-post="/admin/hooks/{{ h.id }}/test" hx-target="#test-{{ h.id }}" hx-swap="textContent">
+<div class="field"><label for="stage-{{ h.id }}">Sample stage</label><select name="stage" id="stage-{{ h.id }}">{% if h.pre_request %}<option>pre_request</option>{% endif %}{% if h.post_response %}<option>post_response</option>{% endif %}{% if h.event %}<option>event</option>{% endif %}</select></div>
+<button>Test signed sample</button></form><pre id="test-{{ h.id }}" class="code" aria-live="polite"></pre>
+<div class="actions"><form data-plain method="post" action="/admin/hooks/{{ h.id }}/rotate" data-confirm="Rotate the signing secret? Update your receiver after this step."><button class="ghost">Rotate secret</button></form>
+<form method="post" action="/admin/hooks/{{ h.id }}/delete" data-confirm="Delete this hook and its attachments?"><button class="danger ghost">Delete hook</button></form></div>
+</section>
+{% endfor %}
+{% include "pager.html" %}
+<section class="panel stack"><h2>Add a hook</h2>
+<form data-plain method="post" action="/admin/hooks" class="stack">
+<div class="fields">
+<div class="field"><label for="new-name">Name</label><input id="new-name" name="name" required maxlength="100"></div>
+<div class="field wide"><label for="new-url">URL</label><input type="url" id="new-url" name="url" required placeholder="https://hooks.example.com/check"></div>
+<div class="field"><label for="new-timeout">Timeout (ms)</label><input type="number" id="new-timeout" name="timeout_ms" value="2000" min="1" max="30000"></div>
+<div class="field"><label for="new-priority">Priority (lower first)</label><input type="number" id="new-priority" name="priority" value="0"></div></div>
+<fieldset><legend>Stages</legend>
+<label class="check"><input type="checkbox" name="pre_request" checked>pre_request</label>
+<label class="check"><input type="checkbox" name="post_response">post_response (non-streaming only)</label>
+<label class="check"><input type="checkbox" name="event">event</label></fieldset>
+<label class="check"><input type="checkbox" name="include_bodies">Include bodies in events</label>
+<label class="check"><input type="checkbox" name="enabled" checked>Enabled</label>
+<label class="check"><input type="checkbox" name="fail_closed">Fail closed</label>
+<label class="check"><input type="checkbox" name="allow_private">Allow private addresses and private HTTP</label>
+<button>Add hook and show secret once</button></form></section>
+{% endblock %}
