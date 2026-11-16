@@ -172,16 +172,48 @@ fn body() -> Value {
 
 #[tokio::test]
 async fn exact_hit_has_zero_cost_and_cached_ledger_usage() {
+    use futures_util::StreamExt;
     let e = env("key", "openai").await;
+    tokomotive::db::create_session(&e.st.db, "cache-live", 1)
+        .await
+        .unwrap();
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/ledger/live", e.url))
+        .header("cookie", "tokomotive_session=cache-live")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let mut live = response.bytes_stream();
     let first = e.send("sk-alice", "chat/completions", body(), None).await;
     assert_eq!(first.status(), 200);
     assert_eq!(first.headers()["x-tokomotive-cache"], "miss");
     let first = first.text().await.unwrap();
     e.st.flush().await;
+    let first_event = tokio::time::timeout(std::time::Duration::from_secs(3), live.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::str::from_utf8(&first_event)
+            .unwrap()
+            .contains("event: ledger")
+    );
     let second = e.send("sk-alice", "chat/completions", body(), None).await;
     assert_eq!(second.headers()["x-tokomotive-cache"], "hit");
     assert_eq!(second.text().await.unwrap(), first);
     e.st.flush().await;
+    let hit_event = tokio::time::timeout(std::time::Duration::from_secs(3), live.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::str::from_utf8(&hit_event)
+            .unwrap()
+            .contains("cache hit")
+    );
     assert_eq!(e.calls.load(Ordering::SeqCst), 1);
     let row: (i64, i64, i64, i64) = sqlx::query_as("SELECT cache_hit,cost_micros,price_micros,input+output FROM ledger ORDER BY id DESC LIMIT 1").fetch_one(&e.st.db).await.unwrap();
     assert_eq!(row, (1, 0, 0, 5));

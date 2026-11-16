@@ -95,6 +95,7 @@ impl Drop for Reservation {
 pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
+    pub(crate) ledger_live: Arc<crate::ledger_live::LedgerLive>,
     pub(crate) resolution_refresh: tokio::sync::Mutex<()>,
     pub resolution_index: RwLock<crate::resolve::Index>,
     pub mcp: crate::mcp::Sessions,
@@ -171,6 +172,7 @@ impl AppState {
             crate::observability::load(&db, &secret_key).await?,
         )?;
         let state = AppState(Arc::new(Inner {
+            ledger_live: db.ledger_live.clone(),
             resolution_refresh: tokio::sync::Mutex::new(()),
             resolution_index: RwLock::new(crate::resolve::Index::default()),
             mcp: crate::mcp::Sessions::default(),

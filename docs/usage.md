@@ -1276,6 +1276,7 @@ Routes in your dashboard, or a `provider/model` name.
 | `/admin/settings/mode` | POST | Sets the mode. The field `mode` is `full` or `simple`. |
 | `/admin/settings/markup` | POST | Saves the default Markup from the Models page. |
 | `/admin/ledger`                         | GET      | Ledger page. See "Ledger" for the query parameters. |
+| `/admin/ledger/live`                    | GET      | Live Ledger rows as Server-Sent Events. Requires a dashboard session and the same origin. |
 | `/admin/reprice`                        | POST     | Prices the Unpriced Entries.                                      |
 | `/admin/assets/htmx.min.js`             | GET      | The script file of the dashboard.                                 |
 
@@ -1871,6 +1872,33 @@ The **Ledger** page shows the newest Ledger Entries, 100 on each page. Select
 | **Errors**    | Entries with an HTTP status of 400 or more.        |
 
 Simple Mode has only **All** and **Errors**.
+
+Select **Live** to add new Ledger Entries at the top of the page. Live is off
+by default. The browser remembers this choice on this device. The server
+applies the current Ledger filters to each new entry. Page cursors do not
+limit live entries. Select **Pause** to stop updates. Select **Resume** to
+receive the entries added during the pause. The page keeps at most 200
+entries and their Details rows. The status shows the number of new entries.
+Screen readers announce this count at most once each 10 seconds.
+
+The live feed publishes only after a Ledger write commits. This includes
+cache hits, spool replay and completed Batches. A spooled entry does not
+appear until replay commits it. Viewers can watch the feed. Captured bodies
+are never sent. Live rows show the Virtual Key label and the Provider Key
+number, not its secret characters. Simple Mode does not send amounts.
+
+The feed uses a process-local broadcast buffer of 1024 events and keeps the
+last 500 events for resume. Reconnects use `Last-Event-ID`. The browser also
+sends its cursor when it resumes after a pause. If that cursor is too old,
+or the process restarted, a `gap` event makes the browser reload the first
+page with the same filters. A slow client gets a `lagged` event instead of
+an unlimited queue. The browser then reloads the first page.
+
+The server sends a heartbeat each 15 seconds. Each connection closes after
+one hour; the browser reconnects. The limit is 32 live connections per
+process and 4 per dashboard session. Further connections get HTTP 429 with
+`Retry-After: 15`. Close another live tab before you try again. With several
+Proxy processes, each feed shows only entries written by its own process.
 
 Use the filter bar to show only the entries of one User, one Provider, one
 Model, or a range of days (UTC). The filters are query parameters, so you can

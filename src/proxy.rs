@@ -644,7 +644,8 @@ impl Ctx {
             if self.guardrails.wait().await {
                 entry.status = 400;
             }
-            let pending = crate::ledger_spool::PendingEntry::new(entry.clone());
+            let pending = crate::ledger_spool::PendingEntry::new(entry.clone())
+                .with_attempts(&self.trace.attempts);
             let written = pending.persist_reserved(&alerts_st, reservation).await;
             match written {
                 None => {}

@@ -1,0 +1,38 @@
+<tr id="e{{ r.id }}">
+  <th scope="row"><time datetime="{{ r.time.iso }}">{{ r.time.short }}</time></th>
+  <td data-label="User"><span class="trunc" title="{{ r.user }}">{{ r.user }}</span>{% if !r.key_label.is_empty() %}<span class="sub">{{ r.key_label }}</span>{% endif %}</td>
+  <td data-label="Model">{{ r.model }}<span class="sub">{{ r.provider }}</span>{% if !r.route_rule.is_empty() %}<span class="tag info" title="{{ r.route_rule }} / {{ r.canary_side }}">rule: {{ r.route_rule_name }} / {{ r.canary_side }}</span>{% endif %}</td>
+  <td data-label="Status" class="n{% if r.status >= 400 %} bad{% endif %}">{{ r.status }}</td>
+  <td data-label="Flags" class="flags">{% if !r.guardrail_rules.is_empty() %}<span class="tag warn" title="{{ r.guardrail_rules }}">guardrail: {{ r.guardrail_rules }}</span>{% endif %}{% if r.cache_hit %}<span class="tag info" title="Stored usage. No upstream tokens.">cache hit</span>{% endif %}{% if r.captured %}<span class="tag warn">captured</span>{% endif %}{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
+  <td data-label="Tokens in / out" class="n" title="{{ r.tokens_title }}">{{ r.tokens }}</td>
+  {% if !base.simple %}<td data-label="Price" class="n"><span title="{{ r.price.exact }}">{{ r.price }}</span></td><td data-label="Cost" class="n"><span title="{{ r.cost.exact }}">{{ r.cost }}</span></td>{% endif %}
+  <td data-label="Latency" class="n">{{ r.latency }}</td>
+  <td><div class="actions"><button type="button" class="ghost" data-toggle="d{{ r.id }}" aria-expanded="false" aria-controls="d{{ r.id }}" aria-label="Details of entry {{ r.id }}">Details</button></div></td>
+</tr>
+<tr id="d{{ r.id }}" class="edit-row" data-collapse>
+  <td colspan="{{ self.columns() }}"><div class="edit-panel">
+    <dl class="kv">
+      <div><dt>Entry</dt><dd>#{{ r.id }} <a href="/admin/ledger?entry={{ r.id }}#trace">Attempt timeline{% if r.captured %} (captured){% endif %}</a></dd></div>
+      <div><dt>Endpoint</dt><dd>{{ r.endpoint }}</dd></div>
+      {% if !r.route.is_empty() %}<div><dt>Route</dt><dd>{{ r.route }}</dd></div>{% endif %}
+      {% if !r.route_rule.is_empty() %}<div><dt>Route rule</dt><dd>rule: {{ r.route_rule_name }} / {{ r.canary_side }} ({{ r.route_rule }})</dd></div>{% endif %}
+      {% if !base.simple %}
+      <div><dt>Cost</dt><dd><span title="{{ r.cost.exact }}">{{ r.cost }}</span></dd></div>
+      <div><dt>Provider-reported cost</dt><dd>{% if let Some(cost) = r.reported_cost %}<span title="{{ cost.exact }}">{{ cost }}</span>{% else %}Not reported{% endif %}</dd></div>
+      {% endif %}
+      <div><dt>Input</dt><dd>{{ r.input }}</dd></div>
+      <div><dt>Output</dt><dd>{{ r.output }}</dd></div>
+      <div><dt>Cache read</dt><dd>{{ r.cache_read }}</dd></div>
+      <div><dt>Cache write 5m</dt><dd>{{ r.cache_write_5m }}</dd></div>
+      <div><dt>Cache write 1h</dt><dd>{{ r.cache_write_1h }}</dd></div>
+      <div><dt>Image input</dt><dd>{{ r.image_input }}</dd></div>
+      <div><dt>Image output</dt><dd>{{ r.image_output }}</dd></div>
+      <div><dt>Service units</dt><dd>{{ r.service_units }}</dd></div>
+      <div><dt>Time to first token</dt><dd>{{ r.ttft }}</dd></div>
+      <div><dt>Provider Key</dt><dd>{{ r.key }}</dd></div>
+      <div><dt>Attempts</dt><dd>{{ r.attempts }}</dd></div>
+      {% if let Some(session) = r.session_affinity %}<div><dt>Session</dt><dd>{{ session }}</dd></div>{% endif %}
+    </dl>
+    {% if !base.simple %}<p class="hint">For comparison only. Provider-reported cost does not change pricing. Pricing uses the Cost Card.</p>{% endif %}
+  </div></td>
+</tr>

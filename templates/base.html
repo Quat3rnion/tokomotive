@@ -459,6 +459,11 @@ details > summary:hover { text-decoration:underline; text-underline-offset:2px; 
   table.cards-sm tr.edit-row > td { padding:var(--sp-3); border-radius:var(--r-ctl); }
   table.cards-sm .edit-panel { position:static; max-width:none; }
 }
+.ledger .live-new > * { background-color: var(--accent-soft); }
+@media (prefers-reduced-motion: no-preference) {
+  .ledger .live-new > * { animation: ledger-arrival 2s ease-out; }
+  @keyframes ledger-arrival { from { background-color: var(--accent-soft); } to { background-color: transparent; } }
+}
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior:auto !important; transition:none !important; animation:none !important; }
 }

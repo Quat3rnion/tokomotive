@@ -158,6 +158,8 @@ impl Spool {
 pub(crate) struct PendingEntry {
     write_key: String,
     entry: NewEntry,
+    #[serde(default)]
+    attempts: Vec<crate::ledger_live::AttemptFilter>,
 }
 impl PendingEntry {
     pub(crate) fn new(entry: NewEntry) -> Self {
@@ -166,28 +168,46 @@ impl PendingEntry {
         Self {
             write_key: hex::encode(key),
             entry,
+            attempts: Vec::new(),
         }
     }
-    pub(crate) async fn write_in(&self, tx: &mut sqlx::SqliteConnection) -> Result<i64> {
+    pub(crate) fn with_attempts(mut self, attempts: &[crate::observability::Attempt]) -> Self {
+        self.attempts = attempts
+            .iter()
+            .map(|a| crate::ledger_live::AttemptFilter {
+                error_class: a.error_class.clone(),
+                provider_key: a.provider_key,
+            })
+            .collect();
+        self
+    }
+    pub(crate) async fn write_in(
+        &self,
+        tx: &mut sqlx::SqliteConnection,
+    ) -> Result<(i64, Option<crate::ledger_live::LedgerEvent>)> {
         if let Some(id) = sqlx::query_scalar("SELECT id FROM ledger WHERE write_key=?")
             .bind(&self.write_key)
             .fetch_optional(&mut *tx)
             .await?
         {
-            return Ok(id);
+            return Ok((id, None));
         }
         let id = db::insert_entry_in(tx, &self.entry).await?;
         sqlx::query("UPDATE ledger SET write_key=? WHERE id=?")
             .bind(&self.write_key)
             .bind(id)
-            .execute(tx)
+            .execute(&mut *tx)
             .await?;
-        Ok(id)
+        let event = crate::ledger_live::prepare(tx, id, self.attempts.clone()).await?;
+        Ok((id, Some(event)))
     }
     async fn write(&self, db: &Db) -> Result<i64> {
         let mut tx = db::begin_write(db, "ledger").await?;
-        let id = self.write_in(&mut tx).await?;
+        let (id, event) = self.write_in(&mut tx).await?;
         tx.commit().await?;
+        if let Some(event) = event {
+            db.ledger_live.publish(event);
+        }
         Ok(id)
     }
     pub(crate) async fn spool(&self, db: &Db) -> Result<()> {
@@ -215,8 +235,11 @@ impl PendingEntry {
                 Ok(mut tx) => {
                     let _guard = st.budget_check.lock().await;
                     let result = async {
-                        let id = self.write_in(&mut tx).await?;
+                        let (id, event) = self.write_in(&mut tx).await?;
                         tx.commit().await?;
+                        if let Some(event) = event {
+                            st.ledger_live.publish(event);
+                        }
                         Ok::<_, anyhow::Error>(id)
                     }
                     .await;
@@ -372,8 +395,11 @@ async fn replay_segment(db: &Db, startup: bool) -> Result<u64> {
             // readers can proceed while another writer blocks replay.
             let mut tx = db::begin_write(db, "ledger_spool").await?;
             let mut pending = db.spool.pending.write().await;
-            entry.write_in(&mut tx).await?;
+            let (_, event) = entry.write_in(&mut tx).await?;
             tx.commit().await?;
+            if let Some(event) = event {
+                db.ledger_live.publish(event);
+            }
             pending.remove(&entry.write_key);
             count += 1;
             metrics::counter!("tokomotive_ledger_spool_replayed_total").increment(1);

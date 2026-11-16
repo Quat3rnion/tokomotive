@@ -101,6 +101,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 ### Operations
 
 - Shows ordered attempt timelines and request-log filters in the Ledger.
+- Streams new Ledger Entries with the current filters. Live is off by default.
+  Pause and Resume keep the page bounded to 200 entries.
 - Exports request and attempt spans with GenAI attributes through OTLP/HTTP
   JSON. Export is off by default and uses a bounded background queue.
 - Captures bodies only when a Route or Virtual Key enables capture. Captures

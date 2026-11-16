@@ -1388,6 +1388,8 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub key_label: String,
+    pub route: String,
     pub route_rule: String,
     pub route_rule_name: String,
     pub canary_side: String,
@@ -1448,6 +1450,7 @@ pub struct LedgerFilterView {
 #[derive(Template)]
 #[template(path = "ledger.html")]
 pub struct LedgerPage {
+    pub live_cursor: String,
     pub detail_id: Option<i64>,
     pub attempts: Vec<crate::observability::Attempt>,
     pub bodies: Option<crate::observability::Bodies>,
@@ -1491,6 +1494,8 @@ impl LedgerView {
             })
             .unwrap_or_default();
         LedgerView {
+            key_label: r.key_label.clone(),
+            route: r.requested_model.clone().unwrap_or_default(),
             route_rule: r.route_rule.clone().unwrap_or_default(),
             route_rule_name: r.route_rule_name.clone().unwrap_or_default(),
             canary_side: r.canary_side.clone().unwrap_or_default(),

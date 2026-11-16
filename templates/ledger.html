@@ -15,6 +15,12 @@
   </nav>
 </div>
 <p class="muted">Each Ledger Entry is one request. Newest first, {{ page_size }} per page. Times are UTC.</p>
+<div class="row" aria-label="Live Ledger controls">
+  <button type="button" id="ledger-live" class="ghost" aria-pressed="false">Live</button>
+  <button type="button" id="ledger-pause" class="ghost" disabled>Pause</button>
+  <span id="ledger-live-status" class="muted">Live off</span>
+  <span id="ledger-live-announcement" class="vh" aria-live="polite" aria-atomic="true"></span>
+</div>
 {% if let Some(id) = detail_id %}
 <section class="panel" id="trace" aria-labelledby="trace-h">
 <h2 id="trace-h">Entry #{{ id }}: attempt timeline</h2>
@@ -57,45 +63,9 @@
 <div class="panel scroll" aria-label="Ledger Entries">
 <table class="ledger cards-sm">
   <thead><tr><th scope="col">Time (UTC)</th><th scope="col">User</th><th scope="col">Model <span class="vh">and Provider</span></th><th scope="col" class="n">Status</th><th scope="col">Flags</th><th scope="col" class="n">Tokens in / out</th>{% if !base.simple %}<th scope="col" class="n">Price</th><th scope="col" class="n">Cost</th>{% endif %}<th scope="col" class="n">Latency</th><th scope="col"><span class="vh">Details</span></th></tr></thead>
-  <tbody>
+  <tbody id="ledger-rows" data-live-cursor="{{ live_cursor }}">
   {% for r in rows %}
-  <tr id="e{{ r.id }}">
-    <th scope="row"><time datetime="{{ r.time.iso }}">{{ r.time.short }}</time></th>
-    <td data-label="User"><span class="trunc" title="{{ r.user }}">{{ r.user }}</span></td>
-    <td data-label="Model">{{ r.model }}<span class="sub">{{ r.provider }}</span>{% if !r.route_rule.is_empty() %}<span class="tag info" title="{{ r.route_rule }} / {{ r.canary_side }}">rule: {{ r.route_rule_name }} / {{ r.canary_side }}</span>{% endif %}</td>
-    <td data-label="Status" class="n{% if r.status >= 400 %} bad{% endif %}">{{ r.status }}</td>
-    <td data-label="Flags" class="flags">{% if !r.guardrail_rules.is_empty() %}<span class="tag warn" title="{{ r.guardrail_rules }}">guardrail: {{ r.guardrail_rules }}</span>{% endif %}{% if r.cache_hit %}<span class="tag info" title="Stored usage. No upstream tokens.">cache hit</span>{% endif %}{% if r.captured %}<span class="tag warn">captured</span>{% endif %}{% if r.streamed %}<span class="tag info">stream</span>{% endif %}{% if !base.simple %}{% if r.unpriced %}<span class="tag warn">unpriced</span>{% endif %}{% if r.estimated %}<span class="tag warn">estimated</span>{% endif %}{% endif %}{% if r.aborted %}<span class="tag bad">client aborted</span>{% endif %}</td>
-    <td data-label="Tokens in / out" class="n" title="{{ r.tokens_title }}">{{ r.tokens }}</td>
-    {% if !base.simple %}<td data-label="Price" class="n"><span title="{{ r.price.exact }}">{{ r.price }}</span></td><td data-label="Cost" class="n"><span title="{{ r.cost.exact }}">{{ r.cost }}</span></td>{% endif %}
-    <td data-label="Latency" class="n">{{ r.latency }}</td>
-    <td><div class="actions"><button type="button" class="ghost" data-toggle="d{{ r.id }}" aria-expanded="false" aria-controls="d{{ r.id }}" aria-label="Details of entry {{ r.id }}">Details</button></div></td>
-  </tr>
-  <tr id="d{{ r.id }}" class="edit-row" data-collapse>
-    <td colspan="{{ self.columns() }}"><div class="edit-panel">
-      <dl class="kv">
-        <div><dt>Entry</dt><dd>#{{ r.id }} <a href="/admin/ledger?entry={{ r.id }}#trace">Attempt timeline{% if r.captured %} (captured){% endif %}</a></dd></div>
-        <div><dt>Endpoint</dt><dd>{{ r.endpoint }}</dd></div>
-        {% if !r.route_rule.is_empty() %}<div><dt>Route rule</dt><dd>rule: {{ r.route_rule_name }} / {{ r.canary_side }} ({{ r.route_rule }})</dd></div>{% endif %}
-        {% if !base.simple %}
-        <div><dt>Cost</dt><dd><span title="{{ r.cost.exact }}">{{ r.cost }}</span></dd></div>
-        <div><dt>Provider-reported cost</dt><dd>{% if let Some(cost) = r.reported_cost %}<span title="{{ cost.exact }}">{{ cost }}</span>{% else %}Not reported{% endif %}</dd></div>
-        {% endif %}
-        <div><dt>Input</dt><dd>{{ r.input }}</dd></div>
-        <div><dt>Output</dt><dd>{{ r.output }}</dd></div>
-        <div><dt>Cache read</dt><dd>{{ r.cache_read }}</dd></div>
-        <div><dt>Cache write 5m</dt><dd>{{ r.cache_write_5m }}</dd></div>
-        <div><dt>Cache write 1h</dt><dd>{{ r.cache_write_1h }}</dd></div>
-        <div><dt>Image input</dt><dd>{{ r.image_input }}</dd></div>
-        <div><dt>Image output</dt><dd>{{ r.image_output }}</dd></div>
-        <div><dt>Service units</dt><dd>{{ r.service_units }}</dd></div>
-        <div><dt>Time to first token</dt><dd>{{ r.ttft }}</dd></div>
-        <div><dt>Provider Key</dt><dd>{{ r.key }}</dd></div>
-        <div><dt>Attempts</dt><dd>{{ r.attempts }}</dd></div>
-        {% if let Some(session) = r.session_affinity %}<div><dt>Session</dt><dd>{{ session }}</dd></div>{% endif %}
-      </dl>
-      {% if !base.simple %}<p class="hint">For comparison only. Provider-reported cost does not change pricing. Pricing uses the Cost Card.</p>{% endif %}
-    </div></td>
-  </tr>
+  {% include "ledger_row.html" %}
   {% else %}
   <tr><td colspan="{{ self.columns() }}" class="empty">{% if filters.active || filter != "all" %}No entries match these filters. <a href="/admin/ledger">Show all entries</a>{% else %}No Ledger Entries yet. The Proxy adds one for each request that a client sends with a Virtual Key. <a href="/admin/keys">Go to Virtual Keys</a>{% endif %}</td></tr>
   {% endfor %}
@@ -103,4 +73,86 @@
 </table>
 </div>
 {% include "pager.html" %}
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const toggle = document.getElementById('ledger-live');
+  const pause = document.getElementById('ledger-pause');
+  const status = document.getElementById('ledger-live-status');
+  const announcement = document.getElementById('ledger-live-announcement');
+  const rows = document.getElementById('ledger-rows');
+  if (!toggle || !rows) { return; }
+  let enabled = false, paused = false, source = null, cursor = rows.dataset.liveCursor, count = 0, announced = 0;
+  try { enabled = localStorage.getItem('tokomotive-ledger-live') === 'true'; } catch (_) {}
+  const update = text => {
+    toggle.setAttribute('aria-pressed', String(enabled));
+    pause.disabled = !enabled;
+    pause.textContent = paused ? 'Resume' : 'Pause';
+    status.textContent = text || (!enabled ? 'Live off' : paused ? `Paused, ${count} new` : `Live, ${count} new`);
+  };
+  const close = () => { if (source) { source.close(); source = null; } };
+  const firstPage = () => {
+    close();
+    const url = new URL(location.href);
+    ['before', 'after', 'entry', 'cursor'].forEach(k => url.searchParams.delete(k));
+    url.hash = '';
+    location.replace(url);
+  };
+  const connect = () => {
+    close();
+    if (!enabled || paused) { update(); return; }
+    if (!window.EventSource) { update('Live is not available in this browser.'); return; }
+    const url = new URL('/admin/ledger/live', location.href);
+    url.search = location.search;
+    ['before', 'after', 'entry', 'limit', 'cursor'].forEach(k => url.searchParams.delete(k));
+    if (cursor) { url.searchParams.set('cursor', cursor); }
+    const active = new EventSource(url);
+    source = active;
+    update('Reconnecting');
+    active.onopen = () => { if (source === active) { update(); } };
+    active.onerror = () => { if (source === active) { update('Reconnecting'); } };
+    active.addEventListener('ledger', e => {
+      if (source !== active || !enabled || paused) { return; }
+      cursor = e.lastEventId;
+      // The authenticated server renders the same escaped row fragment as this page.
+      const fragment = document.createElement('tbody');
+      fragment.innerHTML = e.data;
+      const entry = fragment.querySelector('tr[id^="e"]');
+      if (!entry || document.getElementById(entry.id)) { return; }
+      fragment.querySelectorAll('[data-collapse]').forEach(el => { el.hidden = true; });
+      rows.querySelectorAll('.empty').forEach(el => el.closest('tr').remove());
+      entry.classList.add('live-new');
+      setTimeout(() => entry.classList.remove('live-new'), 2000);
+      rows.prepend(...fragment.children);
+      const entries = rows.querySelectorAll('tr[id^="e"]');
+      Array.from(entries).slice(200).forEach(el => {
+        const details = document.getElementById('d' + el.id.slice(1));
+        if (details) { details.remove(); }
+        el.remove();
+      });
+      count += 1;
+      update();
+    });
+    active.addEventListener('gap', firstPage);
+    active.addEventListener('lagged', firstPage);
+  };
+  toggle.addEventListener('click', () => {
+    enabled = !enabled;
+    paused = false;
+    try { localStorage.setItem('tokomotive-ledger-live', String(enabled)); } catch (_) {}
+    connect();
+  });
+  pause.addEventListener('click', () => { paused = !paused; connect(); });
+  // The visible count can change on each entry; assistive speech is rate-limited.
+  const announcements = setInterval(() => {
+    if (enabled && count !== announced) {
+      announcement.textContent = `${count} new Ledger Entries.`;
+      announced = count;
+    }
+  }, 10000);
+  window.addEventListener('pagehide', () => { close(); clearInterval(announcements); }, { once: true });
+  connect();
+})();
+</script>
 {% endblock %}

@@ -1085,6 +1085,8 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub user_id: i64,
+    pub key_label: String,
     pub route_rule: Option<String>,
     pub route_rule_name: Option<String>,
     pub canary_side: Option<String>,
@@ -1192,15 +1194,17 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
     ledger_window(db, &bounded).await
 }
 
-/// One extra row is private lookahead, never rendered or returned in an API list.
-pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
-    let mut b = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-        "SELECT COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
+/// Shared Ledger metadata. Captured bodies and credentials are never selected.
+pub(crate) const LEDGER_SELECT: &str = "SELECT l.user_id, (SELECT label FROM virtual_keys k WHERE k.id=l.key_id) AS key_label, COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
             l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit, l.route_rule,l.route_rule_name,l.canary_side
-         FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
-    );
+         FROM ledger l JOIN users u ON u.id = l.user_id WHERE l.id > 0";
+
+/// One extra row is private lookahead, never rendered or returned in an API list.
+pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
+    let mut b = sqlx::QueryBuilder::<sqlx::Sqlite>::new(LEDGER_SELECT);
+    b.push(" AND ");
     b.push(match q.filter {
         LedgerFilter::All => "l.id > 0",
         LedgerFilter::Unpriced => "l.unpriced = 1",

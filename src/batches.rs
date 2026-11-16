@@ -1146,6 +1146,7 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
     {
         return Ok(());
     }
+    let mut events = Vec::with_capacity(entries.len());
     for (line, entry) in snapshot.lines.iter().zip(&entries) {
         let id = db::insert_entry_in(&mut tx, entry).await?;
         sqlx::query("INSERT INTO batch_entries(batch_id,custom_id,ledger_id) VALUES(?,?,?)")
@@ -1154,8 +1155,12 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        events.push(crate::ledger_live::prepare(&mut tx, id, Vec::new()).await?);
     }
     tx.commit().await?;
+    for event in events {
+        st.ledger_live.publish(event);
+    }
     for entry in &entries {
         crate::metrics::record(&job.user_name, entry);
     }

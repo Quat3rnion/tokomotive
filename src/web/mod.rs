@@ -49,6 +49,7 @@ macro_rules! tryform {
 pub(crate) mod accounts;
 mod audit;
 mod guardrails;
+mod live;
 mod mcp;
 mod models_dev;
 mod oauth;
@@ -87,6 +88,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/models/{id}/team-price", post(set_team_price))
         .route("/admin/settings/markup", post(set_settings))
         .route("/admin/ledger", get(ledger))
+        .route("/admin/ledger/live", get(live::watch))
         .route("/admin/usage", get(usage))
         .route("/admin/search/models", get(search_models))
         .route("/admin/search/{kind}", get(pickers::search))
@@ -483,7 +485,8 @@ async fn same_origin(req: Request, next: Next) -> Response {
     if !matches!(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    ) {
+    ) || req.uri().path() == "/admin/ledger/live"
+    {
         let h = req.headers();
         let cross_site = h
             .get("sec-fetch-site")
@@ -2442,6 +2445,7 @@ async fn set_settings(
 
 #[derive(Deserialize, Default)]
 struct LedgerQ {
+    cursor: Option<String>,
     rule: Option<String>,
     status: Option<String>,
     error_class: Option<String>,
@@ -2511,20 +2515,18 @@ fn day_ms(s: &str) -> Option<i64> {
     Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis())
 }
 
-async fn ledger(
-    _: Admin,
-    State(st): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    Query(q): Query<LedgerQ>,
-) -> Response {
-    let base = Base::new(&st);
+async fn ledger_query(
+    st: &AppState,
+    q: &LedgerQ,
+    simple: bool,
+) -> Result<(db::LedgerQuery, &'static str, Option<String>), Response> {
     let (filter, name) = match some_text(&q.filter) {
         None | Some("all") => (LedgerFilter::All, "all"),
         Some("errors") => (LedgerFilter::Errors, "errors"),
-        Some("unpriced") if !base.simple => (LedgerFilter::Unpriced, "unpriced"),
-        Some("estimated") if !base.simple => (LedgerFilter::Estimated, "estimated"),
+        Some("unpriced") if !simple => (LedgerFilter::Unpriced, "unpriced"),
+        Some("estimated") if !simple => (LedgerFilter::Estimated, "estimated"),
         // Simple Mode has no money filters; an unknown filter shows all.
-        Some(_) => return Redirect::to(&q.link("all", None)).into_response(),
+        Some(_) => return Err(Redirect::to(&q.link("all", None)).into_response()),
     };
     let mut error = None;
     let mut date = |v: &Option<String>, next_day: bool| {
@@ -2540,7 +2542,7 @@ async fn ledger(
     };
     let (from_ms, to_ms) = (date(&q.from, false), date(&q.to, true));
     let user_id = match chosen_id(
-        &st,
+        st,
         "users",
         some_text(&q.user).unwrap_or_default(),
         true,
@@ -2574,6 +2576,24 @@ async fn ledger(
         after_id: q.after,
         limit: limit + 1,
     };
+    Ok((query, name, error))
+}
+
+async fn ledger(
+    _: Admin,
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<LedgerQ>,
+) -> Response {
+    let base = Base::new(&st);
+    let (query, name, error) = match ledger_query(&st, &q, base.simple).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let filter = query.filter;
+    let user_id = query.user_id;
+    let limit = query.limit - 1;
+    let live_cursor = st.ledger_live.cursor();
     let mut rows = tryr!(db::ledger_window(&st.db, &query).await);
     let more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
@@ -2639,6 +2659,7 @@ async fn ledger(
             || some_text(&q.to).is_some(),
     };
     render(LedgerPage {
+        live_cursor,
         detail_id: q.entry,
         attempts: if let Some(id) = q.entry {
             tryr!(crate::observability::attempts(&st.db, id).await)

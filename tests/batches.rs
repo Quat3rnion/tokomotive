@@ -97,6 +97,61 @@ cost={{input=1.0,output=2.0,batch_multiplier_bp=5000}}
 const INPUT: &str = "{\"custom_id\":\"one\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"gpt-test\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":10}}\n";
 
 #[tokio::test]
+async fn batch_completion_streams_committed_event_once() {
+    use futures_util::StreamExt;
+    let h = Harness::new(batch_upstream()).await;
+    sqlx::query("INSERT INTO admin_accounts(username,password_hash,role) VALUES('reader','unused','viewer')").execute(&h.state.db).await.unwrap();
+    let account = tokomotive::admin::by_username(&h.state.db, "reader")
+        .await
+        .unwrap()
+        .unwrap();
+    tokomotive::admin::create_session(&h.state.db, "batch-live", 1, &account)
+        .await
+        .unwrap();
+    let r = h
+        .client
+        .get(format!(
+            "{}/admin/ledger/live?provider=upstream&model=gpt-test",
+            h.url
+        ))
+        .header("cookie", "tokomotive_session=batch-live")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let mut events = r.bytes_stream();
+    assert_eq!(h.upload(INPUT).send().await.unwrap().status(), 200);
+    assert_eq!(h.request(reqwest::Method::POST, "/v1/batches", "sk-alice").json(&json!({"input_file_id":"file-input","endpoint":"/v1/chat/completions","completion_window":"24h"})).send().await.unwrap().status(), 200);
+    for _ in 0..2 {
+        assert_eq!(
+            h.request(reqwest::Method::GET, "/v1/batches/batch-one", "sk-alice")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = std::str::from_utf8(&frame).unwrap();
+    assert!(
+        text.contains("event: ledger") && text.contains("100 / 50") && text.contains("batch"),
+        "{text}"
+    );
+    assert!(!text.contains("private-key"));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), events.next())
+            .await
+            .is_err(),
+        "repeated batch polls must not publish another insert"
+    );
+}
+
+#[tokio::test]
 async fn files_are_pinned_to_one_provider_key_and_private_to_the_virtual_key() {
     async fn upload(headers: HeaderMap, body: axum::body::Bytes) -> Json<Value> {
         assert_eq!(headers["authorization"], "Bearer private-key");

@@ -18,6 +18,7 @@ pub struct Db {
     writer: Arc<tokio::sync::Semaphore>,
     timeout_ms: Arc<AtomicU64>,
     pub(crate) spool: Arc<crate::ledger_spool::Spool>,
+    pub(crate) ledger_live: Arc<crate::ledger_live::LedgerLive>,
     #[cfg(debug_assertions)]
     owner: Arc<std::sync::Mutex<Option<tokio::task::Id>>>,
 }
@@ -36,6 +37,7 @@ impl Db {
             writer: Arc::new(tokio::sync::Semaphore::new(1)),
             timeout_ms: Arc::new(AtomicU64::new(120_000)),
             spool: Arc::new(spool),
+            ledger_live: Arc::new(crate::ledger_live::LedgerLive::default()),
             #[cfg(debug_assertions)]
             owner: Arc::new(std::sync::Mutex::new(None)),
         }

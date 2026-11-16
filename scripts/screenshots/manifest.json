@@ -31,6 +31,7 @@
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
+    {"route":"/admin/ledger/live", "reason":"Server-Sent Events, not a page. Keep the Ledger image with Live off."},
     {"route":"/admin/routes/{name}/scores", "reason":"Read-only adaptive score fragment, shown within the Routes page."},
     {"route":"/admin/mcp/search", "reason":"Search result fragment for the MCP tool access picker."},
     {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page."},
