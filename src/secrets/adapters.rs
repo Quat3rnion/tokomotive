@@ -495,6 +495,15 @@ async fn gcp_resolve(
 }
 
 fn bws_api(store: &Store, path: &str) -> Result<reqwest::Url> {
+    if let Some(address) = store.option("api_url") {
+        return endpoint(
+            &Store {
+                address,
+                ..store.clone()
+            },
+            path,
+        );
+    }
     let cloud = matches!(
         reqwest::Url::parse(&store.address)
             .ok()

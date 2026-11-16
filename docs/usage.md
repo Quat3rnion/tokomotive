@@ -4,7 +4,11 @@
 
 1. As Owner, open **Settings > Secret stores**. Add the store address and
    its auth settings. See the [configuration reference](configuration.md#secret-stores)
-   for the JSON fields and the `bw serve` compose example.
+   for the typed fields and the `bw serve` compose example. **Type** and the
+   auth method show only the fields that apply. Secret fields accept
+   `env:NAME`; blank keeps a saved value. For a Google service account,
+   choose its JSON key file or enter an environment reference. JSON editing
+   is available only in the collapsed **Advanced JSON overrides** section.
 2. In a Provider Key form, open **Choose a secret from a store**. Select a
    store. Search its secrets, then select a secret and a field. Use
    **Next page** for more choices. For Vault folders, select the folder to

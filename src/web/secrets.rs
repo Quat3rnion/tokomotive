@@ -1,6 +1,8 @@
 //! Owner-only secret-store administration. No resolved values enter templates.
 use super::*;
 use crate::secrets::{self, Store};
+mod form;
+use form::{StoreForm, StoreView};
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -15,26 +17,20 @@ pub(super) fn router() -> Router<AppState> {
 #[template(path = "secret_stores.html")]
 struct Page {
     base: Base,
-    stores: Vec<Store>,
+    stores: Vec<StoreView>,
+    new_store: StoreView,
 }
 async fn page(_: Admin, State(st): State<AppState>) -> Response {
     render(Page {
         base: Base::new(&st),
-        stores: tryr!(secrets::stores(&st.db).await),
+        stores: tryr!(
+            tryr!(secrets::stores(&st.db).await)
+                .into_iter()
+                .map(|s| StoreView::from_store(s, &st.secret_key))
+                .collect::<anyhow::Result<Vec<_>>>()
+        ),
+        new_store: StoreView::new(),
     })
-}
-#[derive(Deserialize)]
-struct StoreForm {
-    name: String,
-    kind: String,
-    address: String,
-    #[serde(default)]
-    credentials: String,
-    #[serde(default)]
-    options: String,
-    allow_private: Option<String>,
-    is_default: Option<String>,
-    refresh_secs: Option<i64>,
 }
 async fn save(_: Admin, State(st): State<AppState>, Form(f): Form<StoreForm>) -> Response {
     if f.name.is_empty()
@@ -58,46 +54,23 @@ async fn save(_: Admin, State(st): State<AppState>, Form(f): Form<StoreForm>) ->
     if old.is_none() && previous.len() >= 64 {
         return form_error("At most 64 secret stores are allowed.");
     }
-    let credentials = if f.credentials.trim().is_empty() {
-        old.map(|s| s.credentials.clone())
-            .unwrap_or(tryr!(st.secret_key.encrypt("{}")))
-    } else {
-        let value: serde_json::Value = match serde_json::from_str(&f.credentials) {
-            Ok(v) => v,
-            Err(_) => return form_error("Credentials must be a JSON object."),
-        };
-        if !value.is_object() {
-            return form_error("Credentials must be a JSON object.");
-        }
-        tryr!(st.secret_key.encrypt(&f.credentials))
-    };
-    let options = if f.options.trim().is_empty() {
-        "{}".into()
-    } else {
-        f.options
-    };
-    let value: serde_json::Value = match serde_json::from_str(&options) {
-        Ok(v) => v,
-        Err(_) => return form_error("Options must be a JSON object."),
-    };
-    if !value.is_object() {
-        return form_error("Options must be a JSON object.");
-    }
-    let store = Store {
-        name: f.name,
-        kind: f.kind,
-        address: f.address.trim_end_matches('/').into(),
-        credentials,
-        options,
-        allow_private: f.allow_private.is_some(),
-        is_default: f.is_default.is_some(),
-        refresh_secs: f.refresh_secs.unwrap_or(900),
-    };
+    let store = tryform!(f.prepare(old, &st.secret_key));
     if !(1..=86400).contains(&store.refresh_secs) {
         return form_error("Refresh must be 1 to 86400 seconds.");
     }
     if let Err(e) = secrets::adapters::validate_address(&store, &st.egress).await {
         return form_error(e);
+    }
+    for option in ["identity_url", "token_url", "api_url"] {
+        if let Some(address) = store.option(option) {
+            let target = Store {
+                address,
+                ..store.clone()
+            };
+            if let Err(e) = secrets::adapters::validate_address(&target, &st.egress).await {
+                return form_error(e);
+            }
+        }
     }
     let mut tx = tryr!(crate::db::begin_write(&st.db, "secret_store").await);
     if store.is_default {

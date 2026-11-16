@@ -23,8 +23,8 @@ assert "tokomotive_session" in s.cookies.get_dict(), "no session"
 
 # Secret stores screen: no real credential or remote service is needed.
 post("/admin/settings/secrets", {"name": "team-vault", "kind": "vault", "address": MOCK,
-    "credentials": json.dumps({"token": "env:DEMO_VAULT_TOKEN"}),
-    "options": json.dumps({"kv_version": "2", "browse_root": "kv"}),
+    "typed": "true", "vault_auth": "token", "vault_token": "env:DEMO_VAULT_TOKEN",
+    "vault_namespace": "research", "vault_kv_version": "2", "vault_browse_root": "kv",
     "allow_private": "on", "is_default": "on", "refresh_secs": "900"})
 
 post("/admin/providers", {"name": "openai", "auth": "api_key", "kind": "openai", "base_url": MOCK, "api_key": "sk-demo-openai-primary-7f3a"})

@@ -1,5 +1,6 @@
 {
   "pending_refresh": [
+    {"page":"/admin/settings/secrets", "reason":"Secret stores now use typed per-store fields. Refresh secrets.png at the next parent-requested capture; keep its promoted capture entry and current image."},
     {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
     {"page":"/admin/routes", "reason":"Semantic cache controls and the embedding model picker were added, with Adaptive scores, request rules, Canary splits and exact cache controls. Refresh dark and light captures at the next requested capture."},
     {"page":"/admin/settings", "reason":"Adaptive router fields were added, with exact response cache limits, hit Price and global egress proxy controls. Keep the current image until the next requested capture."},
@@ -32,6 +33,7 @@
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
+    {"route":"/admin/assets/secret-store-form.js", "reason":"JavaScript asset for typed secret-store fields, not an HTML page."},
     {"route":"/admin/secrets/stores", "reason":"Owner-only JSON source for the secret-store picker."},
     {"route":"/admin/secrets/browse", "reason":"Owner-only paginated JSON source for the secret picker."},
     {"route":"/admin/secrets/fields", "reason":"Owner-only JSON source for the secret field picker."},

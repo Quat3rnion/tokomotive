@@ -61,6 +61,11 @@ impl App {
     }
     async fn store(&self, kind: &str, address: &str, credentials: &Value) {
         let credentials = credentials.to_string();
+        let options = if kind == "aws-sm" {
+            r#"{"region":"eu-west-1"}"#
+        } else {
+            "{}"
+        };
         let r = self
             .post(
                 "/admin/settings/secrets",
@@ -70,6 +75,7 @@ impl App {
                     ("address", address),
                     ("allow_private", "on"),
                     ("credentials", &credentials),
+                    ("options", options),
                 ],
             )
             .await;
@@ -321,6 +327,199 @@ async fn model_search_never_sends_a_new_secret_to_an_old_provider_generation() {
     a.html(path).await;
     assert_eq!(*new_seen.lock().unwrap(), ["new-generation-key"]);
     assert_eq!(*old_seen.lock().unwrap(), ["Bearer old-generation-key"]);
+}
+
+#[tokio::test]
+async fn secret_store_settings_are_typed_and_json_is_advanced_only() {
+    let a = App::new().await;
+    let html = a.html("/admin/settings/secrets").await;
+    for name in [
+        "vault_token",
+        "vault_role_id",
+        "vault_secret_id",
+        "aws_access_key",
+        "aws_secret_key",
+        "aws_session_token",
+        "gcp_service_account",
+        "bws_access_token",
+    ] {
+        assert!(
+            html.contains(&format!("name=\"{name}\" type=\"password\"")),
+            "missing password field: {name}"
+        );
+    }
+    for name in [
+        "vault_auth",
+        "vault_namespace",
+        "vault_kv_version",
+        "aws_region",
+        "gcp_auth",
+        "bws_region",
+        "bws_api_url",
+        "bws_identity_url",
+    ] {
+        assert!(
+            html.contains(&format!("name=\"{name}\"")),
+            "missing typed field: {name}"
+        );
+    }
+    assert!(html.contains("type=\"file\"") && html.contains("data-service-account-file"));
+    let advanced = html.find("<summary>Advanced JSON").unwrap();
+    assert!(html.find("name=\"credentials\"").unwrap() > advanced);
+    assert!(html.find("name=\"options\"").unwrap() > advanced);
+}
+
+#[tokio::test]
+async fn typed_secret_store_forms_validate_and_keep_saved_credentials() {
+    let a = App::new().await;
+    let address = "http://127.0.0.1:9";
+    let r = a
+        .post(
+            "/admin/settings/secrets",
+            &[
+                ("typed", "true"),
+                ("name", "typed-vault"),
+                ("kind", "vault"),
+                ("address", address),
+                ("allow_private", "on"),
+                ("vault_auth", "token"),
+                ("vault_token", "env:VAULT_TOKEN"),
+                ("vault_namespace", "team"),
+                ("vault_kv_version", "1"),
+            ],
+        )
+        .await;
+    assert_eq!(r.status(), 303);
+    let (cipher, options): (String, String) =
+        sqlx::query_as("SELECT credentials,options FROM secret_stores WHERE name='typed-vault'")
+            .fetch_one(&a.st.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&a.st.secret_key.decrypt(&cipher).unwrap()).unwrap(),
+        json!({"token":"env:VAULT_TOKEN"})
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&options).unwrap()["namespace"],
+        "team"
+    );
+    assert_eq!(
+        a.post(
+            "/admin/settings/secrets",
+            &[
+                ("typed", "true"),
+                ("name", "typed-vault"),
+                ("kind", "vault"),
+                ("address", address),
+                ("allow_private", "on"),
+                ("vault_auth", "token"),
+                ("vault_token", ""),
+                ("vault_namespace", "other"),
+                ("vault_kv_version", "2")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+    let kept: String =
+        sqlx::query_scalar("SELECT credentials FROM secret_stores WHERE name='typed-vault'")
+            .fetch_one(&a.st.db)
+            .await
+            .unwrap();
+    assert_eq!(cipher, kept);
+    let html = a.html("/admin/settings/secrets").await;
+    assert!(!html.contains("value=\"env:VAULT_TOKEN\""));
+    assert!(html.contains("value=\"other\""));
+    for (kind, extra, message) in [
+        (
+            "vault",
+            vec![("vault_auth", "approle"), ("vault_role_id", "env:ROLE")],
+            "secret ID",
+        ),
+        (
+            "aws-sm",
+            vec![("aws_access_key", "fixture"), ("aws_region", "eu-west-1")],
+            "secret access key",
+        ),
+        (
+            "gcp-sm",
+            vec![
+                ("gcp_auth", "service_account"),
+                ("gcp_service_account", "not-json"),
+            ],
+            "service-account",
+        ),
+        (
+            "bws",
+            vec![
+                ("bws_region", "self-hosted"),
+                ("bws_access_token", "env:BWS_ACCESS_TOKEN"),
+                ("bws_api_url", address),
+            ],
+            "identity URL",
+        ),
+    ] {
+        let mut fields = vec![
+            ("typed", "true"),
+            ("name", "invalid"),
+            ("kind", kind),
+            ("address", address),
+            ("allow_private", "on"),
+        ];
+        fields.extend(extra);
+        let r = a.post("/admin/settings/secrets", &fields).await;
+        assert_eq!(r.status(), 400, "{kind}");
+        assert!(r.text().await.unwrap().contains(message), "{kind}");
+    }
+    for (name, kind, extra) in [
+        (
+            "typed-role",
+            "vault",
+            vec![
+                ("vault_auth", "approle"),
+                ("vault_role_id", "env:ROLE_ID"),
+                ("vault_secret_id", "env:SECRET_ID"),
+            ],
+        ),
+        (
+            "typed-aws",
+            "aws-sm",
+            vec![
+                ("aws_access_key", "env:AWS_ACCESS_KEY_ID"),
+                ("aws_secret_key", "env:AWS_SECRET_ACCESS_KEY"),
+                ("aws_session_token", "env:AWS_SESSION_TOKEN"),
+                ("aws_region", "eu-west-1"),
+            ],
+        ),
+        (
+            "typed-gcp",
+            "gcp-sm",
+            vec![("gcp_auth", "metadata"), ("gcp_project", "demo-project")],
+        ),
+        (
+            "typed-bws",
+            "bws",
+            vec![
+                ("bws_access_token", "env:BWS_ACCESS_TOKEN"),
+                ("bws_region", "self-hosted"),
+                ("bws_api_url", address),
+                ("bws_identity_url", address),
+            ],
+        ),
+        ("typed-bw", "bw", vec![]),
+    ] {
+        let mut fields = vec![
+            ("typed", "true"),
+            ("name", name),
+            ("kind", kind),
+            ("address", address),
+            ("allow_private", "on"),
+        ];
+        fields.extend(extra);
+        let r = a.post("/admin/settings/secrets", &fields).await;
+        assert_eq!(r.status(), 303, "{kind}: {}", r.text().await.unwrap());
+    }
 }
 
 #[tokio::test]

@@ -66,6 +66,15 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/logout", post(logout))
         .route("/admin/assets/htmx.min.js", get(htmx))
         .route(
+            "/admin/assets/secret-store-form.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../assets/secret-store-form.js"),
+                )
+            }),
+        )
+        .route(
             "/admin/assets/secret-picker.js",
             get(|| async {
                 (

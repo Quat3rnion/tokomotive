@@ -3,17 +3,34 @@
 ## Secret stores
 
 An Owner can open **Settings > Secret stores**. Add a name, a type, an
-address and the auth settings. The Master Key encrypts the auth settings.
-An auth value can be `env:NAME`. This reads a bootstrap credential from the
+address and the fields for that type. The Master Key encrypts the auth settings.
+Secret fields are passwords and are never filled in. Blank keeps the saved
+value. A secret field can contain `env:NAME`. This reads a bootstrap credential from the
 Proxy process environment. Do not put a resolved Provider Key in a seed file.
 
-| Type | Reference | Auth settings (JSON) | Store options (JSON) |
+| Type | Reference | Auth fields | Other fields |
 | --- | --- | --- | --- |
-| Vault / OpenBao | `vault:kv/llm#openai` | `{"token":"env:VAULT_TOKEN"}` or `{"role_id":"env:VAULT_ROLE_ID","secret_id":"env:VAULT_SECRET_ID"}` | `{"kv_version":"2","namespace":"team","browse_root":"kv"}`. Omit `namespace` when not needed. Use `"1"` for KV v1. |
-| AWS Secrets Manager | `aws-sm:llm/openai#key` or `aws-sm:arn:aws:secretsmanager:eu-west-1:123456789012:secret:llm#key` | `{"access_key":"env:AWS_ACCESS_KEY_ID","secret_key":"env:AWS_SECRET_ACCESS_KEY","session_token":"env:AWS_SESSION_TOKEN"}`. Omit `session_token` for long-lived credentials. | `{"region":"eu-west-1"}`. An ARN supplies the resolution region. The picker uses the store region. |
-| Google Secret Manager | `gcp-sm:projects/my-project/secrets/openai` | `{"service_account":"env:GCP_SERVICE_ACCOUNT_JSON"}` or `{}` for GCP metadata auth | `{"project":"my-project"}`. The picker needs the project. |
-| Bitwarden Secrets Manager | `bws:00000000-0000-0000-0000-000000000001` | `{"access_token":"env:BWS_ACCESS_TOKEN"}` | `{}` for the cloud defaults. For self-hosted identity, `identity_url` can set the full token endpoint. |
-| Bitwarden / Vaultwarden | `bw:00000000-0000-0000-0000-000000000001#password` | `{}`. Unlock the `bw serve` sidecar separately. | `{}` |
+| Vault / OpenBao | `vault:kv/llm#openai` | Select **Token** and enter the token, or select **AppRole** and enter its role ID and secret ID. Each accepts an environment reference. | Namespace (optional), KV version (1 or 2), and picker root (default `kv`). |
+| AWS Secrets Manager | `aws-sm:llm/openai#key` or `aws-sm:arn:aws:secretsmanager:eu-west-1:123456789012:secret:llm#key` | Access key ID, secret access key, and optional session token. For example, use `env:AWS_ACCESS_KEY_ID`. Select **Clear saved session token** to remove one. | Region, for example `eu-west-1`. An ARN supplies the resolution region. The picker uses the store region. |
+| Google Secret Manager | `gcp-sm:projects/my-project/secrets/openai` | Select **Service-account JSON key** and choose a file, or enter `env:GCP_SERVICE_ACCOUNT_JSON`. Or select **Use metadata server**. | Project for the picker (optional). Metadata auth needs private-address permission. |
+| Bitwarden Secrets Manager | `bws:00000000-0000-0000-0000-000000000001` | Machine-account access token, or `env:BWS_ACCESS_TOKEN`. | Select US, EU or self-hosted. Self-hosted requires the API URL and the full identity token URL. |
+| Bitwarden / Vaultwarden | `bw:00000000-0000-0000-0000-000000000001#password` | No HTTP auth fields. Unlock the `bw serve` sidecar separately. | Address, for example `http://bw:8087`. |
+
+Changing **Type** shows only its fields. Vault and Google auth choices also
+show only the selected method. A method change removes the old method's
+credentials. A new nonempty secret replaces that saved field; other blank
+secret fields keep their saved values.
+
+The browser reads a selected service-account JSON file into its password
+field. The file must be at most 1 MiB. The server checks its JSON, email and
+RSA private key. It does not return the file or its contents in the page.
+
+**Advanced JSON overrides** is collapsed. Use it only for scripts or extra
+options. For example, the GCP options override can contain
+`{"token_url":"https://oauth.example.com/token"}`. Nonempty override objects
+replace matching typed settings. Empty override fields keep typed settings.
+The server validates both paths for the selected store type. Auth values
+must be strings; environment references need a valid variable name.
 
 Use the only store of a type, or mark one store as the default. To select a
 store by name, use `vault@prod:kv/llm#openai`. All five types accept `@name`.
@@ -38,8 +55,12 @@ endpoint, for example for a local test. Give the account secret accessor
 and list permissions.
 
 For BWS cloud US, use `https://api.bitwarden.com`. For cloud EU, use
-`https://api.bitwarden.eu`. For a self-hosted server, use its origin, without
-`/api`. The default identity path there is `/identity/connect/token`.
+`https://api.bitwarden.eu`. The region selector fills those addresses. For a
+self-hosted server, enter the full API root, such as
+`https://bitwarden.example.com/api`, and the identity token URL, such as
+`https://bitwarden.example.com/identity/connect/token`. Legacy scripted
+settings can still use an origin without `/api`; the native client adds
+the standard API and identity paths when explicit URLs are absent.
 The native client decrypts the login payload with the access-token key,
 then reads the organization key and decrypts type-2 EncString values.
 It does not run the `bws` command or write a token state file.
