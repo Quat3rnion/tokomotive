@@ -12,6 +12,8 @@
     <li><a href="#server-h">Server and router</a></li>
     <li><a href="#egress-h">Global egress proxy</a></li>
     {% if base.owner %}<li><a href="/admin/settings/secrets">Secret stores</a></li>{% endif %}
+    {% if base.owner %}<li><a href="/admin/settings/oidc">Single sign-on</a></li>{% endif %}
+    <li><a href="/admin/account">My account</a></li>
     {% if !base.simple %}<li><a href="#markup-h">Pricing</a></li>{% endif %}
     <li><a href="#models-dev-h">models.dev Sync</a></li>
     {% if !base.simple %}<li><a href="#alerts-h">Usage alerts</a></li>{% endif %}
@@ -219,6 +221,7 @@
 {% if base.owner %}
 <section class="panel" id="accounts" aria-labelledby="accounts-h">
 <h2 id="accounts-h">Admin accounts</h2>
+<p><a href="/admin/account">Link your account to Single sign-on</a>. An Owner can also start a link for an account below.</p>
 <p class="muted">Owner: all settings and accounts. Admin: configuration without accounts or metrics credentials. Viewer: read-only, with own password and logout.</p>
 {% for account in accounts %}
 <div class="item">
@@ -229,6 +232,7 @@
 <button aria-label="Save account {{ account.username }}">Save</button>
 </form>
 <form method="post" action="/admin/settings/accounts/{{ account.id }}/delete" class="inline" data-confirm="Delete account {{ account.username }}? Its sessions will end."><button class="danger" aria-label="Delete account {{ account.username }}">Delete account</button></form>
+<form method="post" action="/admin/oidc/link" data-plain><input type="hidden" name="account_id" value="{{ account.id }}"><button class="ghost">Link OIDC identity to {{ account.username }}</button></form>
 </div>
 {% endfor %}
 <h3>Add an admin account</h3>

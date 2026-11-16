@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Single sign-on - Tokomotive{% endblock %}
+{% block content %}
+<h1>Single sign-on</h1>
+<p><a href="/admin/settings">Settings</a> / Single sign-on</p>
+<section class="panel" aria-labelledby="oidc-h">
+<h2 id="oidc-h">OpenID Connect</h2>
+<p>The local Owner password stays available for recovery. Accounts match by issuer and subject, not by email.</p>
+<form method="post" action="/admin/settings/oidc" class="stack" id="oidc-form">
+<label class="check"><input type="checkbox" name="enabled"{% if c.enabled %} checked{% endif %}> Enable Single sign-on</label>
+<div class="fields">
+<div class="field wide"><label for="issuer">Issuer URL</label><input id="issuer" name="issuer" type="url" value="{{ c.issuer }}" placeholder="https://auth.example.com/application/o/tokomotive/"></div>
+<div class="field wide"><label for="public-base">Public base URL</label><input id="public-base" name="public_base_url" type="url" value="{{ c.public_base_url }}" placeholder="https://llm.example.com"><p class="hint">Use the fixed browser address of Tokomotive, without a path. Request headers do not set this address.</p></div>
+<div class="field wide"><label for="redirect">Redirect URI</label><input id="redirect" readonly value="{{ redirect_uri }}"><button type="button" class="ghost" data-copy="{{ redirect_uri }}">Copy redirect URI</button><p class="hint">Save the public base URL first. Paste this exact URI into the identity provider.</p></div>
+<div class="field"><label for="client-id">Client ID</label><input id="client-id" name="client_id" value="{{ c.client_id }}" autocomplete="off"></div>
+<div class="field"><label for="client-secret">New client secret</label><input id="client-secret" name="client_secret" type="password" autocomplete="new-password"><p class="hint">{% if secret_set %}A secret is set. Leave blank to keep it.{% else %}No secret is set.{% endif %} The Master Key encrypts this value.</p></div>
+<div class="field"><label for="scopes">Scopes</label><input id="scopes" name="scopes" value="{{ c.scopes }}"></div>
+<div class="field"><label for="button-label">Button label</label><input id="button-label" name="button_label" value="{{ c.button_label }}" maxlength="80"></div>
+<div class="field"><label for="groups-claim">Groups claim name</label><input id="groups-claim" name="groups_claim" value="{{ c.groups_claim }}"></div>
+<div class="field"><label for="default-role">Role when no group matches</label><select id="default-role" name="default_role"><option value="deny"{% if c.default_role == "deny" %} selected{% endif %}>Deny sign-in</option><option value="viewer"{% if c.default_role == "viewer" %} selected{% endif %}>Viewer</option><option value="admin"{% if c.default_role == "admin" %} selected{% endif %}>Admin</option></select></div>
+</div>
+<label class="check"><input name="jit" type="checkbox"{% if c.jit %} checked{% endif %}> Create an account at first sign-in (JIT)</label>
+<p class="hint">JIT is off by default. Link existing accounts from My account or Admin accounts. Only an explicit group mapping can grant Owner.</p>
+<fieldset class="stack"><legend>Group-to-role mappings</legend>
+<p class="hint">Group names are case-sensitive. The strongest matching role applies at each sign-in. Clear a group to remove its row. At most 64 rows.</p>
+<div id="oidc-mappings" class="stack">
+{% for m in c.mappings %}<div class="row oidc-mapping"><div class="field"><label for="group-{{ loop.index0 }}">Group name</label><input id="group-{{ loop.index0 }}" name="group_{{ loop.index0 }}" value="{{ m.group }}" maxlength="256"></div><div class="field"><label for="role-{{ loop.index0 }}">Role</label><span class="cb" data-picker="single" data-kind="role" data-strict data-endpoint="/admin/oidc/roles"><select id="role-{{ loop.index0 }}" name="role_{{ loop.index0 }}"><option value="viewer"{% if m.role == "viewer" %} selected{% endif %}>Viewer</option><option value="admin"{% if m.role == "admin" %} selected{% endif %}>Admin</option><option value="owner"{% if m.role == "owner" %} selected{% endif %}>Owner</option></select></span></div><button class="ghost" type="button" data-remove-mapping>Remove row</button></div>{% endfor %}
+</div>
+<button type="button" class="ghost" id="oidc-add-mapping">Add mapping</button>
+</fieldset>
+<details class="adv"><summary>Advanced</summary><div class="stack">
+<div class="field"><label for="token-auth">Token endpoint authentication</label><select id="token-auth" name="token_auth"><option value="client_secret_basic"{% if c.token_auth == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option><option value="client_secret_post"{% if c.token_auth == "client_secret_post" %} selected{% endif %}>client_secret_post</option></select></div>
+<label class="check"><input type="checkbox" name="userinfo"{% if c.userinfo %} checked{% endif %}> Read the groups claim from userinfo (subject must match the ID token)</label>
+<label class="check"><input type="checkbox" name="allow_private"{% if c.allow_private %} checked{% endif %}> Allow private addresses and private-address HTTP</label>
+<p class="hint">Use HTTPS. Enable private addresses only for a trusted private identity provider. HTTP is allowed only for private or loopback addresses.</p>
+</div></details>
+<button>Save Single sign-on</button>
+</form>
+</section>
+<script>
+(() => {
+  const form = document.getElementById('oidc-form');
+  const rows = document.getElementById('oidc-mappings');
+  const renumber = () => [...rows.children].forEach((row, i) => {
+    row.querySelectorAll('input, select').forEach(input => {
+      const kind = input.name.split('_')[0]; input.name = kind + '_' + i;
+      const label = row.querySelector('label[for="' + input.id + '"]');
+      input.id = kind + '-' + i; if (label) label.htmlFor = input.id;
+    });
+  });
+  document.getElementById('oidc-add-mapping').addEventListener('click', () => {
+    if (rows.children.length >= 64) return;
+    const row = document.createElement('div'); row.className = 'row oidc-mapping';
+    const i = rows.children.length;
+    row.innerHTML = '<div class="field"><label for="group-' + i + '">Group name</label><input id="group-' + i + '" name="group_' + i + '" maxlength="256"></div><div class="field"><label for="role-' + i + '">Role</label><span class="cb" data-picker="single" data-kind="role" data-strict data-endpoint="/admin/oidc/roles"><select id="role-' + i + '" name="role_' + i + '"><option value="viewer">Viewer</option><option value="admin">Admin</option><option value="owner">Owner</option></select></span></div><button class="ghost" type="button" data-remove-mapping>Remove row</button>';
+    rows.append(row); if (window.toko && toko.pickers) toko.pickers(row); row.querySelector('input').focus();
+  });
+  rows.addEventListener('click', e => { if (e.target.closest('[data-remove-mapping]')) { e.target.closest('.oidc-mapping').remove(); renumber(); } });
+  form.addEventListener('submit', renumber);
+})();
+</script>
+{% endblock %}

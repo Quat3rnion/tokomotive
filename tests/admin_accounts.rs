@@ -635,6 +635,7 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
         "/setup",
         "/admin/logout",
         "/admin/settings/password",
+        "/admin/oidc/link",
     ] {
         assert!(paths.iter().any(|p| p == exception));
     }
@@ -645,6 +646,7 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
                 | "/setup"
                 | "/admin/logout"
                 | "/admin/settings/password"
+                | "/admin/oidc/link"
                 | "/admin/routes/try"
         ) {
             continue;

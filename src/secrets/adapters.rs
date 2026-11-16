@@ -33,6 +33,31 @@ async fn client(
     provider: Option<&str>,
     url: &reqwest::Url,
 ) -> Result<reqwest::Client> {
+    let builder = direct_builder(url, store.allow_private).await?;
+    let builder = if let Some(proxy) = egress
+        .proxy_for(provider)
+        .map_err(|_| Failure("egress unavailable"))?
+    {
+        builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| Failure("egress unavailable"))?)
+    } else {
+        builder
+    };
+    builder
+        .build()
+        .map_err(|_| Failure("secret client unavailable"))
+}
+
+/// Direct, DNS-pinned HTTPS transport, shared with dashboard OIDC.
+pub(crate) async fn direct_client(
+    url: &reqwest::Url,
+    allow_private: bool,
+) -> Result<reqwest::Client> {
+    direct_builder(url, allow_private)
+        .await?
+        .build()
+        .map_err(|_| Failure("client unavailable"))
+}
+async fn direct_builder(url: &reqwest::Url, allow_private: bool) -> Result<reqwest::ClientBuilder> {
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
         || url.password().is_some()
@@ -100,30 +125,20 @@ async fn client(
         || addresses.iter().any(|a| {
             a.ip().is_unspecified()
                 || a.ip().is_multicast()
-                || (!public(a.ip()) && !store.allow_private)
-                || (url.scheme() == "http" && !(store.allow_private && private(a.ip())))
+                || (!public(a.ip()) && !allow_private)
+                || (url.scheme() == "http" && !(allow_private && private(a.ip())))
         })
     {
         return Err(Failure(
             "store address denied: use HTTPS; explicitly allow private addresses",
         ));
     }
-    let mut builder = reqwest::Client::builder()
+    Ok(reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
-        .resolve_to_addrs(host, &addresses);
-    if let Some(proxy) = egress
-        .proxy_for(provider)
-        .map_err(|_| Failure("egress unavailable"))?
-    {
-        builder =
-            builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| Failure("egress unavailable"))?);
-    }
-    builder
-        .build()
-        .map_err(|_| Failure("secret client unavailable"))
+        .resolve_to_addrs(host, &addresses))
 }
 async fn send(request: reqwest::RequestBuilder) -> Result<Value> {
     let response = request

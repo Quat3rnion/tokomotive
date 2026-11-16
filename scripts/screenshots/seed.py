@@ -21,6 +21,14 @@ post("/setup", {"mode": "full", "password": PW, "password_confirm": PW})
 post("/admin/login", {"password": PW})
 assert "tokomotive_session" in s.cookies.get_dict(), "no session"
 
+# Single sign-on screen: leave disabled; no real identity provider is needed.
+post("/admin/settings/oidc", {"issuer": "https://auth.example.com/application/o/tokomotive/",
+    "public_base_url": B, "client_id": "tokomotive-demo", "client_secret": "",
+    "scopes": "openid profile email groups", "button_label": "Authentik",
+    "groups_claim": "groups", "group_0": "toko-admins", "role_0": "admin",
+    "group_1": "toko-readers", "role_1": "viewer", "default_role": "deny",
+    "token_auth": "client_secret_basic", "allow_private": "on"})
+
 # Secret stores screen: no real credential or remote service is needed.
 post("/admin/settings/secrets", {"name": "team-vault", "kind": "vault", "address": MOCK,
     "typed": "true", "vault_auth": "token", "vault_token": "env:DEMO_VAULT_TOKEN",

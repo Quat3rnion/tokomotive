@@ -282,7 +282,6 @@ dashboard. An optional `--config PATH` file seeds the database once. See
 
 These items are not scheduled. Each item has an issue for discussion.
 
-- OIDC sign-in for dashboard accounts, with a local Owner login for recovery. ([#27](https://git.lumina.software/quaternion/tokomotive/-/work_items/27))
 - A Customer level above Teams, for operators who resell access. ([#29](https://git.lumina.software/quaternion/tokomotive/-/work_items/29))
 - Plugin and middleware hooks for trusted extensions. ([#30](https://git.lumina.software/quaternion/tokomotive/-/work_items/30))
 - MCP agent mode and sandboxed code execution. ([#31](https://git.lumina.software/quaternion/tokomotive/-/work_items/31))

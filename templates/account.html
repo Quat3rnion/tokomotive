@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}My account - Tokomotive{% endblock %}
+{% block content %}
+<h1>My account</h1>
+<section class="panel" aria-labelledby="account-h"><h2 id="account-h">{{ username }}</h2>
+<p>Linked OIDC identities: {{ linked }}.</p>
+{% if enabled %}<form method="post" action="/admin/oidc/link" data-plain><input type="hidden" name="account_id" value="{{ id }}"><button>Link an OIDC identity</button></form><p class="hint">Sign in at the identity provider to prove that you control the identity. Email alone does not link accounts.</p>{% else %}<p>Single sign-on is not enabled. Ask an Owner to set it up.</p>{% endif %}
+<p><a href="/admin/settings#password">Change local password</a></p></section>
+{% endblock %}

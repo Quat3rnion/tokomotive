@@ -297,7 +297,7 @@ pub(super) async fn run(
         if let Some(account) = response.extensions().get::<crate::admin::Account>() {
             let after = tryr!(snapshot(st, scope).await);
             tryr!(sqlx::query("INSERT INTO admin_audit(account_id,account,action,target_type,target_id,summary,before_json,after_json) VALUES(?,?,?,?,?,?,?,?)")
-                .bind(account.id).bind(&account.username).bind(&action).bind(&target).bind(account.id.to_string()).bind(if target=="login" {"Login succeeded."} else {"Setup completed."}).bind(&before).bind(after).execute(&st.db).await);
+                .bind(account.id).bind(&account.username).bind(&action).bind(&target).bind(account.id.to_string()).bind(if target=="login" {"Local password login succeeded."} else {"Setup completed."}).bind(&before).bind(after).execute(&st.db).await);
         }
         return response;
     }

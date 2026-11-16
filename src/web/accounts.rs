@@ -7,6 +7,7 @@ pub(crate) struct DashboardState {
     pub login: Mutex<LoginLimiter>,
     pub dummy_hash: String,
     pub mutations: tokio::sync::Mutex<()>,
+    pub oidc: super::oidc::Runtime,
 }
 impl DashboardState {
     pub fn new() -> anyhow::Result<Self> {
@@ -14,6 +15,7 @@ impl DashboardState {
             login: Mutex::new(LoginLimiter::default()),
             dummy_hash: crate::settings::hash_password(&hex::encode(rand::random::<[u8; 32]>()))?,
             mutations: tokio::sync::Mutex::new(()),
+            oidc: super::oidc::Runtime::default(),
         })
     }
 }
@@ -76,6 +78,10 @@ impl LoginLimiter {
             return false;
         }
         budget.attempts += 1;
+        // OIDC has no verified username yet; charge only the shared IP budget.
+        if username.is_empty() {
+            return true;
+        }
         let key = db::hash_key(&username.to_ascii_lowercase());
         if !budget.usernames.contains_key(&key) && budget.usernames.len() >= 16 {
             let oldest = budget
@@ -97,7 +103,11 @@ impl LoginLimiter {
 }
 
 /// These are the only authenticated POST routes available to a Viewer.
-pub(crate) const SELF_SERVICE: &[&str] = &["/admin/logout", "/admin/settings/password"];
+pub(crate) const SELF_SERVICE: &[&str] = &[
+    "/admin/logout",
+    "/admin/settings/password",
+    "/admin/oidc/link",
+];
 pub(crate) const READ_ONLY_POSTS: &[&str] = &["/admin/routes/try"];
 
 pub(super) fn router() -> Router<AppState> {
@@ -155,6 +165,8 @@ pub(super) async fn authorize(
     }
     if path == "/setup"
         || path == "/admin/login"
+        || path == "/admin/oidc/start"
+        || path == "/admin/oidc/callback"
         || path.starts_with("/admin/assets/")
         || path == "/favicon.ico"
         || path == "/.well-known/oauth-cimd"
@@ -203,6 +215,7 @@ pub(super) async fn authorize(
     if (path.starts_with("/admin/settings/accounts")
         || path == "/admin/settings/audit"
         || path.starts_with("/admin/settings/secrets")
+        || path.starts_with("/admin/settings/oidc")
         || path.starts_with("/admin/secrets/"))
         && account.role != "owner"
     {

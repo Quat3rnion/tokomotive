@@ -1,5 +1,59 @@
 # Configuration reference
 
+## Single sign-on
+
+An Owner can open **Settings > Single sign-on**. OIDC is optional. The
+local Owner password stays available for recovery. Keep that password and
+the Master Key in a safe place.
+
+| Field | Use |
+| --- | --- |
+| Issuer URL | The exact issuer from the identity provider. Discovery uses `<issuer>/.well-known/openid-configuration`. Keep the issuer's trailing slash when present. |
+| Public base URL | The fixed browser origin of Tokomotive, for example `https://llm.example.com`. Do not add a path. Request headers cannot change the callback address. |
+| Redirect URI | The public base URL plus `/admin/oidc/callback`. Save the base URL, then use **Copy redirect URI**. |
+| Client ID and new client secret | The confidential OIDC client's credentials. The Master Key encrypts the secret. Blank keeps a saved secret. HTML and audit entries do not contain the secret. |
+| Scopes | Default: `openid profile email`. Add the scope that supplies groups if the provider needs one. |
+| Button label | The login page shows **Sign in with** and this label. Default: `Authentik`. |
+| Groups claim name | A top-level claim with an array of group names. Default: `groups`. |
+| Group-to-role mappings | Add a row for each exact group name. Search for Owner, Admin or Viewer in the role field. Remove a row, or clear its group name, to remove that mapping. The strongest matching role applies. |
+| Create an account at first sign-in (JIT) | Off by default. When off, link an existing account before its first OIDC sign-in. |
+| Role when no group matches | Default: deny sign-in. Viewer and Admin are also available. Only an explicit group mapping can grant Owner. |
+
+**Advanced** contains token endpoint authentication (`client_secret_basic`
+by default, or `client_secret_post`), optional userinfo and private-address
+permission. Userinfo can supply groups only after its subject matches the
+ID token. Use HTTPS. Private-address HTTP needs explicit permission and is
+limited to private or loopback addresses. The same permission permits a
+private HTTPS identity provider. HTTP to a public address is not allowed.
+
+Discovery, token, JWKS and userinfo requests do not follow redirects. DNS
+resolution has a 5-second limit and a 32-address limit. The client pins the
+checked addresses. Connections have a 5-second limit. Each request has a
+10-second limit and a 1 MiB response limit. JWKS keys are cached for
+5 minutes. An unknown key ID causes a refresh.
+
+The authorization code flow uses PKCE S256. Each browser-bound state and
+nonce record expires after 10 minutes and can be used only once. A restart
+or an SSO settings change cancels pending sign-ins. ID tokens need an
+asymmetric signature: RS256, ES256 or EdDSA. Unsigned tokens and HS256 are
+not accepted. Issuer, audience, authorized party, times and nonce are checked
+with a 30-second clock allowance. Keep both servers' clocks correct.
+
+Accounts match by `(issuer, sub)`, never by email. JIT accounts get a stable
+generated username and cannot use password login. Existing local accounts
+keep their passwords when linked. Role changes apply at the next OIDC
+sign-in and end earlier sessions for that account. They are recorded in the
+audit log. An IdP role change cannot demote a local Owner: that OIDC sign-in
+is denied and recorded. The last local Owner cannot be deleted or demoted.
+
+Tokomotive uses the normal dashboard session lifetime. It does not retain
+the access or ID token. Session cookies remain `SameSite=Strict`. A short
+completion page starts a same-origin navigation after the IdP callback.
+The temporary pre-login cookie uses `SameSite=Lax` and is cleared in the
+callback. **Log out** ends the local session only; it does not
+end the identity provider session. See the
+[Authentik example](usage.md#connect-authentik) for setup.
+
 ## Secret stores
 
 An Owner can open **Settings > Secret stores**. Add a name, a type, an

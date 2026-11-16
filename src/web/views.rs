@@ -178,6 +178,7 @@ impl Base {
 pub struct LoginPage {
     pub base: Base,
     pub error: Option<String>,
+    pub sso: Option<String>,
 }
 
 #[derive(Template)]

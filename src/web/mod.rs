@@ -53,6 +53,7 @@ mod live;
 mod mcp;
 mod models_dev;
 mod oauth;
+mod oidc;
 mod pickers;
 mod quota;
 mod route_rules;
@@ -120,6 +121,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .merge(mcp::router())
         .merge(oauth::router())
         .merge(accounts::router())
+        .merge(oidc::router())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             st,
@@ -625,6 +627,7 @@ async fn login_page(State(st): State<AppState>) -> Response {
     render(LoginPage {
         base: Base::anonymous(),
         error: None,
+        sso: tryr!(oidc::label(&st).await),
     })
 }
 
@@ -678,10 +681,21 @@ async fn login(
         .as_ref()
         .map(|a| a.password_hash.as_str())
         .unwrap_or(&st.dashboard.dummy_hash);
-    if !crate::settings::verify_password(&f.password, hash) || account.is_none() {
+    let local: bool = if let Some(a) = &account {
+        tryr!(
+            sqlx::query_scalar("SELECT local_login FROM admin_accounts WHERE id=?")
+                .bind(a.id)
+                .fetch_one(&st.db)
+                .await
+        )
+    } else {
+        false
+    };
+    if !crate::settings::verify_password(&f.password, hash) || !local {
         let mut r = render(LoginPage {
             base: Base::anonymous(),
             error: Some("Incorrect username or password. Try again.".into()),
+            sso: tryr!(oidc::label(&st).await),
         });
         *r.status_mut() = StatusCode::UNAUTHORIZED;
         return r;

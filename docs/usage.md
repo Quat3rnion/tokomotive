@@ -1,5 +1,68 @@
 # Operator guide
 
+## Connect Authentik
+
+This example uses Authentik's OAuth2/OpenID provider. The field names follow
+the Authentik 2026.8 documentation. Keep a local Owner session open while
+you test Single sign-on.
+
+1. In Tokomotive, open **Settings > Single sign-on** as Owner. Set **Public
+   base URL** to the browser origin, for example `https://llm.example.com`.
+   Keep Single sign-on disabled. Save, then copy the computed redirect URI:
+   `https://llm.example.com/admin/oidc/callback`.
+2. In the Authentik Admin interface, create an application with an
+   **OAuth2/OpenID Provider**. Use a confidential client and the authorization
+   code grant. Set its slug to `tokomotive`. Select the required authorization
+   flow. Use the default per-provider issuer mode, not the global issuer mode.
+3. Add the copied URI as a strict redirect URI. Do not use a wildcard or
+   leave the allowed URI list blank. Copy the client ID and client secret.
+4. Select an RSA **Signing Key**, so that Authentik signs with RS256 and
+   publishes the public key through JWKS. Do not leave the signing key
+   blank: Authentik then uses HS256, which Tokomotive rejects. Leave the
+   **Encryption Key** empty. Enable **Include claims in id_token**.
+5. Under **Customization > Property Mappings**, add an OAuth2/OIDC scope
+   mapping. Set its scope name to `groups`. Use this expression:
+
+   ```python
+   return {"groups": [group.name for group in request.user.ak_groups.all()]}
+   ```
+
+   Add this mapping to the provider's selected scopes, with the `openid`,
+   `profile` and `email` mappings. The default `profile` mapping can also
+   supply groups. The custom scope makes that requirement explicit. Assign
+   the application to the users or groups that need access.
+6. In Tokomotive, set **Issuer URL** to the exact per-provider issuer:
+   `https://auth.example.com/application/o/tokomotive/`. Enter the client ID
+   and secret. Set scopes to `openid profile email groups`. Keep the groups
+   claim name `groups` and the button label `Authentik`. Leave token endpoint
+   authentication at `client_secret_basic` unless the provider needs POST.
+7. Add group mappings, for example `toko-admins` to Admin and `toko-readers`
+   to Viewer. Keep the no-match role at **Deny sign-in**. Map a group to
+   Owner only when its members must manage all accounts and credentials.
+8. Enable Single sign-on and save. If Authentik is on a trusted private
+   address, first enable the private-address control under **Advanced**.
+   Check that the Proxy can reach discovery, JWKS and the token endpoint
+   without an interactive proxy challenge or a redirect.
+9. Keep JIT off to reuse a local account. Open **Settings > My account**
+   and select **Link an OIDC identity**. Complete the Authentik sign-in.
+   An Owner can instead start a link from a row in **Admin accounts**.
+   The browser must prove control of the selected OIDC identity. The
+   initiating local session must remain active until the link completes.
+   To create separate accounts automatically, enable JIT instead.
+10. Open a second browser session. Select **Sign in with Authentik** above
+    the local login form. Check the assigned role. Change a test user's
+    group, sign in again, and check the new role and audit entry. Test the
+    local Owner password before you close the recovery session.
+
+If sign-in fails, use the local login form. Check the server log for the
+reason. Do not paste tokens or client secrets into an issue. Check the
+exact issuer, client ID, redirect URI, signing key, groups claim and clock.
+The login page shows only a generic error. Logging out of Tokomotive does
+not log out of Authentik.
+
+References: [Authentik OAuth2 provider](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/)
+and [scope mappings](https://docs.goauthentik.io/add-secure-apps/providers/property-mappings/#scope-mappings-with-oauth2).
+
 ## Secret-store Provider Keys
 
 1. As Owner, open **Settings > Secret stores**. Add the store address and
