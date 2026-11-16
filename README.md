@@ -178,6 +178,7 @@ The capture manifest records these changes for the next image refresh.
 | [Secret stores](docs/images/secrets.png) | Owner-only Secret stores settings with encrypted auth settings, a private-address control and a refresh interval. |
 | [Single sign-on](docs/images/oidc.png) | Owner-only OIDC settings with the redirect URI, masked client secret and structured group-to-role mappings. |
 | [My account](docs/images/account.png) | The signed-in account with its OIDC identity count and Single sign-on status. |
+| [Hooks](docs/images/hooks.png) | Signed request, response and event hooks with stage controls, attachment pickers, failure mode and a signed sample test. |
 | [Audit log](docs/images/audit.png) | The audit log: who changed what and when, with filters and the pager. |
 | [Guardrails](docs/images/guardrails.png) | A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text. |
 | [MCP servers](docs/images/mcp-servers.png) | MCP servers with masked credentials, a connection test and cached tool descriptions. |
