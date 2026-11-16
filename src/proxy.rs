@@ -597,6 +597,7 @@ impl Ctx {
         // Failed requests with no usage are errors, not Unpriced Entries.
         quote.unpriced = quote.unpriced && o.status < 400;
         let entry = NewEntry {
+            route_rule: self.trace.route_rule.clone(),
             cache_hit: self.cache_hit_price.is_some(),
             ts_ms: self.ts_ms,
             user_id: self.auth.user_id,
@@ -1011,6 +1012,98 @@ async fn handle_inner_native(
     }
 
     let anthropic_hint = headers.contains_key("anthropic-version");
+    let mut matched_rule = None;
+    let rule_table = if let Some(route) = resolved_route {
+        match crate::route_rules::load(&st.db, route).await {
+            Ok(rules) => {
+                let attributes = crate::route_rules::Attributes {
+                    key: auth.key_id,
+                    user: auth.user_id,
+                    team: auth.team_id,
+                    headers: &headers,
+                    body: json_body.as_ref(),
+                    model: name,
+                    endpoint: endpoint.name(),
+                    format: match native.as_ref().map(|n| n.format) {
+                        Some(crate::inbound::Format::Gemini) => "gemini",
+                        Some(_) => "bedrock",
+                        None if anthropic => "anthropic",
+                        None => "openai",
+                    },
+                };
+                if let Some(selection) = crate::route_rules::select(&rules, &attributes) {
+                    matched_rule = Some(selection.matched());
+                    metrics::counter!("tokomotive_route_rule_matches_total","route"=>route.to_owned(),"rule"=>selection.rule.id.clone(),"side"=>selection.side).increment(1);
+                    if let crate::route_rules::Action::Reject { message } = selection.action {
+                        let entry = NewEntry {
+                            route_rule: matched_rule.clone(),
+                            cache_hit: false,
+                            ts_ms,
+                            user_id: auth.user_id,
+                            key_id: auth.key_id,
+                            team_id: auth.team_id,
+                            provider: String::new(),
+                            subscription: false,
+                            endpoint: endpoint.name().into(),
+                            requested_model: requested_model.clone(),
+                            model: None,
+                            status: 403,
+                            streamed: json_body.as_ref().is_some_and(is_stream),
+                            usage: Usage::default(),
+                            reported_cost_micros: None,
+                            quote: Default::default(),
+                            estimated: false,
+                            latency_ms: started.elapsed().as_millis() as i64,
+                            ttft_ms: None,
+                            client_aborted: false,
+                            provider_key: None,
+                            attempts: 0,
+                            session_affinity: None,
+                        };
+                        crate::metrics::record(&auth.user_name, &entry);
+                        let mut trace = crate::observability::RequestTrace::new(
+                            &st,
+                            Some(route),
+                            auth.key_id,
+                            &[],
+                            table.settings.max_attempts,
+                        )
+                        .await;
+                        trace.route_rule = matched_rule.clone();
+                        st.observability
+                            .export(&entry, &trace, &auth.user_name, &auth.key_name);
+                        let state = st.clone();
+                        st.spawn_tracked(async move {
+                            let pending = crate::ledger_spool::PendingEntry::new(entry);
+                            pending.persist_reserved(&state, None).await;
+                        });
+                        return error(StatusCode::FORBIDDEN, "permission_error", message);
+                    }
+                    Some(crate::route_rules::apply(
+                        &table,
+                        route,
+                        selection.action,
+                        selection.rule.no_fallback,
+                    ))
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                tracing::error!(error=%e,"Route rules unavailable");
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "api_error",
+                    "Route rules unavailable",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let table = rule_table
+        .map(std::sync::Arc::new)
+        .unwrap_or_else(|| table.clone());
     let mut candidates = st.resolved_candidates(&table, &catalog, &resolution);
     for c in &mut candidates {
         if c.provider.auth == crate::provider::ProviderAuth::GoogleVertex
@@ -1048,13 +1141,22 @@ async fn handle_inner_native(
         chrono::Utc::now().timestamp(),
         settings.router.quota_exhausted_percent,
     );
+    // An older pin must not promote a Fallback ahead of a rule's chosen set.
+    let affinity_count = if matched_rule.is_some() {
+        candidates
+            .iter()
+            .take_while(|c| Some(c.route.as_str()) == resolved_route)
+            .count()
+    } else {
+        candidates.len()
+    };
     let mut session = st.session_order(
         &table,
         resolved_route,
         auth.user_id,
         &headers,
         json_body.as_ref(),
-        &mut candidates,
+        &mut candidates[..affinity_count],
     );
     if candidates.is_empty()
         && let Some(name) = denied
@@ -1088,6 +1190,7 @@ async fn handle_inner_native(
     if let Some(value) = &mut json_body {
         if let Some(name) = guardrails.request(value).await {
             let entry = NewEntry {
+                route_rule: matched_rule.clone(),
                 cache_hit: false,
                 ts_ms,
                 user_id: auth.user_id,
@@ -1276,7 +1379,7 @@ async fn handle_inner_native(
 
     let streamed = endpoint == Endpoint::AudioSpeech || json_body.as_ref().is_some_and(is_stream);
     let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let trace = crate::observability::RequestTrace::new(
+    let mut trace = crate::observability::RequestTrace::new(
         &st,
         resolved_route,
         auth.key_id,
@@ -1284,6 +1387,7 @@ async fn handle_inner_native(
         table.settings.max_attempts,
     )
     .await;
+    trace.route_rule = matched_rule;
     let mut ctx = Ctx {
         provider_permit: None,
         route: first.route.clone(),

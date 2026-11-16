@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Route rule error - Tokomotive{% endblock %}
+{% block nav_routes %}aria-current="page"{% endblock %}
+{% block content %}
+<h1>Check the Route rules</h1>
+<p><a href="/admin/routes">Back to Routes</a></p>
+{{ editor|safe }}
+{% endblock %}
+{% block scripts %}{% include "route_rules_script.html" %}{% endblock %}

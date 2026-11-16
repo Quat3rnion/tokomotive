@@ -1110,6 +1110,7 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
             frozen.price.batch_amount(&usage)
         };
         entries.push(db::NewEntry {
+            route_rule: None,
             ts_ms: db::now_ms(),
             user_id: job.user_id,
             key_id: job.key_id,

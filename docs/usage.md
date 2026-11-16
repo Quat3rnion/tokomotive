@@ -789,11 +789,88 @@ data changes only on Sync. Explicit Routes, catalog Models and prefixes do
 not need a live list. These are the stable choices when an index is stale
 or reaches its limit.
 
-On **Routes**, use **Try a model name** with an optional Virtual Key. Admin
+On **Routes**, use **Try a model name** with an optional Virtual Key and session id. Admin
 and Viewer accounts can use this read-only tool. It shows the checked steps
 and the result, or the 404 and permitted suggestions. It does not call an
 upstream API or change routing state. Without a key, it uses the normal
 API-key Provider access rule and excludes subscriptions.
+
+### Request rules and Canary splits
+
+On a Route card, open **Request rules**. Add a name and select the conditions
+and action. Use **Up** and **Down** to set the order. Select **Remove this rule**
+to remove a saved rule. Save the list with **Save request rules**. An Owner or
+Admin can edit the list. A Viewer can read the list and use the Try box.
+
+The Proxy resolves the client model name first. It then checks the canonical
+Route's rules, before the strategy. The first enabled rule that matches all
+conditions wins. An empty condition matches any value. If no rule matches,
+the normal Route configuration applies. Rules also apply in Simple Mode.
+
+Conditions can check:
+
+- Virtual Key, User and Team identity;
+- a header name and an equals, contains or regex value;
+- the requested model name, with equals or prefix;
+- the endpoint and client format;
+- the stream flag, tools and images;
+- inclusive minimum and maximum estimated input tokens.
+
+Model and header values are case-sensitive. Header names are not
+case-sensitive. Regex uses the Rust `regex` crate. A pattern has a maximum
+of 512 bytes and a compiled size limit of 1 MiB. Header values above 4096
+bytes do not match. Each Route can have at most 32 rules.
+
+Native Gemini and Bedrock requests use the same parsed request attributes
+as OpenAI and Anthropic requests. **Client format** identifies the original
+client. **Endpoint** identifies the internal endpoint. For example, Gemini
+`generateContent` and Bedrock Converse use `chat_completions`. Input tokens
+are an estimate, not a tokenizer result. The estimate is the serialized
+input fields in bytes, divided by four and rounded up. It includes messages,
+input, system text, instructions, tools and prompt text, but not generation
+settings.
+
+Select one action:
+
+- **Use these Deployments only** selects a subset of this Route's Deployments.
+  The Route's strategy orders that set.
+- **Use another Route** selects that Route's Deployments and strategy. The
+  target's rules and Fallbacks do not run again. The original Route's cache
+  policy and Fallbacks still apply. A saved rule graph must not have a cycle,
+  including disabled rules and Canary targets.
+- **Reject (403)** returns the message in the client's error format. No
+  upstream request is sent. The Ledger records the rejection with zero usage.
+
+Model permission for the original Route does not grant Provider Access.
+Circuit Breaker, quota and per-Provider limits still apply to the selected set.
+If that set fails, the Proxy tries the original Route's Fallbacks. Select
+**No Fallback** to stop after the selected set. An old Session Affinity pin
+cannot put a Fallback before a healthy rule-selected set.
+
+For a Canary, enter a percentage from 0 to 100, with up to two decimal places.
+Select a second Deployment set or Route. Leave the percentage empty to disable
+the split. The Primary action handles the remaining traffic. The **No Fallback**
+setting applies to both sides. Zero percent always uses Primary. One hundred
+percent always uses Canary.
+
+The assignment is deterministic. The Proxy hashes the rule id, salt and
+conversation identity, then uses a bucket from 0 to 9999. It uses the same
+explicit session sources and stable first-prompt hash as Session Affinity.
+If neither is available, it uses the Virtual Key id. Later conversation turns
+do not change the side. IDs and salts survive list moves and saves. A new
+rule or a changed salt assigns conversations again. The ratio applies across
+different conversation identities, not repeated requests in one conversation.
+
+The Try box shows the matched rule and Canary side without an upstream call.
+Enter the same session id and Virtual Key to test a conversation assignment.
+The preview uses a non-streaming OpenAI Chat Completions request with no tools,
+images or custom headers. It has no prompt body. Conditions that need other
+request data must be tested with a real client request.
+
+Ledger Entries and attempts record the rule id, name and side. Use the
+**Route rule (name or id)** Ledger filter to select them. The Prometheus counter
+`tokomotive_route_rule_matches_total{route,rule,side}` counts matched proxy
+requests. The `rule` label is the stable id. Try-box requests do not increase it.
 
 Successful proxy responses have `x-tokomotive-route`,
 `x-tokomotive-provider` and `x-tokomotive-model`. These headers identify the

@@ -98,6 +98,9 @@ pub async fn save(db: &Db, key: &SecretKey, s: &Settings) -> Result<()> {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Attempt {
+    pub route_rule: Option<String>,
+    pub route_rule_name: Option<String>,
+    pub canary_side: Option<String>,
     pub attempt_index: i64,
     pub route: String,
     pub deployment: String,
@@ -124,6 +127,7 @@ pub fn error_class(status: u16) -> &'static str {
 }
 
 pub struct RequestTrace {
+    pub route_rule: Option<crate::route_rules::Matched>,
     pub attempts: Vec<Attempt>,
     limit: usize,
     capture: Option<Capture>,
@@ -139,6 +143,7 @@ impl RequestTrace {
         let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM virtual_keys WHERE id=? AND capture_bodies=1) OR EXISTS(SELECT 1 FROM routes WHERE name=? AND capture_bodies=1)")
             .bind(key).bind(route.unwrap_or_default()).fetch_one(&st.db).await.unwrap_or(false);
         Self {
+            route_rule: None,
             attempts: Vec::new(),
             limit: limit.clamp(1, 100),
             capture: enabled.then(|| Capture::new(request, st.observability.settings().body_cap)),
@@ -183,6 +188,9 @@ impl RequestTrace {
             })
         });
         self.attempts.push(Attempt {
+            route_rule: self.route_rule.as_ref().map(|r| r.id.clone()),
+            route_rule_name: self.route_rule.as_ref().map(|r| r.name.clone()),
+            canary_side: self.route_rule.as_ref().map(|r| r.side.clone()),
             attempt_index: i as i64 + 1,
             route: c.route.clone(),
             deployment: c.model.clone().unwrap_or_default(),
@@ -252,8 +260,8 @@ impl RequestTrace {
     pub async fn store(&self, db: &Db, key: &SecretKey, id: i64, ts: i64) -> Result<()> {
         let mut tx = crate::db::begin_write(db, "request_diagnostics").await?;
         for a in &self.attempts {
-            sqlx::query("INSERT INTO request_attempts(ledger_id,attempt_index,route,deployment,provider,system,provider_key,key_last4,status,error_class,skip_reason,started_ms,latency_ms,ttft_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                .bind(id).bind(a.attempt_index).bind(&a.route).bind(&a.deployment).bind(&a.provider).bind(&a.system).bind(a.provider_key).bind(&a.key_last4).bind(a.status).bind(&a.error_class).bind(&a.skip_reason).bind(a.started_ms).bind(a.latency_ms).bind(a.ttft_ms).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO request_attempts(ledger_id,attempt_index,route,deployment,provider,system,provider_key,key_last4,status,error_class,skip_reason,started_ms,latency_ms,ttft_ms,route_rule,route_rule_name,canary_side) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .bind(id).bind(a.attempt_index).bind(&a.route).bind(&a.deployment).bind(&a.provider).bind(&a.system).bind(a.provider_key).bind(&a.key_last4).bind(a.status).bind(&a.error_class).bind(&a.skip_reason).bind(a.started_ms).bind(a.latency_ms).bind(a.ttft_ms).bind(&a.route_rule).bind(&a.route_rule_name).bind(&a.canary_side).execute(&mut *tx).await?;
         }
         if let Some(c) = &self.capture {
             let request = key.encrypt(&c.request)?;
@@ -500,6 +508,13 @@ fn otlp(e: &NewEntry, t: &RequestTrace, user: &str, key: &str, service: &str) ->
     if let Some(team) = e.team_id {
         attrs.push(int_attr("tokomotive.team.id", team));
     }
+    if let Some(rule) = &e.route_rule {
+        attrs.extend([
+            attr("tokomotive.route_rule.id", &rule.id),
+            attr("tokomotive.route_rule.name", &rule.name),
+            attr("tokomotive.canary.side", &rule.side),
+        ]);
+    }
     let mut spans = vec![
         json!({"traceId":trace,"spanId":parent,"name":"gen_ai.request","kind":2,"startTimeUnixNano":(e.ts_ms*1000000).to_string(),"endTimeUnixNano":((e.ts_ms+e.latency_ms)*1000000).to_string(),"attributes":attrs,"status":{"code":if e.status>=400 {2}else{1}}}),
     ];
@@ -515,6 +530,15 @@ fn otlp(e: &NewEntry, t: &RequestTrace, user: &str, key: &str, service: &str) ->
         ];
         if let Some(status) = a.status {
             attrs.push(int_attr("http.response.status_code", status));
+        }
+        if let Some(rule) = &a.route_rule {
+            attrs.push(attr("tokomotive.route_rule.id", rule));
+        }
+        if let Some(name) = &a.route_rule_name {
+            attrs.push(attr("tokomotive.route_rule.name", name));
+        }
+        if let Some(side) = &a.canary_side {
+            attrs.push(attr("tokomotive.canary.side", side));
         }
         if let Some(key) = a.provider_key {
             attrs.push(int_attr("tokomotive.provider_key.id", key));

@@ -320,6 +320,7 @@ async fn bounded_export_queue_drops_without_waiting_for_a_collector() {
         });
     let t = tokomotive::observability::RequestTrace::new(&e.st, None, 1, b"", 8).await;
     let entry = tokomotive::db::NewEntry {
+        route_rule: None,
         ts_ms: tokomotive::db::now_ms(),
         user_id: 1,
         key_id: 1,

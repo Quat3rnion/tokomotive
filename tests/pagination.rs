@@ -95,6 +95,7 @@ impl App {
             db::insert_entry(
                 &st.db,
                 &db::NewEntry {
+                    route_rule: None,
                     cache_hit: false,
                     session_affinity: None,
                     reported_cost_micros: None,

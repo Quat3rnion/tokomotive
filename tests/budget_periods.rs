@@ -221,6 +221,7 @@ async fn entry_ms(
     tokomotive::db::insert_entry(
         &st.db,
         &tokomotive::db::NewEntry {
+            route_rule: None,
             cache_hit: false,
             ts_ms,
             user_id: auth.user_id,

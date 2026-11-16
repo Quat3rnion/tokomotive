@@ -634,6 +634,7 @@ impl RoutesPage {
     }
 }
 struct RouteView {
+    rules_html: String,
     capture_bodies: bool,
     cache: crate::cache::Policy,
     skips: Vec<String>,
@@ -729,6 +730,7 @@ async fn routes(
                 .collect::<Result<Vec<_>, _>>()
         );
         routes.push(RouteView {
+            rules_html: tryr!(tryr!(super::route_rules::Editor::load(&st,&r.name).await).render()),
             capture_bodies: tryr!(sqlx::query_scalar("SELECT capture_bodies FROM routes WHERE name=?").bind(&r.name).fetch_one(&st.db).await),
             cache: r.cache.clone(),
             skips: deployments
@@ -811,6 +813,7 @@ async fn routes(
 struct TryModelForm {
     model: String,
     key_id: Option<String>,
+    session_id: Option<String>,
 }
 
 #[derive(Template)]
@@ -824,6 +827,7 @@ async fn try_model(_: Admin, State(st): State<AppState>, Form(f): Form<TryModelF
     if f.model.len() > 200 {
         return bad("Use at most 200 characters for a model name.");
     }
+    let mut identity = (0, 0, None);
     let (models, providers): (Vec<String>, Vec<String>) = if let Some(id) =
         f.key_id.filter(|id| !id.is_empty())
     {
@@ -840,6 +844,7 @@ async fn try_model(_: Admin, State(st): State<AppState>, Form(f): Form<TryModelF
         let Some((models, providers)) = row else {
             return bad("Virtual Key not found.");
         };
+        identity=tryr!(sqlx::query_as("SELECT k.id,k.user_id,u.team_id FROM virtual_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?").bind(id).fetch_one(&st.db).await);
         (
             tryr!(serde_json::from_str(models.as_deref().unwrap_or("[]"))),
             tryr!(serde_json::from_str(providers.as_deref().unwrap_or("[]"))),
@@ -853,9 +858,63 @@ async fn try_model(_: Admin, State(st): State<AppState>, Form(f): Form<TryModelF
     };
     let table = st.router_table();
     let catalog = st.catalog();
-    let index = st.resolution_index.read().expect("resolution index");
-    let r = crate::resolve::resolve(&table, &catalog, &index, f.model.trim(), access);
-    let result = if !r.allowed(access, f.model.trim(), &catalog) && r.target.is_some() {
+    let r = crate::resolve::resolve(
+        &table,
+        &catalog,
+        &st.resolution_index.read().expect("resolution index"),
+        f.model.trim(),
+        access,
+    );
+    let mut rule_note = String::new();
+    let mut selected_table = None;
+    let mut rejection = None;
+    if r.allowed(access, f.model.trim(), &catalog)
+        && let Some(crate::resolve::Target::Route(route)) = &r.target
+    {
+        let rules = tryr!(crate::route_rules::load(&st.db, route).await);
+        let mut headers = axum::http::HeaderMap::new();
+        if let Some(session) = f.session_id.filter(|v| !v.is_empty()) {
+            if session.len() > 512 {
+                return form_error("Use at most 512 characters for a session id.");
+            }
+            let value = match session.parse() {
+                Ok(v) => v,
+                Err(_) => return form_error("Use a valid session id."),
+            };
+            headers.insert("x-session-id", value);
+        }
+        let attributes = crate::route_rules::Attributes {
+            key: identity.0,
+            user: identity.1,
+            team: identity.2,
+            headers: &headers,
+            body: None,
+            model: f.model.trim(),
+            endpoint: "chat_completions",
+            format: "openai",
+        };
+        if let Some(selection) = crate::route_rules::select(&rules, &attributes) {
+            rule_note = format!(
+                " Matched rule: {}. Canary side: {}.",
+                selection.rule.name, selection.side
+            );
+            if let crate::route_rules::Action::Reject { message } = selection.action {
+                rejection = Some(format!("403: {message}"));
+            }
+            selected_table = Some(crate::route_rules::apply(
+                &table,
+                route,
+                selection.action,
+                selection.rule.no_fallback,
+            ));
+        } else {
+            rule_note = " Matched rule: none.".into();
+        }
+    }
+    let table = selected_table.as_ref().unwrap_or(&table);
+    let mut result = if let Some(message) = rejection {
+        message
+    } else if !r.allowed(access, f.model.trim(), &catalog) && r.target.is_some() {
         "403: this API key may not use this model".into()
     } else {
         match &r.target {
@@ -886,10 +945,18 @@ async fn try_model(_: Admin, State(st): State<AppState>, Form(f): Form<TryModelF
             }
             None => format!(
                 "404 model_not_found: {}",
-                crate::resolve::message(&table, &catalog, &index, f.model.trim(), access, &r)
+                crate::resolve::message(
+                    table,
+                    &catalog,
+                    &st.resolution_index.read().expect("resolution index"),
+                    f.model.trim(),
+                    access,
+                    &r
+                )
             ),
         }
     };
+    result.push_str(&rule_note);
     render(ResolutionView {
         steps: r.steps,
         result,
@@ -1018,6 +1085,11 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
             return form_error("Route not found.");
         };
         route.cache = original.cache.clone();
+        if name != &route.name && tryr!(crate::route_rules::referenced(&st.db, name).await) {
+            return form_error(
+                "A Route rule uses this Route. Remove that action before you rename it.",
+            );
+        }
         if f.session_affinity.is_none() {
             route.session_affinity = original.session_affinity;
         }
@@ -1067,6 +1139,12 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
         };
     }
     cfg.routes.push(route.clone());
+    if let Some(original_name) = &old {
+        let rules = tryr!(crate::route_rules::load(&st.db, original_name).await);
+        if let Err(e) = crate::route_rules::validate_deployments(&rules, &route.deployments) {
+            return form_error(e);
+        }
+    }
     if let Err(e) = cfg.validate() {
         return form_error(e);
     }
@@ -1115,6 +1193,11 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
 }
 async fn delete_route(_: Admin, State(st): State<AppState>, Path(name): Path<String>) -> Response {
     let _guard = st.settings_write.lock().await;
+    if tryr!(crate::route_rules::referenced(&st.db, &name).await) {
+        return form_error(
+            "A Route rule uses this Route. Remove that action before you delete it.",
+        );
+    }
     let cfg = tryr!(runtime(&st).await);
     if cfg.router.unknown_model_route.as_ref() == Some(&name) {
         return form_error(

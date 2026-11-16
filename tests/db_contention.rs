@@ -29,6 +29,7 @@ async fn spool_state(dir: &std::path::Path, cap: u64) -> (Config, tokomotive::st
 
 fn entry() -> tokomotive::db::NewEntry {
     tokomotive::db::NewEntry {
+        route_rule: None,
         cache_hit: false,
         ts_ms: tokomotive::db::now_ms(),
         user_id: 1,

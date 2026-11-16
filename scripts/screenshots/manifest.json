@@ -1,10 +1,10 @@
 {
   "pending_refresh": [
     {"page":"/admin", "reason":"Exact cache hit rate added. Keep the current image until the next requested capture."},
-    {"page":"/admin/routes", "reason":"Exact response cache enable, lifetime and scope controls added. Keep the current image until the next requested capture."},
+    {"page":"/admin/routes", "reason":"Request rules, Canary splits and the Try-box session id were added, with exact response cache controls. Refresh dark and light captures at the next requested capture."},
     {"page":"/admin/settings", "reason":"Exact response cache limits, hit Price and global egress proxy controls added. Keep the current image until the next requested capture."},
     {"page":"/admin/providers", "reason":"Per-Provider egress proxy controls and connection path results added. Keep the current image until the next requested capture."},
-    {"page":"/admin/ledger", "reason":"Cache hit flag added. Keep the current image until the next requested capture."}
+    {"page":"/admin/ledger", "reason":"Route rule filter, matched rule and Canary side were added, with the cache hit flag. Refresh at the next requested capture."}
   ],
   "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],
   "captures": [

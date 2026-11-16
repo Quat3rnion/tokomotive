@@ -1,0 +1,63 @@
+{% macro identity(row, field, label, choices) %}
+<label>{{ label }} <select name="rule[{{ row.key }}][{{ field }}]"><option value="">Any</option>{% if !row.value(field).is_empty() %}<option value="{{ row.value(field) }}" selected>{{ self.label(choices, row.value(field)) }}</option>{% endif %}{% for (id, name) in choices %}{% if id.as_str() != row.value(field) %}<option value="{{ id }}">{{ name }}</option>{% endif %}{% endfor %}</select></label>
+{% endmacro %}
+{% macro flag(row, field, label) %}
+<label>{{ label }} <select name="rule[{{ row.key }}][{{ field }}]"><option value="">Any</option><option value="true"{% if row.value(field) == "true" %} selected{% endif %}>Yes</option><option value="false"{% if row.value(field) == "false" %} selected{% endif %}>No</option></select></label>
+{% endmacro %}
+{% macro targets(row, canary, action, target, set, routes, deployments) %}
+<div class="fields">
+<label>Action <select name="rule[{{ row.key }}][{{ action }}]"><option value="deployments"{% if row.value(action) == "deployments" %} selected{% endif %}>Use these Deployments only</option><option value="route"{% if row.value(action) == "route" %} selected{% endif %}>Use another Route</option>{% if !canary %}<option value="reject"{% if row.value(action) == "reject" %} selected{% endif %}>Reject (403)</option>{% endif %}</select></label>
+<label>Deployment set <select name="rule[{{ row.key }}][{{ set }}]" multiple size="3">{% for (id, label) in deployments %}<option value="{{ id }}"{% if row.selected(set, id) %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><span class="hint">Select one or more. Only used for the Deployment action.</span></label>
+<label>Target Route <select name="rule[{{ row.key }}][{{ target }}]"><option value="">Choose a Route</option>{% for name in routes %}<option value="{{ name }}"{% if row.value(target) == name.as_str() %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+{% if !canary %}<label>Rejection message <input name="rule[{{ row.key }}][message]" value="{{ row.value("message") }}" maxlength="500"></label>{% endif %}
+</div>
+{% endmacro %}
+<details class="subform" id="rules-{{ route }}"{% if !error.is_empty() %} open{% endif %}>
+<summary>Request rules</summary>
+<p class="hint">The first enabled rule that matches all conditions wins. Empty conditions match any value. Rules run before the strategy. A selected set keeps Circuit Breaker, quota and Provider limits.</p>
+{% for row in rows %}{% if !row.value("name").is_empty() %}<details><summary>{{ loop.index }}. <strong>{{ row.value("name") }}</strong> - {% if row.value("enabled") == "on" %}Enabled{% else %}Disabled{% endif %}, {{ row.value("action") }}{% if !row.value("canary_percent").is_empty() %}, Canary {{ row.value("canary_percent") }}%{% endif %}</summary><dl class="kv">{% for (label,value) in row.summary_fields() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl></details>{% endif %}{% endfor %}
+<form method="post" action="/admin/routes/{{ route }}/rules" class="rules-form stack" aria-label="Request rules for Route {{ route }}">
+<p class="hint">Identity pickers show the first 200 records. A saved selection stays available. For a Deployment set, use Ctrl or Command to select more than one item.</p>
+<div data-rule-rows>
+{% for row in rows %}
+<fieldset data-rule><legend>{% if row.value("name").is_empty() %}New rule{% else %}{{ row.value("name") }}{% endif %}</legend>
+<input type="hidden" name="rule[{{ row.key }}][id]" value="{{ row.value("id") }}">
+<div class="row">
+<label>Name <input name="rule[{{ row.key }}][name]" value="{{ row.value("name") }}" maxlength="80"></label>
+<label class="check"><input type="checkbox" name="rule[{{ row.key }}][enabled]"{% if row.value("enabled") == "on" %} checked{% endif %}> Enabled</label>
+<label class="check"><input type="checkbox" name="rule[{{ row.key }}][remove]"> Remove this rule</label>
+<button type="button" class="ghost" data-rule-move="-1" aria-label="Move rule up" hidden>Up</button><button type="button" class="ghost" data-rule-move="1" aria-label="Move rule down" hidden>Down</button>
+</div>
+<fieldset><legend>Match all these conditions</legend>
+<div class="fields">
+{% call identity(row, "key_id", "Virtual Key", keys) %}
+{% call identity(row, "user_id", "User", users) %}
+{% call identity(row, "team_id", "Team", teams) %}
+<label>Header name <input name="rule[{{ row.key }}][header_name]" value="{{ row.value("header_name") }}" maxlength="128" placeholder="x-cohort"></label>
+<label>Header operator <select name="rule[{{ row.key }}][header_op]">{% for op in ["equals", "contains", "regex"] %}<option value="{{ op }}"{% if row.selected("header_op", op) %} selected{% endif %}>{{ op }}</option>{% endfor %}</select></label>
+<label>Header value <input name="rule[{{ row.key }}][header_value]" value="{{ row.value("header_value") }}" maxlength="512"><span class="hint">Regex uses a maximum compiled size of 1 MiB. Header values above 4096 bytes do not match.</span></label>
+<label>Requested model <input name="rule[{{ row.key }}][model]" value="{{ row.value("model") }}" maxlength="200"></label>
+<label>Model operator <select name="rule[{{ row.key }}][model_op]"><option value="equals"{% if row.value("model_op") != "prefix" %} selected{% endif %}>Equals</option><option value="prefix"{% if row.value("model_op") == "prefix" %} selected{% endif %}>Prefix</option></select></label>
+<label>Endpoint <select name="rule[{{ row.key }}][endpoint]"><option value="">Any</option>{% for endpoint in ["chat_completions", "responses", "messages", "count_tokens", "embeddings", "images", "rerank", "audio_transcription", "audio_translation", "audio_speech", "other"] %}<option value="{{ endpoint }}"{% if row.selected("endpoint", endpoint) %} selected{% endif %}>{{ endpoint }}</option>{% endfor %}</select></label>
+<label>Client format <select name="rule[{{ row.key }}][format]"><option value="">Any</option>{% for format in ["openai", "anthropic", "gemini", "bedrock"] %}<option value="{{ format }}"{% if row.selected("format", format) %} selected{% endif %}>{{ format }}</option>{% endfor %}</select></label>
+{% call flag(row, "stream", "Stream") %}
+<label>Minimum estimated input tokens <input type="number" min="0" name="rule[{{ row.key }}][min_tokens]" value="{{ row.value("min_tokens") }}"></label>
+<label>Maximum estimated input tokens <input type="number" min="0" name="rule[{{ row.key }}][max_tokens]" value="{{ row.value("max_tokens") }}"></label>
+{% call flag(row, "has_tools", "Has tools") %}
+{% call flag(row, "has_images", "Has images") %}
+</div></fieldset>
+<fieldset><legend>Primary action</legend>{% call targets(row, false, "action", "target_route", "deployments", routes, deployments) %}
+<label class="check"><input type="checkbox" name="rule[{{ row.key }}][no_fallback]"{% if row.value("no_fallback") == "on" %} checked{% endif %}> No Fallback if the selected set fails</label>
+</fieldset>
+<fieldset><legend>Canary (optional)</legend>
+<div class="row"><label>Percentage <input type="number" name="rule[{{ row.key }}][canary_percent]" min="0" max="100" step="0.01" value="{{ row.value("canary_percent") }}"></label><label>Salt <input name="rule[{{ row.key }}][salt]" value="{{ row.value("salt") }}" maxlength="128"></label></div>
+<p class="hint">Leave the percentage empty to disable Canary. A session or prompt prefix keeps its side. Changing the salt assigns conversations again.</p>
+{% call targets(row, true, "canary_action", "canary_route", "canary_deployments", routes, deployments) %}
+</fieldset>
+</fieldset>
+{% endfor %}
+</div>
+<button type="button" class="ghost" data-add-rule hidden>Add a rule</button>
+<div class="form-error" role="alert" tabindex="-1">{% if !error.is_empty() %}<p>{{ error }}</p>{% endif %}</div>
+<button>Save request rules</button>
+</form></details>

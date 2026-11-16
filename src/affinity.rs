@@ -181,6 +181,11 @@ fn session_key(
     })
 }
 
+/// Share the stable prompt-prefix normalization without retaining prompt text.
+pub(crate) fn conversation_digest(headers: &HeaderMap, body: Option<&Value>) -> Option<[u8; 32]> {
+    session_key("", 0, headers, body).map(|k| k.digest)
+}
+
 fn id(candidate: &Candidate) -> DeploymentId {
     (
         candidate.provider.name.clone(),

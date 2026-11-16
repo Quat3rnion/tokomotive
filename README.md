@@ -18,6 +18,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Maps a client model name to a Route. A Route has one or more Deployments.
   Each Deployment is a Provider and an upstream model name.
 - Selects Deployments with the strategy `priority`, `round_robin` or `weighted`.
+- Applies ordered [request rules and Canary splits](docs/usage.md#request-rules-and-canary-splits)
+  before the strategy. Rules select a Deployment set or another Route, or reject
+  the request. Canary assignment stays the same for each conversation.
 - Tries Fallbacks and the next Provider Key when a Deployment fails with a
   connection error, a 429 or a 5xx.
 - Uses a Circuit Breaker for each Deployment. A failing Deployment rests for a

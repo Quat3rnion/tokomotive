@@ -128,6 +128,7 @@ impl App {
         db::insert_entry(
             &self.st.db,
             &NewEntry {
+                route_rule: None,
                 cache_hit: false,
                 session_affinity: None,
                 reported_cost_micros: None,

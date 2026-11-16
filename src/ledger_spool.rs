@@ -418,6 +418,7 @@ mod tests {
         let st = crate::init(&cfg, None).await.unwrap();
         st.db.configure_writer(1, 1);
         let entry = NewEntry {
+            route_rule: None,
             cache_hit: false,
             ts_ms: db::now_ms(),
             user_id: 1,

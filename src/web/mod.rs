@@ -54,6 +54,7 @@ mod models_dev;
 mod oauth;
 mod pickers;
 mod quota;
+mod route_rules;
 mod settings;
 
 pub fn router(st: AppState) -> Router<AppState> {
@@ -92,6 +93,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
         .merge(guardrails::router())
+        .merge(route_rules::router())
         .merge(models_dev::router())
         .merge(mcp::router())
         .merge(oauth::router())
@@ -2440,6 +2442,7 @@ async fn set_settings(
 
 #[derive(Deserialize, Default)]
 struct LedgerQ {
+    rule: Option<String>,
     status: Option<String>,
     error_class: Option<String>,
     provider_key: Option<String>,
@@ -2474,6 +2477,7 @@ impl LedgerQ {
             }
             for (k, v) in [
                 ("user", &self.user),
+                ("rule", &self.rule),
                 ("status", &self.status),
                 ("error_class", &self.error_class),
                 ("provider_key", &self.provider_key),
@@ -2552,6 +2556,7 @@ async fn ledger(
     };
     let limit = q.limit.unwrap_or(LEDGER_PAGE).clamp(1, 200);
     let query = db::LedgerQuery {
+        rule: some_text(&q.rule).map(str::to_owned),
         status: some_text(&q.status).and_then(|s| s.parse().ok()),
         error_class: some_text(&q.error_class).map(str::to_owned),
         provider_key: some_text(&q.provider_key)
@@ -2610,6 +2615,7 @@ async fn ledger(
         vec![]
     };
     let filters = LedgerFilterView {
+        rule: q.rule.clone().unwrap_or_default(),
         status: q.status.clone().unwrap_or_default(),
         error_class: q.error_class.clone().unwrap_or_default(),
         provider_key: q.provider_key.clone().unwrap_or_default(),
@@ -2622,6 +2628,7 @@ async fn ledger(
         from: some_text(&q.from).unwrap_or_default().to_owned(),
         to: some_text(&q.to).unwrap_or_default().to_owned(),
         active: user_id.is_some()
+            || query.rule.is_some()
             || query.status.is_some()
             || query.error_class.is_some()
             || query.provider_key.is_some()

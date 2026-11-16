@@ -582,6 +582,8 @@ pub async fn spend_since(db: &Db, user_id: i64, since_s: i64) -> Result<i64> {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewEntry {
+    #[serde(default)]
+    pub route_rule: Option<crate::route_rules::Matched>,
     pub cache_hit: bool,
     pub ts_ms: i64,
     pub user_id: i64,
@@ -671,6 +673,15 @@ pub(crate) async fn insert_entry_in(tx: &mut sqlx::SqliteConnection, e: &NewEntr
     .await?
     .last_insert_rowid();
 
+    if let Some(rule) = &e.route_rule {
+        sqlx::query("UPDATE ledger SET route_rule=?,route_rule_name=?,canary_side=? WHERE id=?")
+            .bind(&rule.id)
+            .bind(&rule.name)
+            .bind(&rule.side)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
     let hour = e.ts_ms / 1000 / 3600 * 3600;
     let error = (e.status >= 400) as i64;
     sqlx::query(
@@ -1074,6 +1085,9 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub route_rule: Option<String>,
+    pub route_rule_name: Option<String>,
+    pub canary_side: Option<String>,
     pub guardrail_rules: String,
     pub captured: bool,
     pub cache_hit: bool,
@@ -1131,6 +1145,7 @@ pub async fn recent_ledger(db: &Db, filter: LedgerFilter, limit: i64) -> Result<
 /// One page of the Ledger, newest first. All conditions are optional.
 #[derive(Debug, Clone)]
 pub struct LedgerQuery {
+    pub rule: Option<String>,
     pub status: Option<i64>,
     pub error_class: Option<String>,
     pub provider_key: Option<i64>,
@@ -1154,6 +1169,7 @@ impl Default for LedgerQuery {
     fn default() -> Self {
         Self {
             filter: LedgerFilter::All,
+            rule: None,
             status: None,
             error_class: None,
             provider_key: None,
@@ -1182,7 +1198,7 @@ pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<Ledger
         "SELECT COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
-            l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit
+            l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit, l.route_rule,l.route_rule_name,l.canary_side
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE ",
     );
     b.push(match q.filter {
@@ -1193,6 +1209,13 @@ pub(crate) async fn ledger_window(db: &Db, q: &LedgerQuery) -> Result<Vec<Ledger
     });
     if let Some(v) = q.user_id {
         b.push(" AND l.user_id = ").push_bind(v);
+    }
+    if let Some(v) = &q.rule {
+        b.push(" AND (l.route_rule=")
+            .push_bind(v.clone())
+            .push(" OR l.route_rule_name=")
+            .push_bind(v.clone())
+            .push(")");
     }
     if let Some(v) = q.status {
         b.push(" AND l.status = ").push_bind(v);

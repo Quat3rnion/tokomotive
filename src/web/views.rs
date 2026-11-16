@@ -1388,6 +1388,9 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub route_rule: String,
+    pub route_rule_name: String,
+    pub canary_side: String,
     pub guardrail_rules: String,
     pub captured: bool,
     pub cache_hit: bool,
@@ -1426,6 +1429,7 @@ pub struct LedgerView {
 /// The values of the Ledger filter bar.
 #[derive(Default)]
 pub struct LedgerFilterView {
+    pub rule: String,
     pub status: String,
     pub error_class: String,
     pub provider_key: String,
@@ -1487,6 +1491,9 @@ impl LedgerView {
             })
             .unwrap_or_default();
         LedgerView {
+            route_rule: r.route_rule.clone().unwrap_or_default(),
+            route_rule_name: r.route_rule_name.clone().unwrap_or_default(),
+            canary_side: r.canary_side.clone().unwrap_or_default(),
             captured: r.captured,
             service_units: int(r.service_units),
             id: r.id,

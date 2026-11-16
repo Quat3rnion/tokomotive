@@ -1,0 +1,38 @@
+<script>
+(() => {
+  document.querySelectorAll('.rules-form').forEach(form => {
+    const rows = form.querySelector('[data-rule-rows]');
+    const add = form.querySelector('[data-add-rule]');
+    const number = () => rows.querySelectorAll(':scope > [data-rule]').forEach((row, i) => {
+      row.querySelectorAll('[name]').forEach(field => { field.name = field.name.replace(/^rule\[[0-9]+\]/, `rule[${i}]`); });
+      row.querySelectorAll('[data-rule-move]').forEach(button => { button.setAttribute('aria-label', `Move rule ${i + 1} ${button.dataset.ruleMove === '-1' ? 'up' : 'down'}`); });
+    });
+    const wire = row => row.querySelectorAll('[data-rule-move]').forEach(button => {
+      button.hidden = false;
+      button.addEventListener('click', () => {
+        const up = button.dataset.ruleMove === '-1';
+        const other = up ? row.previousElementSibling : row.nextElementSibling;
+        if (!other) { toko.say(up ? 'Already first.' : 'Already last.'); return; }
+        if (up) { other.before(row); } else { other.after(row); }
+        number(); button.focus(); toko.say(up ? 'Moved up.' : 'Moved down.');
+      });
+    });
+    rows.querySelectorAll(':scope > [data-rule]').forEach(wire);
+    add.hidden = false;
+    add.addEventListener('click', () => {
+      if (rows.children.length >= 33) { toko.say('Use at most 32 rules.'); return; }
+      const row = rows.lastElementChild.cloneNode(true);
+      row.querySelector('legend').textContent = 'New rule';
+      row.querySelectorAll('input').forEach(field => {
+        if (field.type === 'checkbox') { field.checked = field.name.endsWith('[enabled]'); } else { field.value = ''; }
+      });
+      row.querySelectorAll('select').forEach(field => {
+        if (field.multiple) { Array.from(field.options).forEach(option => { option.selected = false; }); }
+        else { field.selectedIndex = 0; }
+      });
+      rows.append(row); wire(row); number(); row.querySelector('[name$="[name]"]').focus();
+    });
+    number();
+  });
+})();
+</script>
