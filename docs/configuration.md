@@ -56,6 +56,12 @@ is denied and recorded. The last local Owner cannot be deleted or demoted.
 Tokomotive uses the normal dashboard session lifetime. It does not retain
 the access or ID token. Session cookies remain `SameSite=Strict`. A short
 completion page starts a same-origin navigation after the IdP callback.
+When Single sign-on is enabled, an HTTPS public base URL makes session
+cookies `Secure` for both OIDC and local password login. With Single
+sign-on disabled, an Owner can select **Dashboard is served over HTTPS**
+under **Settings > Single sign-on > Advanced**. This control is off by
+default. Enable it only when browsers use HTTPS. Forwarded headers do not
+set the cookie policy; this deployment has no trusted-proxy setting.
 The temporary pre-login cookie uses `SameSite=Lax` and is cleared in the
 callback. **Log out** ends the local session only; it does not
 end the identity provider session. See the

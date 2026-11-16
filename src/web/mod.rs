@@ -712,13 +712,18 @@ async fn login(
 /// Creates a session for the account's verified hash and version, then returns
 /// its Set-Cookie value. Login and Setup use it.
 async fn start_session(st: &AppState, account: &crate::admin::Account) -> anyhow::Result<String> {
+    let secure = if oidc::secure_session(st).await? {
+        "; Secure"
+    } else {
+        ""
+    };
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
     crate::admin::create_session(&st.db, &token, st.settings().session_days, account).await?;
     let max_age = st.settings().session_days * 86_400;
     Ok(format!(
-        "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}"
+        "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}{secure}"
     ))
 }
 

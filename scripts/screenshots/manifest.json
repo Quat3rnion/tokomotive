@@ -1,5 +1,6 @@
 {
   "pending_refresh": [
+    {"page":"/admin/settings/oidc", "reason":"An Owner-only HTTPS session-cookie control and its hint were added under Advanced. Keep the promoted oidc.png capture until the next requested refresh."},
     {"page":"/admin/settings/secrets", "reason":"Secret stores now use typed per-store fields. Refresh secrets.png at the next parent-requested capture; keep its promoted capture entry and current image."},
     {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
     {"page":"/admin/routes", "reason":"Semantic cache controls and the embedding model picker were added, with Adaptive scores, request rules, Canary splits and exact cache controls. Refresh dark and light captures at the next requested capture."},

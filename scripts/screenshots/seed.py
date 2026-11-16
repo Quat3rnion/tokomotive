@@ -27,7 +27,7 @@ post("/admin/settings/oidc", {"issuer": "https://auth.example.com/application/o/
     "scopes": "openid profile email groups", "button_label": "Authentik",
     "groups_claim": "groups", "group_0": "toko-admins", "role_0": "admin",
     "group_1": "toko-readers", "role_1": "viewer", "default_role": "deny",
-    "token_auth": "client_secret_basic", "allow_private": "on"})
+    "token_auth": "client_secret_basic", "allow_private": "on", "dashboard_https": ""})
 
 # Secret stores screen: no real credential or remote service is needed.
 post("/admin/settings/secrets", {"name": "team-vault", "kind": "vault", "address": MOCK,

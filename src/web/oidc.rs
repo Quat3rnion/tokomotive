@@ -33,6 +33,7 @@ struct Config {
     jit: bool,
     default_role: String,
     userinfo: bool,
+    dashboard_https: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -51,6 +52,7 @@ impl Default for Config {
             jit: false,
             default_role: "deny".into(),
             userinfo: false,
+            dashboard_https: false,
         }
     }
 }
@@ -81,6 +83,14 @@ async fn config(st: &AppState) -> Result<Config> {
 pub(super) async fn label(st: &AppState) -> Result<Option<String>> {
     let c = config(st).await?;
     Ok(c.enabled.then_some(c.button_label))
+}
+pub(super) async fn secure_session(st: &AppState) -> Result<bool> {
+    let c = config(st).await?;
+    Ok(if c.enabled {
+        reqwest::Url::parse(&c.public_base_url).is_ok_and(|u| u.scheme() == "https")
+    } else {
+        c.dashboard_https
+    })
 }
 
 #[derive(Default)]
@@ -306,6 +316,7 @@ async fn save(
         jit: on(&f, "jit"),
         default_role: get("default_role"),
         userinfo: on(&f, "userinfo"),
+        dashboard_https: on(&f, "dashboard_https"),
         mappings: Vec::new(),
     };
     for n in 0..64 {
@@ -375,7 +386,7 @@ async fn save(
         .clear();
     *st.dashboard.oidc.jwks.lock().await = None;
     *st.dashboard.oidc.discovery.lock().expect("OIDC discovery") = None;
-    tryr!(audit(&st,&actor,"oidc.settings","Single sign-on settings saved.",json!({}),json!({"enabled":c.enabled,"jit":c.jit,"default_role":c.default_role,"mappings":c.mappings})).await);
+    tryr!(audit(&st,&actor,"oidc.settings","Single sign-on settings saved.",json!({}),json!({"enabled":c.enabled,"jit":c.jit,"default_role":c.default_role,"mappings":c.mappings,"dashboard_https":c.dashboard_https})).await);
     saved("/admin/settings/oidc", "Single sign-on settings saved.")
 }
 fn failed(error: anyhow::Error) -> Response {

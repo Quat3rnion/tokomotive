@@ -29,6 +29,8 @@
 <button type="button" class="ghost" id="oidc-add-mapping">Add mapping</button>
 </fieldset>
 <details class="adv"><summary>Advanced</summary><div class="stack">
+<label class="check"><input type="checkbox" name="dashboard_https" aria-describedby="dashboard-https-help"{% if c.dashboard_https %} checked{% endif %}> Dashboard is served over HTTPS</label>
+<p class="hint" id="dashboard-https-help">Off by default. Enable only when browsers use HTTPS: session cookies will need a secure connection. When Single sign-on is enabled, its public base URL sets this policy for both login methods. Forwarded headers do not set this policy.</p>
 <div class="field"><label for="token-auth">Token endpoint authentication</label><select id="token-auth" name="token_auth"><option value="client_secret_basic"{% if c.token_auth == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option><option value="client_secret_post"{% if c.token_auth == "client_secret_post" %} selected{% endif %}>client_secret_post</option></select></div>
 <label class="check"><input type="checkbox" name="userinfo"{% if c.userinfo %} checked{% endif %}> Read the groups claim from userinfo (subject must match the ID token)</label>
 <label class="check"><input type="checkbox" name="allow_private"{% if c.allow_private %} checked{% endif %}> Allow private addresses and private-address HTTP</label>

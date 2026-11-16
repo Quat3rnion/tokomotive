@@ -1072,3 +1072,139 @@ async fn oidc_slow_link_discovery_allows_mutations_and_rechecks_the_session() {
         "deleted initiator must fail the final session recheck"
     );
 }
+
+async fn session_policy(
+    a: &App,
+    owner: &mut Browser,
+    p: &Mock,
+    enabled: bool,
+    base: &str,
+    https: bool,
+) {
+    let issuer = p.state.lock().unwrap().base.clone();
+    let response = owner
+        .post(
+            &format!("{}/admin/settings/oidc", a.url),
+            &[
+                ("issuer", &issuer),
+                ("public_base_url", base),
+                ("client_id", "dashboard"),
+                ("client_secret", "private-client-secret"),
+                ("scopes", "openid profile email"),
+                ("button_label", "Authentik"),
+                ("enabled", if enabled { "on" } else { "" }),
+                ("dashboard_https", if https { "on" } else { "" }),
+                ("allow_private", "on"),
+                ("jit", "on"),
+                ("default_role", "deny"),
+                ("groups_claim", "groups"),
+                ("group_0", "operators"),
+                ("role_0", "admin"),
+                ("token_auth", "client_secret_basic"),
+            ],
+        )
+        .await;
+    assert_eq!(response.status(), 303);
+}
+fn session_header(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find(|h| h.starts_with("tokomotive_session="))
+        .unwrap()
+        .into()
+}
+async fn local_cookie(a: &App, proto: &str) -> String {
+    let response = Browser::new()
+        .client
+        .post(format!("{}/admin/login", a.url))
+        .header("x-forwarded-proto", proto)
+        .form(&[("username", "chief"), ("password", "owner-password")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 303);
+    session_header(&response)
+}
+
+#[tokio::test]
+async fn dashboard_session_secure_policy_requires_owner_configuration_not_forwarded_headers() {
+    let a = app().await;
+    let p = mock().await;
+    let mut owner = setup(&a).await;
+    assert!(
+        !local_cookie(&a, "https").await.contains("; Secure"),
+        "untrusted forwarded headers must not select the cookie policy"
+    );
+    session_policy(&a, &mut owner, &p, false, &a.url, true).await;
+    let cookie = local_cookie(&a, "http").await;
+    assert!(cookie.contains("; Secure"));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Strict"));
+    let html = owner
+        .get(&format!("{}/admin/settings/oidc", a.url))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("Dashboard is served over HTTPS"));
+    assert!(html.contains("name=\"dashboard_https\""));
+    let reader = viewer(&a, &mut owner).await;
+    assert_eq!(
+        reader
+            .client
+            .post(format!("{}/admin/settings/oidc", a.url))
+            // The test server is the internal HTTP leg behind HTTPS termination.
+            .header(
+                "cookie",
+                format!(
+                    "tokomotive_session={}",
+                    reader.cookies["tokomotive_session"].value
+                )
+            )
+            .form(&[("dashboard_https", "on")])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    session_policy(&a, &mut owner, &p, true, &a.url, true).await;
+    assert!(
+        !local_cookie(&a, "https").await.contains("; Secure"),
+        "enabled SSO uses its configured public URL scheme"
+    );
+}
+
+#[tokio::test]
+async fn oidc_and_local_sessions_are_secure_for_the_configured_https_public_url() {
+    let a = app().await;
+    let p = mock().await;
+    let mut owner = setup(&a).await;
+    let public = a.url.replacen("http:", "HTTPS:", 1);
+    session_policy(&a, &mut owner, &p, true, &public, false).await;
+    assert!(local_cookie(&a, "http").await.contains("; Secure"));
+    let mut browser = Browser::new();
+    let callback = begin(&a, &mut browser, &p).await;
+    assert!(browser.cookies["tokomotive_oidc"].secure);
+    // Model the internal HTTP leg of an HTTPS-terminating proxy. The trusted
+    // Owner-configured public URL, not forwarded headers, selects Secure.
+    let mut internal = reqwest::Url::parse(&callback).unwrap();
+    internal.set_scheme("http").unwrap();
+    let binding = &browser.cookies["tokomotive_oidc"].value;
+    let response = browser
+        .client
+        .get(internal)
+        .header("cookie", format!("tokomotive_oidc={binding}"))
+        .header("x-forwarded-proto", "http")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let cookie = session_header(&response);
+    for attribute in ["; Secure", "HttpOnly", "SameSite=Strict", "Path=/admin;"] {
+        assert!(cookie.contains(attribute), "{attribute}");
+    }
+}
