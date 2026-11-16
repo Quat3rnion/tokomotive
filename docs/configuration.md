@@ -32,6 +32,13 @@ checked addresses. Connections have a 5-second limit. Each request has a
 10-second limit and a 1 MiB response limit. JWKS keys are cached for
 5 minutes. An unknown key ID causes a refresh.
 
+OIDC sign-in and identity linking share a limit of 20 starts per IP in
+5 minutes. Linking also permits at most 5 starts per signed-in account in
+5 minutes, across all IPs. A rejected start returns HTTP 429 before
+discovery. Discovery is cached for 60 seconds. A settings change clears
+that cache. Each account and browser binding has at most one pending flow;
+a new start replaces the older flow.
+
 The authorization code flow uses PKCE S256. Each browser-bound state and
 nonce record expires after 10 minutes and can be used only once. A restart
 or an SSO settings change cancels pending sign-ins. ID tokens need an

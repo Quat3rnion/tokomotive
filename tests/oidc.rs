@@ -23,6 +23,7 @@ struct Browser {
     client: reqwest::Client,
     cookies: HashMap<String, Cookie>,
 }
+#[derive(Clone)]
 struct Cookie {
     value: String,
     host: String,
@@ -30,6 +31,16 @@ struct Cookie {
     secure: bool,
 }
 impl Browser {
+    fn from_ip(ip: &str) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .local_address(ip.parse::<std::net::IpAddr>().unwrap())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            cookies: HashMap::new(),
+        }
+    }
     fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -174,6 +185,9 @@ struct Provider {
     pkce_calls: usize,
     userinfo_calls: usize,
     post_auth: bool,
+    discovery_calls: usize,
+    discovery_gate: Option<Arc<tokio::sync::Semaphore>>,
+    discovery_entered: Option<Arc<tokio::sync::Notify>>,
 }
 struct Mock {
     state: Arc<Mutex<Provider>>,
@@ -198,6 +212,9 @@ async fn mock() -> Mock {
         pkce_calls: 0,
         userinfo_calls: 0,
         post_auth: false,
+        discovery_calls: 0,
+        discovery_gate: None,
+        discovery_entered: None,
     }));
     let router = Router::new()
         .route("/authorize",get(|State(p):State<Arc<Mutex<Provider>>>,axum::extract::Query(q):axum::extract::Query<HashMap<String,String>>|async move {
@@ -208,10 +225,12 @@ async fn mock() -> Mock {
         }))
         .route("/.well-known/openid-configuration",get(|State(p):State<Arc<Mutex<Provider>>>| async move {
             use axum::response::IntoResponse;
-            let p=p.lock().unwrap();
-            if p.mode=="discovery-redirect" { return axum::response::Redirect::temporary(&format!("{}/userinfo",p.base.replace("127.0.0.1","localhost"))).into_response(); }
-            if p.mode=="discovery-large" { return Json(json!({"padding":"x".repeat(1024*1024+1)})).into_response(); }
-            Json(json!({"issuer":if p.mode=="discovery-issuer" {"https://other.example"} else {&p.base},"authorization_endpoint":format!("{}/authorize",p.base),"token_endpoint":if p.mode=="discovery-public-http" {"http://192.0.2.1/token".into()} else {format!("{}/token",p.base)},"jwks_uri":format!("{}/jwks",p.base),"userinfo_endpoint":format!("{}/userinfo",p.base)})).into_response()
+            let (base,mode,gate,entered)={let mut p=p.lock().unwrap();p.discovery_calls+=1;(p.base.clone(),p.mode.clone(),p.discovery_gate.clone(),p.discovery_entered.clone())};
+            if let Some(entered)=entered {entered.notify_one();}
+            if let Some(gate)=gate {gate.acquire().await.unwrap().forget();}
+            if mode=="discovery-redirect" { return axum::response::Redirect::temporary(&format!("{}/userinfo",base.replace("127.0.0.1","localhost"))).into_response(); }
+            if mode=="discovery-large" { return Json(json!({"padding":"x".repeat(1024*1024+1)})).into_response(); }
+            Json(json!({"issuer":if mode=="discovery-issuer" {"https://other.example"} else {&base},"authorization_endpoint":format!("{}/authorize",base),"token_endpoint":if mode=="discovery-public-http" {"http://192.0.2.1/token".into()} else {format!("{}/token",base)},"jwks_uri":format!("{}/jwks",base),"userinfo_endpoint":format!("{}/userinfo",base)})).into_response()
         }))
         .route("/jwks",get(|State(p):State<Arc<Mutex<Provider>>>| async move { let mut p=p.lock().unwrap();p.jwks_calls+=1;Json(json!({"keys":[p.key.jwk]})) }))
         .route("/token",post(|State(p):State<Arc<Mutex<Provider>>>,headers:axum::http::HeaderMap, axum::Form(f):axum::Form<HashMap<String,String>>| async move {
@@ -854,5 +873,202 @@ async fn oidc_callback_keeps_strict_session_and_completes_on_the_same_origin() {
             .to_str()
             .unwrap()
             .contains("; Secure")
+    );
+}
+
+async fn viewer(a: &App, owner: &mut Browser) -> Browser {
+    assert_eq!(
+        owner
+            .post(
+                &format!("{}/admin/settings/accounts", a.url),
+                &[
+                    ("username", "reader"),
+                    ("role", "viewer"),
+                    ("password", "reader-password")
+                ]
+            )
+            .await
+            .status(),
+        303
+    );
+    let mut reader = Browser::new();
+    assert_eq!(
+        reader
+            .post(
+                &format!("{}/admin/login", a.url),
+                &[("username", "reader"), ("password", "reader-password")]
+            )
+            .await
+            .status(),
+        303
+    );
+    reader
+}
+
+#[tokio::test]
+async fn oidc_link_limits_accounts_across_ips_and_shares_the_start_ip_budget() {
+    let a = app().await;
+    let p = mock().await;
+    let mut owner = setup(&a).await;
+    configure(&a, &mut owner, &p, false).await;
+    let reader = viewer(&a, &mut owner).await;
+    for n in 0..24 {
+        let mut browser = Browser::from_ip(&format!("127.0.0.{}", n + 10));
+        browser.cookies = reader.cookies.clone();
+        let response = browser
+            .post(
+                &format!("{}/admin/oidc/link", a.url),
+                &[("account_id", "2")],
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            if n < 5 { 303 } else { 429 },
+            "link attempt {n}"
+        );
+        if n >= 5 {
+            assert_eq!(response.headers()["retry-after"], "300");
+        }
+    }
+    assert_eq!(
+        p.state.lock().unwrap().discovery_calls,
+        2,
+        "one save validation and one cached initiation; denied attempts must not fetch"
+    );
+    let mut other = Browser::from_ip("127.0.0.100");
+    for _ in 0..20 {
+        assert_eq!(
+            other
+                .get(&format!("{}/admin/oidc/start", a.url))
+                .await
+                .status(),
+            303,
+            "another user's start must work"
+        );
+    }
+    assert_eq!(
+        other
+            .get(&format!("{}/admin/oidc/start", a.url))
+            .await
+            .status(),
+        429
+    );
+    other.cookies = owner.cookies.clone();
+    assert_eq!(
+        other
+            .post(
+                &format!("{}/admin/oidc/link", a.url),
+                &[("account_id", "1")]
+            )
+            .await
+            .status(),
+        429,
+        "link must share start's IP budget"
+    );
+    assert_eq!(p.state.lock().unwrap().discovery_calls, 2);
+    configure(&a, &mut owner, &p, false).await;
+    let mut fresh = Browser::from_ip("127.0.0.101");
+    assert_eq!(
+        fresh
+            .get(&format!("{}/admin/oidc/start", a.url))
+            .await
+            .status(),
+        303
+    );
+    assert_eq!(
+        p.state.lock().unwrap().discovery_calls,
+        4,
+        "settings save must invalidate discovery cache"
+    );
+}
+
+#[tokio::test]
+async fn oidc_new_flows_replace_pending_account_and_browser_flows() {
+    let a = app().await;
+    let p = mock().await;
+    let mut owner = setup(&a).await;
+    configure(&a, &mut owner, &p, true).await;
+    let mut first = viewer(&a, &mut owner).await;
+    let r = first
+        .post(
+            &format!("{}/admin/oidc/link", a.url),
+            &[("account_id", "2")],
+        )
+        .await;
+    let auth = r.headers()["location"].to_str().unwrap().to_owned();
+    let r = first.get(&auth).await;
+    let old = r.headers()["location"].to_str().unwrap().to_owned();
+    let mut second = Browser::new();
+    second.cookies = first.cookies.clone();
+    second.cookies.remove("tokomotive_oidc");
+    let r = second
+        .post(
+            &format!("{}/admin/oidc/link", a.url),
+            &[("account_id", "2")],
+        )
+        .await;
+    let auth = r.headers()["location"].to_str().unwrap().to_owned();
+    assert_eq!(
+        first.get(&old).await.status(),
+        401,
+        "a second browser must replace this account's older pending flow"
+    );
+    assert_eq!(p.state.lock().unwrap().pkce_calls, 0);
+    let r = second.get(&auth).await;
+    let callback = r.headers()["location"].to_str().unwrap().to_owned();
+    assert_eq!(second.get(&callback).await.status(), 200);
+    let mut browser = Browser::new();
+    let old = begin(&a, &mut browser, &p).await;
+    let old_cookies = browser.cookies.clone();
+    let r = browser.get(&format!("{}/admin/oidc/start", a.url)).await;
+    let auth = r.headers()["location"].to_str().unwrap().to_owned();
+    let mut prior = Browser::new();
+    prior.cookies = old_cookies;
+    assert_eq!(
+        prior.get(&old).await.status(),
+        401,
+        "new start must replace the same browser binding's older flow"
+    );
+    assert_eq!(p.state.lock().unwrap().pkce_calls, 1);
+    let r = browser.get(&auth).await;
+    let callback = r.headers()["location"].to_str().unwrap().to_owned();
+    assert_eq!(browser.get(&callback).await.status(), 200);
+}
+
+#[tokio::test]
+async fn oidc_slow_link_discovery_allows_mutations_and_rechecks_the_session() {
+    let a = app().await;
+    let p = mock().await;
+    let mut owner = setup(&a).await;
+    configure(&a, &mut owner, &p, false).await;
+    let mut reader = viewer(&a, &mut owner).await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    {
+        let mut p = p.state.lock().unwrap();
+        p.discovery_gate = Some(gate.clone());
+        p.discovery_entered = Some(entered.clone());
+    }
+    let url = format!("{}/admin/oidc/link", a.url);
+    let task = tokio::spawn(async move { reader.post(&url, &[("account_id", "2")]).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    let mutation = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        owner.post(&format!("{}/admin/settings/accounts/2/delete", a.url), &[]),
+    )
+    .await;
+    gate.add_permits(1);
+    assert_eq!(
+        mutation
+            .expect("discovery held the dashboard mutation lock")
+            .status(),
+        303
+    );
+    assert_eq!(
+        task.await.unwrap().status(),
+        401,
+        "deleted initiator must fail the final session recheck"
     );
 }

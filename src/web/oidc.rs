@@ -86,7 +86,44 @@ pub(super) async fn label(st: &AppState) -> Result<Option<String>> {
 #[derive(Default)]
 pub(crate) struct Runtime {
     pending: Mutex<HashMap<String, Pending>>,
+    initiations: Mutex<InitiationLimiter>,
+    discovery: Mutex<Option<CachedDiscovery>>,
     jwks: tokio::sync::Mutex<Option<CachedKeys>>,
+}
+#[derive(Default)]
+struct InitiationLimiter {
+    ips: super::accounts::LoginLimiter,
+    accounts: HashMap<i64, (i64, u8)>,
+}
+impl InitiationLimiter {
+    fn allow(&mut self, ip: &str, account: Option<i64>, now: i64) -> bool {
+        self.accounts.retain(|_, (start, _)| now - *start < 300);
+        if account.is_some_and(|id| self.accounts.get(&id).is_some_and(|(_, n)| *n >= 5)) {
+            return false;
+        }
+        if !self.ips.allow(ip, "", now) {
+            return false;
+        }
+        if let Some(id) = account {
+            if !self.accounts.contains_key(&id)
+                && self.accounts.len() >= 4096
+                && let Some(oldest) = self
+                    .accounts
+                    .iter()
+                    .min_by_key(|(_, (start, _))| *start)
+                    .map(|(id, _)| *id)
+            {
+                self.accounts.remove(&oldest);
+            }
+            self.accounts.entry(id).or_insert((now, 0)).1 += 1;
+        }
+        true
+    }
+}
+struct CachedDiscovery {
+    config: String,
+    fetched: Instant,
+    discovery: Discovery,
 }
 struct Pending {
     expires: i64,
@@ -177,6 +214,29 @@ async fn discover(c: &Config) -> Result<Discovery> {
         client(c, endpoint).await?;
     }
     Ok(d)
+}
+async fn cached_discovery(st: &AppState, c: &Config) -> Result<Discovery> {
+    let fingerprint = c.fingerprint();
+    if let Some(cached) = st
+        .dashboard
+        .oidc
+        .discovery
+        .lock()
+        .expect("OIDC discovery")
+        .as_ref()
+        && cached.config == fingerprint
+        && cached.fetched.elapsed() < Duration::from_secs(60)
+    {
+        return Ok(cached.discovery.clone());
+    }
+    // Never hold either the cache mutex or the dashboard mutation lock over DNS/HTTP.
+    let discovery = discover(c).await?;
+    *st.dashboard.oidc.discovery.lock().expect("OIDC discovery") = Some(CachedDiscovery {
+        config: fingerprint,
+        fetched: Instant::now(),
+        discovery: discovery.clone(),
+    });
+    Ok(discovery)
 }
 fn random() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
@@ -314,6 +374,7 @@ async fn save(
         .expect("OIDC pending")
         .clear();
     *st.dashboard.oidc.jwks.lock().await = None;
+    *st.dashboard.oidc.discovery.lock().expect("OIDC discovery") = None;
     tryr!(audit(&st,&actor,"oidc.settings","Single sign-on settings saved.",json!({}),json!({"enabled":c.enabled,"jit":c.jit,"default_role":c.default_role,"mappings":c.mappings})).await);
     saved("/admin/settings/oidc", "Single sign-on settings saved.")
 }
@@ -325,40 +386,68 @@ fn failed(error: anyhow::Error) -> Response {
         "Single sign-on failed. Try again or use the local login form.",
     )
 }
-async fn start(
-    State(st): State<AppState>,
-    peer: std::result::Result<
-        axum::extract::ConnectInfo<std::net::SocketAddr>,
-        axum::extract::rejection::ExtensionRejection,
-    >,
-) -> Response {
+type Peer = std::result::Result<
+    axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::rejection::ExtensionRejection,
+>;
+fn initiation_allowed(st: &AppState, peer: Peer, account: Option<i64>) -> bool {
     let ip = peer
         .ok()
         .map(|p| p.0.ip().to_string())
         .unwrap_or_else(|| "local".into());
-    if !st
-        .dashboard
-        .login
+    st.dashboard
+        .oidc
+        .initiations
         .lock()
-        .expect("login limiter")
-        .allow(&ip, "", db::now_s())
-    {
-        return page_error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many login attempts. Wait 5 minutes.",
-        );
+        .expect("OIDC initiation limiter")
+        .allow(&ip, account, db::now_s())
+}
+fn limited() -> Response {
+    let mut response = page_error(
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many login attempts. Wait 5 minutes.",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("300"));
+    response
+}
+async fn start(State(st): State<AppState>, peer: Peer, headers: HeaderMap) -> Response {
+    if !initiation_allowed(&st, peer, None) {
+        return limited();
     }
-    match begin(&st, None).await {
+    match begin(&st, &headers, None).await {
         Ok(r) => r,
         Err(e) => failed(e),
     }
 }
-async fn begin(st: &AppState, link: Option<Link>) -> Result<Response> {
+async fn begin(st: &AppState, headers: &HeaderMap, link: Option<Link>) -> Result<Response> {
     let c = config(st).await?;
     ensure!(c.enabled, "OIDC disabled");
-    let d = discover(&c).await?;
+    let d = cached_discovery(st, &c).await?;
+    let _guard = st.dashboard.mutations.lock().await;
+    ensure!(
+        config(st).await?.fingerprint() == c.fingerprint(),
+        "OIDC settings changed during initiation"
+    );
+    if let Some(link) = &link {
+        link_actor(st, link).await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admin_accounts WHERE id=?)")
+                .bind(link.account)
+                .fetch_one(&st.db)
+                .await?;
+        ensure!(exists, "OIDC link target no longer exists");
+    }
     let state = random();
-    let binding = random();
+    let binding = cookie(headers, PRELOGIN_COOKIE)
+        .filter(|s| {
+            s.len() == 43
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        })
+        .unwrap_or_else(random);
+    let binding_hash = db::hash_key(&binding);
     let nonce = random();
     let verifier = random();
     let mut authorize = url(&d.authorization_endpoint)?;
@@ -377,13 +466,21 @@ async fn begin(st: &AppState, link: Option<Link>) -> Result<Response> {
         ),
     ]);
     let mut pending = st.dashboard.oidc.pending.lock().expect("OIDC pending");
-    pending.retain(|_, p| p.expires > db::now_s());
+    pending.retain(|_, p| {
+        p.expires > db::now_s()
+            && p.binding != binding_hash
+            && !link.as_ref().is_some_and(|new| {
+                p.link
+                    .as_ref()
+                    .is_some_and(|old| old.actor == new.actor || old.account == new.account)
+            })
+    });
     ensure!(pending.len() < 4096, "OIDC login capacity reached");
     pending.insert(
         state,
         Pending {
             expires: db::now_s() + 600,
-            binding: db::hash_key(&binding),
+            binding: binding_hash,
             nonce,
             verifier,
             config: c.fingerprint(),
@@ -516,11 +613,7 @@ async fn finish(st: &AppState, headers: &HeaderMap, q: Callback) -> Result<Respo
         "OIDC settings changed during login"
     );
     if let Some(link) = p.link {
-        let actor:crate::admin::Account=sqlx::query_as("SELECT a.id,a.username,a.role,a.password_hash,a.session_version FROM admin_accounts a JOIN sessions s ON s.account_id=a.id WHERE a.id=? AND a.session_version=? AND s.token_hash=? AND s.account_version=a.session_version AND s.password_hash=a.password_hash AND s.expires_at>=?").bind(link.actor).bind(link.version).bind(&link.session_hash).bind(db::now_s()).fetch_optional(&st.db).await?.context("OIDC link initiator session ended or changed")?;
-        ensure!(
-            actor.id == link.account || actor.role == "owner",
-            "OIDC link permission changed"
-        );
+        let actor = link_actor(st, &link).await?;
         sqlx::query("INSERT INTO admin_oidc_identities(issuer,subject,account_id) VALUES(?,?,?)")
             .bind(&c.issuer)
             .bind(&sub)
@@ -779,14 +872,26 @@ async fn audit(
 struct LinkForm {
     account_id: i64,
 }
+async fn link_actor(st: &AppState, link: &Link) -> Result<crate::admin::Account> {
+    let actor:crate::admin::Account=sqlx::query_as("SELECT a.id,a.username,a.role,a.password_hash,a.session_version FROM admin_accounts a JOIN sessions s ON s.account_id=a.id WHERE a.id=? AND a.session_version=? AND s.token_hash=? AND s.account_version=a.session_version AND s.password_hash=a.password_hash AND s.expires_at>=?").bind(link.actor).bind(link.version).bind(&link.session_hash).bind(db::now_s()).fetch_optional(&st.db).await?.context("OIDC link initiator session ended or changed")?;
+    ensure!(
+        actor.id == link.account || actor.role == "owner",
+        "OIDC link permission changed"
+    );
+    Ok(actor)
+}
 async fn link(
     Admin(actor): Admin,
     State(st): State<AppState>,
+    peer: Peer,
     headers: HeaderMap,
     Form(f): Form<LinkForm>,
 ) -> Response {
     if actor.id != f.account_id && actor.role != "owner" {
         return page_error(StatusCode::FORBIDDEN, "You can link only your own account.");
+    }
+    if !initiation_allowed(&st, peer, Some(actor.id)) {
+        return limited();
     }
     let exists: bool = tryr!(
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admin_accounts WHERE id=?)")
@@ -799,6 +904,7 @@ async fn link(
     }
     match begin(
         &st,
+        &headers,
         Some(Link {
             actor: actor.id,
             version: actor.session_version,

@@ -192,7 +192,10 @@ pub(super) async fn authorize(
             axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
         );
     // Authenticate again only after earlier account changes have committed.
-    let _guard = if mutation {
+    // OIDC initiation waits on discovery before its own final session/permission
+    // check under this lock. It does not mutate the database or need a snapshot.
+    let serialized = mutation && path != "/admin/oidc/link";
+    let _guard = if serialized {
         Some(st.dashboard.mutations.lock().await)
     } else {
         None
@@ -260,7 +263,7 @@ pub(super) async fn authorize(
     let mut context = ctx();
     context.role = account.role.clone();
     req.extensions_mut().insert(account.clone());
-    if mutation {
+    if serialized {
         CTX.scope(context, super::audit::run(&st, req, next, Some(account)))
             .await
     } else {

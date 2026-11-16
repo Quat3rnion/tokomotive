@@ -477,7 +477,9 @@ async fn htmx_redirect(req: Request, next: Next) -> Response {
         .or_else(|| referer.clone());
     let mut resp = next.run(req).await;
     if let Some(err) = resp.extensions_mut().remove::<UserError>() {
-        return render_user_error(resp.status(), err, htmx, referer);
+        let mut out = render_user_error(resp.status(), err, htmx, referer);
+        out.headers_mut().extend(std::mem::take(resp.headers_mut()));
+        return out;
     }
     if htmx
         && resp.status().is_redirection()
