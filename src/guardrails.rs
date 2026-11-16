@@ -662,6 +662,9 @@ impl Session {
         let mut data = self.data.lock().unwrap();
         data.names.extend(v.rules.iter().cloned());
         data.blocked |= v.blocked.is_some();
+        if v.blocked.is_some() {
+            self.hooks.reject_body();
+        }
     }
     fn complete(&self) {
         self.data.lock().unwrap().done = true;

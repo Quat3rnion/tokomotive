@@ -1181,6 +1181,7 @@ async fn handle_inner_native(
                     matched_rule = Some(selection.matched());
                     metrics::counter!("tokomotive_route_rule_matches_total","route"=>route.to_owned(),"rule"=>selection.rule.id.clone(),"side"=>selection.side).increment(1);
                     if let crate::route_rules::Action::Reject { message } = selection.action {
+                        guardrails.hooks.reject_body();
                         let entry = NewEntry {
                             semantic_cache_hit: false,
                             semantic_cache_embed: internal_embedding,
@@ -1419,6 +1420,7 @@ async fn handle_inner_native(
         if audio_upload.is_none() {
             body = Bytes::from(value.to_string());
         }
+        guardrails.hooks.request_body(value);
     }
 
     if !guardrails.hooks.pre_done() || guardrails.hooks.has_pending_pre() {
@@ -1591,6 +1593,7 @@ async fn handle_inner_native(
                 }
             }
             if let Err(response) = result {
+                guardrails.hooks.reject_body();
                 let entry = NewEntry {
                     semantic_cache_hit: false,
                     semantic_cache_embed: internal_embedding,
@@ -1633,6 +1636,7 @@ async fn handle_inner_native(
                 return *response;
             }
             drop(hook_admission);
+            guardrails.hooks.request_body(value);
             if audio_upload.is_none() && model_of(value) != requested_model {
                 // Re-enter the same authenticated surface for model resolution
                 // and Provider Access. Only new destination pre hooks may run.

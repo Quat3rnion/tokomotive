@@ -43,7 +43,11 @@ with only `post_response` does not block a stream.
 The entry includes usage, Cost, Price and final status, including a hook
 or guardrail rejection. Events also apply to streams. They do not contain
 prompt or response bodies by default. **Include bodies in events** adds
-`request` and `response`. The response is captured after response guardrails;
+`request` and `response`. The request is the final normalized body after
+request guardrails, including redactions. If a hook, guardrail or Route
+policy rejects the request, body fields are omitted even with this option
+selected; `body_omitted` is `"rejected"`.
+The response is captured after response guardrails;
 a stream is captured as SSE text. Each body has a 1 MiB cap. A body over
 the cap is null and `bodies_omitted_over_cap` is true. Hook diagnostics do
 not store bodies.

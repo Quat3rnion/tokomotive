@@ -186,6 +186,7 @@ struct Data {
     pre_done: bool,
     pre_ran: BTreeSet<i64>,
     model_hopped: bool,
+    body_rejected: bool,
     status: Option<u16>,
     response: Option<Value>,
     done: bool,
@@ -216,6 +217,17 @@ impl Session {
     }
     pub fn mark_model_hop(&self) {
         self.0.lock().unwrap().model_hopped = true;
+    }
+    pub fn reject_body(&self) {
+        self.0.lock().unwrap().body_rejected = true;
+    }
+    pub fn request_body(&self, body: &Value) {
+        let mut state = self.0.lock().unwrap();
+        if let Some(context) = &mut state.context {
+            let context = Arc::make_mut(context);
+            context.request["body"] = body.clone();
+            context.request["model"] = body["model"].clone();
+        }
     }
     pub async fn configure(
         &self,
@@ -300,6 +312,7 @@ impl Session {
                 Some(Decision::Modify { patch }) => merge_patch(body, &patch),
                 Some(Decision::Reject { status, message }) => {
                     self.0.lock().unwrap().status = Some(status);
+                    self.reject_body();
                     let message = guardrails
                         .hook_message(crate::guardrails::Direction::Request, &message)
                         .await;
@@ -307,6 +320,7 @@ impl Session {
                 }
                 None if hook.fail_closed => {
                     self.0.lock().unwrap().status = Some(502);
+                    self.reject_body();
                     return Err(Box::new(rejected(502, &hook.name, "Hook unavailable.")));
                 }
                 _ => {}
@@ -421,6 +435,7 @@ impl Session {
                 Some(Decision::Modify { patch }) => merge_patch(&mut value, &patch),
                 Some(Decision::Reject { status, message }) => {
                     self.0.lock().unwrap().status = Some(status);
+                    self.reject_body();
                     let message = guardrails
                         .hook_message(crate::guardrails::Direction::Response, &message)
                         .await;
@@ -428,6 +443,7 @@ impl Session {
                 }
                 None if hook.fail_closed => {
                     self.0.lock().unwrap().status = Some(502);
+                    self.reject_body();
                     return rejected(502, &hook.name, "Hook unavailable.");
                 }
                 _ => {}
@@ -452,7 +468,9 @@ impl Session {
         }
         for hook in c.hooks.iter().filter(|h| h.event) {
             let mut data = json!({"ledger_id":id,"ledger":entry});
-            if hook.include_bodies {
+            if self.0.lock().unwrap().body_rejected {
+                data["body_omitted"] = "rejected".into();
+            } else if hook.include_bodies {
                 data["request"] = if c.request["body"].to_string().len() <= RESPONSE_LIMIT {
                     c.request["body"].clone()
                 } else {

@@ -402,6 +402,78 @@ async fn destination_hook_cannot_make_a_second_model_hop() {
 }
 
 #[tokio::test]
+async fn rejected_events_omit_request_bodies_even_with_include_bodies() {
+    for rejection in ["guardrail", "pre_request", "post_response"] {
+        let e = env().await;
+        if rejection == "guardrail" {
+            e.guardrail("block", "request").await;
+        }
+        let stages = if rejection == "post_response" {
+            vec!["post_response", "event"]
+        } else {
+            vec!["pre_request", "event"]
+        };
+        let (id, _) = e.create("privacy", &stages).await;
+        e.attach(id, &[("route_name", "chat")]).await;
+        sqlx::query("UPDATE hooks SET include_bodies=1 WHERE id=?")
+            .bind(id)
+            .execute(&e.st.db)
+            .await
+            .unwrap();
+        if rejection != "guardrail" {
+            *e.mock.reply.lock().unwrap() =
+                json!({"decision":"reject","status":422,"message":"Rejected by policy."});
+        }
+        let r = e.send("alice@example.com", false).await;
+        assert!(r.status().is_client_error());
+        r.bytes().await.unwrap();
+        e.st.flush().await;
+        let calls = e.mock.calls.lock().unwrap();
+        let event = &calls
+            .iter()
+            .find(|(_, v, _)| v["stage"] == "event")
+            .unwrap()
+            .1;
+        assert_eq!(event["data"]["body_omitted"], "rejected", "{rejection}");
+        assert!(event["data"].get("request").is_none());
+        assert!(!event.to_string().contains("alice@example.com"));
+    }
+}
+
+#[tokio::test]
+async fn allowed_events_use_the_final_redacted_request_body() {
+    let e = env().await;
+    e.guardrail("redact", "request").await;
+    let (id, _) = e.create("privacy", &["pre_request", "event"]).await;
+    e.attach(id, &[("route_name", "chat")]).await;
+    sqlx::query("UPDATE hooks SET include_bodies=1 WHERE id=?")
+        .bind(id)
+        .execute(&e.st.db)
+        .await
+        .unwrap();
+    *e.mock.reply.lock().unwrap() = json!({"decision":"modify","patch":{"messages":[{"role":"user","content":"alice@example.com"}]}});
+    let r = e.send("safe", false).await;
+    assert_eq!(r.status(), 200);
+    r.bytes().await.unwrap();
+    e.st.flush().await;
+    let calls = e.mock.calls.lock().unwrap();
+    let event = &calls
+        .iter()
+        .find(|(_, v, _)| v["stage"] == "event")
+        .unwrap()
+        .1;
+    assert_eq!(
+        event["data"]["request"]["messages"][0]["content"],
+        "[REDACTED:email]"
+    );
+    assert_eq!(
+        event["data"]["request"]["messages"],
+        e.mock.upstream.lock().unwrap()[0]["messages"]
+    );
+    assert!(!event.to_string().contains("alice@example.com"));
+}
+
+#[tokio::test]
 async fn pre_request_continue_is_signed_and_keeps_identity() {
     use hmac::{Hmac, Mac};
     let e = env().await;
