@@ -23,7 +23,7 @@ async fn env() -> Env {
     let up = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", up.local_addr().unwrap());
     let app = axum::Router::new().route("/v1/chat/completions", post(|h: HeaderMap, Json(body):Json<serde_json::Value>| async move {
-        if h["authorization"] == "Bearer sk-bad-1111" { return StatusCode::UNAUTHORIZED.into_response(); }
+        if h["authorization"] == "Bearer sk-bad-0000-1111" { return StatusCode::UNAUTHORIZED.into_response(); }
         if body["stream"]==true { return ([("content-type","text/event-stream")],"data: {\"choices\":[{\"delta\":{\"content\":\"private stream sk-streamsecret123\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n").into_response(); }
         Json(json!({"model":"m","choices":[{"message":{"content":"private response"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}})).into_response()
     }));
@@ -38,7 +38,7 @@ admin_password='password123'
 name='pool'
 kind='openai'
 base_url='{base}'
-api_keys=['sk-bad-1111','sk-good-2222']
+api_keys=['sk-bad-0000-1111','sk-good-0000-2222']
 [[users]]
 name='alice'
 keys=['sk-alice']
@@ -105,7 +105,7 @@ async fn skipped_credential_and_transport_failures_have_distinct_timeline_record
     tokomotive::quota::record(
         &e.st.db,
         "pool",
-        &tokomotive::quota::key_id("sk-bad-1111"),
+        &tokomotive::quota::key_id("sk-bad-0000-1111"),
         401,
         &HeaderMap::new(),
         chrono::Utc::now().timestamp(),

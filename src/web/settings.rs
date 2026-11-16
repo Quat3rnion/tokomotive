@@ -1481,6 +1481,10 @@ struct UsageView {
 }
 
 fn last4(plain: &str) -> String {
+    // Show the tail only when at least 8 characters stay hidden.
+    if plain.chars().count() < 12 {
+        return "****".into();
+    }
     let tail: String = plain
         .chars()
         .rev()
@@ -2916,4 +2920,19 @@ async fn setup(State(st): State<AppState>, Form(f): Form<SetupForm>) -> Response
         .append(header::SET_COOKIE, tryr!(HeaderValue::from_str(&session)));
     r.extensions_mut().insert(account);
     r
+}
+
+#[cfg(test)]
+mod key_mask_tests {
+    use super::last4;
+
+    /// A short key must never be shown in full: the mask shows a tail only
+    /// when at least 8 characters stay hidden.
+    #[test]
+    fn short_keys_are_fully_masked() {
+        assert_eq!(last4("abc"), "****");
+        assert_eq!(last4("abcd"), "****");
+        assert_eq!(last4("abcdefghijk"), "****");
+        assert_eq!(last4("sk-abcdefghij1234"), "****1234");
+    }
 }

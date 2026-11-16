@@ -2421,7 +2421,7 @@ Cards, Price, Profit, Budgets, Reservations or accounting metrics.
 ## Key Pools
 
 A Provider can have more than one Provider Key. The set of keys is the Key Pool.
-Add or remove keys on **Providers**. Saved keys show only their last 4 characters.
+Add or remove keys on **Providers**. Saved keys show only their last 4 characters. A key shorter than 12 characters shows no characters.
 You can enter `env:NAME` to store an environment variable reference. See "Key Pool" in
 [configuration.md](configuration.md).
 

@@ -189,7 +189,7 @@ impl RequestTrace {
         };
         let last4 = key.and_then(|i| {
             let key = &c.provider.keys[i];
-            (key.chars().count() > 4).then(|| {
+            (key.chars().count() >= 12).then(|| {
                 key.chars()
                     .rev()
                     .take(4)
