@@ -702,8 +702,21 @@ impl Session {
         self.record(&verdict);
         verdict.blocked
     }
+    /// Hook error text is untrusted body text, not an exception to inspection.
+    pub async fn hook_message(&self, direction: Direction, message: &str) -> String {
+        let Some(engine) = self.engine() else {
+            return message.into();
+        };
+        let verdict = engine.inspect(direction, message).await;
+        self.record(&verdict);
+        if verdict.blocked.is_some() {
+            "Hook rejected this request.".into()
+        } else {
+            verdict.text
+        }
+    }
     pub async fn response(&self, response: Response, anthropic: bool, responses: bool) -> Response {
-        let response = self.hooks.response(response).await;
+        let response = self.hooks.response(response, self).await;
         let response = self.response_inner(response, anthropic, responses).await;
         self.hooks.capture(response).await
     }

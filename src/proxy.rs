@@ -1495,7 +1495,7 @@ async fn handle_inner_native(
         if let Some(value) = &mut json_body {
             let mut result = guardrails
                 .hooks
-                .pre(value, |value| {
+                .pre(value, &guardrails, |value| {
                     if audio_upload.is_some() {
                         return Err("Hooks cannot modify multipart uploads.");
                     }

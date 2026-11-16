@@ -11,6 +11,7 @@ struct Mock {
     calls: Mutex<Vec<(HeaderMap, Value, Vec<u8>)>>,
     upstream: Mutex<Vec<Value>>,
     reply: Mutex<Value>,
+    answer: Mutex<Option<String>>,
     block_events: AtomicBool,
     event_gate: tokio::sync::Notify,
 }
@@ -69,7 +70,13 @@ async fn upstream(State(m): State<Arc<Mock>>, Json(v): Json<Value>) -> axum::res
             "data: {\"id\":\"c\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
         ).into_response();
     }
-    Json(json!({"id":"c","model":"m","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}})).into_response()
+    let answer = m
+        .answer
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "hello".into());
+    Json(json!({"id":"c","model":"m","choices":[{"message":{"role":"assistant","content":answer},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}})).into_response()
 }
 async fn embedding(Json(v): Json<Value>) -> Json<Value> {
     Json(
@@ -237,6 +244,37 @@ async fn final_hook_body_cannot_silently_change_the_chosen_deployments() {
     assert!(r.text().await.unwrap().contains("Route rule"));
     e.st.flush().await;
     assert!(e.mock.upstream.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn hook_reject_messages_are_blocked_or_redacted_in_both_directions() {
+    for (stage, direction) in [("pre_request", "request"), ("post_response", "response")] {
+        for action in ["block", "redact"] {
+            let e = env().await;
+            e.guardrail(action, direction).await;
+            *e.mock.answer.lock().unwrap() = Some("alice@example.com".into());
+            let (id, _) = e.create("reject-message", &[stage]).await;
+            e.attach(id, &[("route_name", "chat")]).await;
+            *e.mock.reply.lock().unwrap() =
+                json!({"decision":"reject","status":422,"message":"alice@example.com"});
+            let r = e.send("safe", false).await;
+            assert_eq!(r.status(), 422);
+            let body: Value = r.json().await.unwrap();
+            assert!(
+                !body.to_string().contains("alice@example.com"),
+                "{stage} {action}"
+            );
+            assert_eq!(
+                body["error"]["message"],
+                if action == "block" {
+                    "Hook rejected this request."
+                } else {
+                    "[REDACTED:email]"
+                }
+            );
+            e.st.flush().await;
+        }
+    }
 }
 
 #[tokio::test]

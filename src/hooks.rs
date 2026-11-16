@@ -234,6 +234,7 @@ impl Session {
     pub async fn pre(
         &self,
         body: &mut Value,
+        guardrails: &crate::guardrails::Session,
         validate: impl Fn(&Value) -> Result<(), &'static str>,
     ) -> Result<(), Box<Response>> {
         self.0.lock().unwrap().pre_done = true;
@@ -261,6 +262,9 @@ impl Session {
                 Some(Decision::Modify { patch }) => merge_patch(body, &patch),
                 Some(Decision::Reject { status, message }) => {
                     self.0.lock().unwrap().status = Some(status);
+                    let message = guardrails
+                        .hook_message(crate::guardrails::Direction::Request, &message)
+                        .await;
                     return Err(Box::new(rejected(status, &hook.name, &message)));
                 }
                 None if hook.fail_closed => {
@@ -344,7 +348,11 @@ impl Session {
             Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         )
     }
-    pub async fn response(&self, response: Response) -> Response {
+    pub async fn response(
+        &self,
+        response: Response,
+        guardrails: &crate::guardrails::Session,
+    ) -> Response {
         let Some(c) = self.context() else {
             return response;
         };
@@ -375,6 +383,9 @@ impl Session {
                 Some(Decision::Modify { patch }) => merge_patch(&mut value, &patch),
                 Some(Decision::Reject { status, message }) => {
                     self.0.lock().unwrap().status = Some(status);
+                    let message = guardrails
+                        .hook_message(crate::guardrails::Direction::Response, &message)
+                        .await;
                     return rejected(status, &hook.name, &message);
                 }
                 None if hook.fail_closed => {
