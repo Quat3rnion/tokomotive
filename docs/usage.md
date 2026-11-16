@@ -398,7 +398,9 @@ Semantic entries use the exact cache's entry, byte and entry-size limits on
 share these storage limits and the oldest-first, batched removal process.
 When both caches are On, a complete miss can store one entry in each cache.
 Only successful, complete JSON responses or complete SSE streams are stored.
-Partial streams, errors and aborted responses are not stored. A streamed hit
+Partial streams and errors are not stored. When response Guardrails are attached,
+the Proxy reads a stream to its end after the client disconnects, so a complete
+response can be stored even if its client left early. A streamed hit
 replays the stored client-format bytes. Response Guardrails still apply.
 Request Guardrails run before the lookup and before the embedding request.
 The exact cache's `no-cache`, `no-store` and `bypass` request controls also apply.
@@ -439,8 +441,9 @@ Prompts go to the selected embedding Provider. Vectors can reveal information
 about prompts if decrypted. Protect the database and the Master Key together.
 Review the embedding Provider's data policy before you enable this feature.
 Similar prompts do not guarantee equivalent answers. Last user message mode
-does not compare earlier conversation text. Truncation can omit important text.
-Use Whole conversation for context-dependent requests, or leave the cache Off.
+embeds only the last user message. All other messages must match exactly,
+so a request with a different earlier conversation does not get a hit.
+Truncation can omit important text.
 Use `x-tokomotive-cache: bypass` when a request needs a new answer.
 
 ## Dashboard accounts and audit log

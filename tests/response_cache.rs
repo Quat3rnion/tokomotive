@@ -2013,3 +2013,59 @@ async fn endpoint_query_and_encrypted_identity_are_isolated() {
     );
     e.st.flush().await;
 }
+
+/// Last-user mode embeds only the last user message, but the earlier
+/// conversation must still separate entries: in a shared scope, a different
+/// history with the same last question must not reuse another caller's answer.
+#[tokio::test]
+async fn semantic_last_user_mode_keeps_earlier_context_in_the_bucket() {
+    let e = semantic_env("global").await;
+    let with_history = |history: &str| {
+        json!({"model":"cached","messages":[
+            {"role":"user","content":history},
+            {"role":"assistant","content":"noted"},
+            {"role":"user","content":"hello"}
+        ]})
+    };
+    e.send(
+        "sk-alice",
+        "chat/completions",
+        with_history("context one"),
+        None,
+    )
+    .await
+    .bytes()
+    .await
+    .unwrap();
+    e.st.flush().await;
+    let r = e
+        .send(
+            "sk-bob",
+            "chat/completions",
+            with_history("context two"),
+            None,
+        )
+        .await;
+    let tag = r.headers()["x-tokomotive-cache"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    r.bytes().await.unwrap();
+    assert_eq!(tag, "miss", "a different history reused an answer");
+    e.st.flush().await;
+    let r = e
+        .send(
+            "sk-bob",
+            "chat/completions",
+            with_history("context one"),
+            None,
+        )
+        .await;
+    assert!(
+        r.headers()["x-tokomotive-cache"]
+            .to_str()
+            .unwrap()
+            .contains("hit"),
+        "the same history must still hit"
+    );
+}

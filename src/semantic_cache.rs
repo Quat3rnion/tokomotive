@@ -152,7 +152,17 @@ impl Plan {
                 conversation.push(message.clone());
             }
             match policy.input {
-                Input::LastUser => last?,
+                Input::LastUser => {
+                    // Only the last user message is embedded. Every other
+                    // message (roles, order, any assistant continuation) goes
+                    // into the bucket, so a different history never reuses
+                    // another caller's answer.
+                    let idx = conversation.iter().rposition(|m| m["role"] == "user")?;
+                    let mut context = conversation.clone();
+                    context.remove(idx);
+                    system = context;
+                    last?
+                }
                 Input::Conversation => serde_json::to_string(&conversation).ok()?,
             }
         } else {
