@@ -31,6 +31,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/admin/routes/try", post(try_model))
         .route("/admin/routes/{name}", post(update_route))
         .route("/admin/routes/{name}/delete", post(delete_route))
+        .route("/admin/routes/{name}/scores", get(adaptive_scores))
         .route("/admin/settings", get(settings_page).post(save_settings))
         .route("/admin/settings/egress", post(save_global_egress))
         .route("/admin/settings/password", post(change_password))
@@ -370,6 +371,9 @@ struct ServerForm {
     cache_max_entry_bytes: Option<u64>,
     cache_hit_price_micros: Option<i64>,
     quota_exhausted_percent: Option<String>,
+    adaptive_epsilon: Option<f64>,
+    adaptive_half_life: Option<f64>,
+    adaptive_prior_decay_minutes: Option<f64>,
     default_markup_percent: Option<String>,
     upstream_timeout_secs: String,
     reserve_output_tokens: Option<String>,
@@ -436,6 +440,15 @@ impl ServerForm {
             .max_attempts
             .parse()
             .context("Enter the maximum attempts as a whole number, 1 or more.")?;
+        if let Some(value) = self.adaptive_epsilon {
+            cfg.router.adaptive_epsilon = value;
+        }
+        if let Some(value) = self.adaptive_half_life {
+            cfg.router.adaptive_half_life = value;
+        }
+        if let Some(value) = self.adaptive_prior_decay_minutes {
+            cfg.router.adaptive_prior_decay_minutes = value;
+        }
         if let Some(policy) = &self.unknown_model_policy {
             cfg.router.unknown_model_route = match policy.as_str() {
                 "reject" => None,
@@ -766,6 +779,7 @@ async fn routes(
                             }
                         }
                         let candidate = crate::routing::Candidate {
+                            adaptive: None,
                             provider: p.clone(),
                             model: Some(d.model.clone()),
                             route: r.name.clone(),
@@ -806,6 +820,69 @@ async fn routes(
         base: Base::new(&st),
         routes,
         providers,
+    })
+}
+
+#[derive(Template)]
+#[template(path = "adaptive_scores.html")]
+struct AdaptiveScores {
+    rows: Vec<AdaptiveScoreView>,
+}
+struct AdaptiveScoreView {
+    provider: String,
+    model: String,
+    success: String,
+    latency: String,
+    ttft: String,
+    share: String,
+    stream_share: String,
+}
+async fn adaptive_scores(
+    _: Admin,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+) -> Response {
+    let table = st.router_table();
+    let Some(route) = table
+        .routes
+        .iter()
+        .find(|r| r.name == name && matches!(r.strategy, Strategy::Adaptive))
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let settings = st.settings();
+    let scores = st.adaptive.scores(route, &settings.router, false);
+    let streams = st.adaptive.scores(route, &settings.router, true);
+    let total: f64 = scores.iter().map(|s| s.score).sum();
+    let stream_total: f64 = streams.iter().map(|s| s.score).sum();
+    let count = scores.len().max(1) as f64;
+    let share = |score: f64, total: f64| {
+        format!(
+            "{:.1}",
+            100.0
+                * (settings.router.adaptive_epsilon / count
+                    + (1.0 - settings.router.adaptive_epsilon)
+                        * if total > 0.0 {
+                            score / total
+                        } else {
+                            1.0 / count
+                        })
+        )
+    };
+    render(AdaptiveScores {
+        rows: scores
+            .into_iter()
+            .zip(streams)
+            .map(|(s, t)| AdaptiveScoreView {
+                provider: s.provider,
+                model: s.model,
+                success: format!("{:.1}", s.success * 100.0),
+                latency: format!("{:.1}", s.latency),
+                ttft: format!("{:.1}", t.latency),
+                share: share(s.score, total),
+                stream_share: share(t.score, stream_total),
+            })
+            .collect(),
     })
 }
 

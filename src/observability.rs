@@ -98,6 +98,16 @@ pub async fn save(db: &Db, key: &SecretKey, s: &Settings) -> Result<()> {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Attempt {
+    pub adaptive_score: Option<f64>,
+    pub adaptive_exploration: Option<bool>,
+    #[sqlx(skip)]
+    pub(crate) healthy: Option<bool>,
+    #[sqlx(skip)]
+    adaptive_started: Duration,
+    #[sqlx(skip)]
+    adaptive_elapsed: f64,
+    #[sqlx(skip)]
+    adaptive_ttft: Option<f64>,
     pub route_rule: Option<String>,
     pub route_rule_name: Option<String>,
     pub canary_side: Option<String>,
@@ -127,6 +137,7 @@ pub fn error_class(status: u16) -> &'static str {
 }
 
 pub struct RequestTrace {
+    state: crate::state::AppState,
     pub route_rule: Option<crate::route_rules::Matched>,
     pub attempts: Vec<Attempt>,
     limit: usize,
@@ -143,6 +154,7 @@ impl RequestTrace {
         let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM virtual_keys WHERE id=? AND capture_bodies=1) OR EXISTS(SELECT 1 FROM routes WHERE name=? AND capture_bodies=1)")
             .bind(key).bind(route.unwrap_or_default()).fetch_one(&st.db).await.unwrap_or(false);
         Self {
+            state: st.clone(),
             route_rule: None,
             attempts: Vec::new(),
             limit: limit.clamp(1, 100),
@@ -188,6 +200,12 @@ impl RequestTrace {
             })
         });
         self.attempts.push(Attempt {
+            adaptive_score: c.adaptive.map(|p| p.score),
+            adaptive_exploration: c.adaptive.map(|p| p.exploration),
+            healthy: None,
+            adaptive_started: self.state.adaptive.now(),
+            adaptive_elapsed: 0.0,
+            adaptive_ttft: None,
             route_rule: self.route_rule.as_ref().map(|r| r.id.clone()),
             route_rule_name: self.route_rule.as_ref().map(|r| r.name.clone()),
             canary_side: self.route_rule.as_ref().map(|r| r.side.clone()),
@@ -223,6 +241,13 @@ impl RequestTrace {
     }
     pub fn result(&mut self, i: Option<usize>, status: Option<u16>, started: Instant) {
         if let Some(a) = i.and_then(|i| self.attempts.get_mut(i)) {
+            a.adaptive_elapsed = self
+                .state
+                .adaptive
+                .now()
+                .saturating_sub(a.adaptive_started)
+                .as_secs_f64()
+                * 1000.0;
             a.status = status.map(i64::from);
             a.error_class = status.map_or("transient", error_class).into();
             a.latency_ms = started.elapsed().as_millis() as i64;
@@ -250,6 +275,13 @@ impl RequestTrace {
             .rev()
             .find(|a| a.skip_reason.is_empty())
         {
+            a.adaptive_elapsed = self
+                .state
+                .adaptive
+                .now()
+                .saturating_sub(a.adaptive_started)
+                .as_secs_f64()
+                * 1000.0;
             a.latency_ms = (db::now_ms() - a.started_ms).max(a.latency_ms);
             a.ttft_ms = ttft.map(|t| (t - (a.started_ms - ts)).max(0));
             if status >= 400 && a.status.is_some_and(|s| s < 400) && a.error_class.is_empty() {
@@ -257,11 +289,59 @@ impl RequestTrace {
             }
         }
     }
+    pub fn health(&mut self, i: Option<usize>, healthy: bool) {
+        if let Some(a) = i.and_then(|i| self.attempts.get_mut(i)) {
+            a.healthy = Some(healthy);
+        }
+    }
+    pub fn first_token(&mut self) {
+        if let Some(a) = self
+            .attempts
+            .iter_mut()
+            .rev()
+            .find(|a| a.skip_reason.is_empty())
+        {
+            a.adaptive_ttft = Some(
+                self.state
+                    .adaptive
+                    .now()
+                    .saturating_sub(a.adaptive_started)
+                    .as_secs_f64()
+                    * 1000.0,
+            );
+        }
+    }
+    pub fn adaptive_feedback(&self, streamed: bool, output: i64, cfg: &crate::config::RouterCfg) {
+        let last = self.attempts.iter().rposition(|a| a.skip_reason.is_empty());
+        for (i, a) in self.attempts.iter().enumerate() {
+            if let Some(healthy) = a.healthy {
+                let latency = if streamed {
+                    a.adaptive_ttft.unwrap_or(a.adaptive_elapsed)
+                } else {
+                    a.adaptive_elapsed
+                        / if Some(i) == last {
+                            output.max(1) as f64
+                        } else {
+                            1.0
+                        }
+                };
+                self.state.adaptive.observe(
+                    &a.provider,
+                    &a.deployment,
+                    healthy,
+                    streamed,
+                    latency,
+                    cfg,
+                );
+            }
+        }
+        self.state.adaptive.publish(&self.state.router_table(), cfg);
+    }
     pub async fn store(&self, db: &Db, key: &SecretKey, id: i64, ts: i64) -> Result<()> {
         let mut tx = crate::db::begin_write(db, "request_diagnostics").await?;
         for a in &self.attempts {
-            sqlx::query("INSERT INTO request_attempts(ledger_id,attempt_index,route,deployment,provider,system,provider_key,key_last4,status,error_class,skip_reason,started_ms,latency_ms,ttft_ms,route_rule,route_rule_name,canary_side) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                .bind(id).bind(a.attempt_index).bind(&a.route).bind(&a.deployment).bind(&a.provider).bind(&a.system).bind(a.provider_key).bind(&a.key_last4).bind(a.status).bind(&a.error_class).bind(&a.skip_reason).bind(a.started_ms).bind(a.latency_ms).bind(a.ttft_ms).bind(&a.route_rule).bind(&a.route_rule_name).bind(&a.canary_side).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO request_attempts(ledger_id,attempt_index,route,deployment,provider,system,provider_key,key_last4,status,error_class,skip_reason,started_ms,latency_ms,ttft_ms,route_rule,route_rule_name,canary_side,adaptive_score,adaptive_exploration) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .bind(id).bind(a.attempt_index).bind(&a.route).bind(&a.deployment).bind(&a.provider).bind(&a.system).bind(a.provider_key).bind(&a.key_last4).bind(a.status).bind(&a.error_class).bind(&a.skip_reason).bind(a.started_ms).bind(a.latency_ms).bind(a.ttft_ms).bind(&a.route_rule).bind(&a.route_rule_name).bind(&a.canary_side).bind(a.adaptive_score).bind(a.adaptive_exploration).execute(&mut *tx).await?;
         }
         if let Some(c) = &self.capture {
             let request = key.encrypt(&c.request)?;
@@ -548,6 +628,10 @@ fn otlp(e: &NewEntry, t: &RequestTrace, user: &str, key: &str, service: &str) ->
         }
         if let Some(ttft) = a.ttft_ms {
             attrs.push(int_attr("tokomotive.ttft_ms", ttft));
+        }
+        if let Some(score) = a.adaptive_score {
+            attrs.push(json!({"key":"tokomotive.adaptive.score","value":{"doubleValue":score}}));
+            attrs.push(json!({"key":"tokomotive.adaptive.exploration","value":{"boolValue":a.adaptive_exploration.unwrap_or(false)}}));
         }
         spans.push(json!({"traceId":trace,"spanId":hex::encode(rand::random::<[u8;8]>()),"parentSpanId":parent,"name":"gen_ai.attempt","kind":3,"startTimeUnixNano":(a.started_ms*1000000).to_string(),"endTimeUnixNano":((a.started_ms+a.latency_ms)*1000000).to_string(),"attributes":attrs,"status":{"code":if a.error_class.is_empty(){1}else{2}}}));
     }

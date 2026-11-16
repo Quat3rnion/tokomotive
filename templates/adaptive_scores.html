@@ -1,0 +1,5 @@
+<div class="scroll" aria-label="Adaptive Deployment scores">
+<table><thead><tr><th>Deployment</th><th>Success</th><th>Latency (ms/output token)</th><th>Stream TTFT (ms)</th><th>Share</th><th>Stream share</th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.provider }}/{{ r.model }}</td><td>{{ r.success }}%</td><td>{{ r.latency }}</td><td>{{ r.ttft }}</td><td>{{ r.share }}%</td><td>{{ r.stream_share }}%</td></tr>{% endfor %}
+</tbody></table></div>
+<p class="hint">Shares include exploration, before quota, circuit and concurrency checks or session pins. Latency uses the response time if output tokens are not available. State is local to this process and resets on restart.</p>

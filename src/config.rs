@@ -37,6 +37,9 @@ pub struct RouterCfg {
     pub session_affinity_ttl_secs: u64,
     pub session_affinity_capacity: usize,
     pub quota_exhausted_percent: f64,
+    pub adaptive_epsilon: f64,
+    pub adaptive_half_life: f64,
+    pub adaptive_prior_decay_minutes: f64,
 }
 
 impl Default for RouterCfg {
@@ -49,6 +52,9 @@ impl Default for RouterCfg {
             session_affinity_ttl_secs: 1800,
             session_affinity_capacity: 100_000,
             quota_exhausted_percent: 98.0,
+            adaptive_epsilon: 0.05,
+            adaptive_half_life: 10.0,
+            adaptive_prior_decay_minutes: 5.0,
         }
     }
 }
@@ -61,6 +67,7 @@ pub enum Strategy {
     RoundRobin,
     Weighted,
     Quota,
+    Adaptive,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -520,6 +527,17 @@ impl Config {
         }
         if self.router.failure_threshold == 0 || self.router.max_attempts == 0 {
             bail!("The failure threshold and the maximum attempts must be positive.");
+        }
+        if !self.router.adaptive_epsilon.is_finite()
+            || !(0.0..=1.0).contains(&self.router.adaptive_epsilon)
+            || !self.router.adaptive_half_life.is_finite()
+            || self.router.adaptive_half_life <= 0.0
+            || !self.router.adaptive_prior_decay_minutes.is_finite()
+            || self.router.adaptive_prior_decay_minutes <= 0.0
+        {
+            bail!(
+                "Adaptive epsilon must be from 0 to 1. Half-life and prior decay minutes must be positive finite numbers."
+            );
         }
         if !self.router.quota_exhausted_percent.is_finite()
             || !(0.0..=100.0).contains(&self.router.quota_exhausted_percent)

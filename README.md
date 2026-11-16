@@ -77,6 +77,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Shows account health and subscription quota windows on Providers and Overview,
   with reset times and Prometheus metrics. Quota scheduling prefers accounts
   with more capacity, preserves session pins, and skips exhausted or invalid accounts.
+- Supports adaptive routing by success and latency, with exploration, live
+  Deployment scores, attempt traces and Prometheus metrics.
 
 ### Accounting
 

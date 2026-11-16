@@ -272,7 +272,10 @@ impl AppState {
                 })
                 .map_or(1, |d| d.weight)
         };
-        if !matches!(route.strategy, crate::config::Strategy::Quota) {
+        if !matches!(
+            route.strategy,
+            crate::config::Strategy::Quota | crate::config::Strategy::Adaptive
+        ) {
             candidates[..primary].sort_by(|a, b| {
                 score(&key, &id(a), weight(a))
                     .total_cmp(&score(&key, &id(b), weight(b)))
@@ -292,6 +295,9 @@ impl AppState {
         // Removed Deployments and revoked Provider Access cannot retain a pin.
         let can_repin = pinned.is_some() && !candidates.iter().any(|c| Some(id(c)) == pinned);
         if let Some(position) = candidates.iter().position(|c| Some(id(c)) == pinned) {
+            if let Some(pick) = &mut candidates[position].adaptive {
+                pick.exploration = false;
+            }
             candidates[..=position].rotate_right(1);
         }
         Some(Session {

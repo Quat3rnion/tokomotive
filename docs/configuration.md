@@ -1088,8 +1088,8 @@ create, edit or delete a Route. The page has one section for each Route.
 | Field        | Meaning                                                                                              |
 | ------------ | ---------------------------------------------------------------------------------------------------- |
 | Name         | The model name that clients send. Use letters, digits, dot, underscore or hyphen. The name must be unique. |
-| Strategy     | `priority`, `round_robin`, `weighted` or `quota`. See below.                                                  |
-| Deployments  | Rows that you add and remove. Each row has a Provider (select), an upstream Model and a weight. The weight is a positive integer. Only the `weighted` strategy uses it. |
+| Strategy     | `priority`, `round_robin`, `weighted`, `quota` or `adaptive`. See below. |
+| Deployments  | Rows that you add and remove. Each row has a Provider, an upstream Model and a weight. The positive integer weight applies to Weighted, Adaptive and weighted session selection. |
 | Fallbacks    | A comma list of Route names or catalog Model names.                                                  |
 
 The strategies:
@@ -1100,6 +1100,7 @@ The strategies:
 | `round_robin` | The order of the rows, but the first choice moves one row for each request.                       |
 | `weighted`    | One Deployment is the first choice, selected at random by weight. The others follow in descending weight order. |
 | `quota`       | Most remaining quota first, using each Deployment's best available account. Equal ratios use the earliest reset, then row order. Unknown quota ranks at 50% remaining. |
+| `adaptive`    | Random selection by weight times success squared divided by latency. Uniform exploration keeps estimates fresh. See [Adaptive routing](usage.md#adaptive-routing). |
 
 Rules for Fallbacks:
 
@@ -1126,6 +1127,9 @@ The optional file uses `[[routes]]` with `name`, `strategy`, `deployments` and
 | `cooldown_secs`     | `30`    | Seconds that an open Circuit Breaker waits before it allows one probe request. 0 or more. |
 | `max_attempts`      | `8`     | Positive limit on upstream attempts for one request. Each Provider Key try counts.       |
 | `quota_exhausted_percent` | `98` | Skip accounts at this used percentage until reset. A finite number from 0 to 100. Applies to all strategies. |
+| `adaptive_epsilon` | `0.05` | Uniform exploration probability, from 0 to 1. |
+| `adaptive_half_life` | `10.0` | Positive, finite EWMA half-life in samples. |
+| `adaptive_prior_decay_minutes` | `5.0` | Positive, finite idle interval before estimates decay toward the neutral prior. The same interval is the decay half-life. |
 
 The Proxy keeps one Circuit Breaker for each pair of Provider and upstream model.
 A connection error, a 429 without a known reset, a 5xx or a failed token request counts as
@@ -1133,7 +1137,8 @@ a failure. Any other response resets
 the count. When the count reaches `failure_threshold`, the Circuit Breaker opens.
 After `cooldown_secs`, one probe request tests the Deployment. A good result
 closes the Circuit Breaker. A failed probe opens it again. If every candidate is
-open, the Proxy tries them anyway. The Proxy keeps this state in memory, so it
+open, the Proxy tries them anyway, except when an Adaptive Route is in use.
+Adaptive never bypasses an open circuit. The Proxy keeps this state in memory, so it
 resets at a restart.
 
 An account with a known rate-limit reset is skipped until that reset, not the

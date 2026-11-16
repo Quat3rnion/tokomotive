@@ -565,6 +565,13 @@ impl Ctx {
         }
         // Upstream counts are untrusted: clamp them before any sum or price.
         o.usage = o.usage.bounded();
+        if !o.client_aborted
+            && self.endpoint != Endpoint::CountTokens
+            && self.cache_hit_price.is_none()
+        {
+            self.trace
+                .adaptive_feedback(self.streamed, o.usage.output, &self.st.settings().router);
+        }
         if self.cache_hit_price.is_none() {
             self.st
                 .limiter
@@ -1141,6 +1148,38 @@ async fn handle_inner_native(
         chrono::Utc::now().timestamp(),
         settings.router.quota_exhausted_percent,
     );
+    st.adaptive.order(
+        &table,
+        &mut candidates,
+        &settings.router,
+        endpoint == Endpoint::AudioSpeech || json_body.as_ref().is_some_and(is_stream),
+        |c| {
+            st.deployment_available(c, &table.settings)
+                && if c.provider.keys.is_empty() {
+                    quota_schedule
+                        .skip(
+                            &c.provider,
+                            None,
+                            chrono::Utc::now().timestamp(),
+                            settings.router.quota_exhausted_percent,
+                            table.settings.cooldown_secs,
+                        )
+                        .is_none()
+                } else {
+                    (0..c.provider.keys.len()).any(|i| {
+                        quota_schedule
+                            .skip(
+                                &c.provider,
+                                Some(i),
+                                chrono::Utc::now().timestamp(),
+                                settings.router.quota_exhausted_percent,
+                                table.settings.cooldown_secs,
+                            )
+                            .is_none()
+                    })
+                }
+        },
+    );
     // An older pin must not promote a Fallback ahead of a rule's chosen set.
     let affinity_count = if matched_rule.is_some() {
         candidates
@@ -1461,7 +1500,12 @@ async fn handle_inner_native(
 
     // Try each deployment's keys before the next deployment. Nothing has
     // been sent to the client, so connection errors, 429 and 5xx can retry.
-    let degraded = candidates
+    let degraded = !candidates.iter().any(|c| {
+        table
+            .routes
+            .iter()
+            .any(|r| r.name == c.route && matches!(r.strategy, crate::config::Strategy::Adaptive))
+    }) && candidates
         .iter()
         .all(|c| !st.deployment_available(c, &table.settings));
     let mut upstream = None;
@@ -1778,6 +1822,7 @@ async fn handle_inner_native(
                         );
                         if !retrying {
                             permit.record(false);
+                            ctx.trace.health(attempt, false);
                         }
                         upstream = None;
                         break;
@@ -1795,6 +1840,7 @@ async fn handle_inner_native(
                 .await
             else {
                 permit.record(false);
+                ctx.trace.health(attempt, false);
                 break;
             };
             // API-key Providers keep the version-aware join from the presets
@@ -1824,6 +1870,7 @@ async fn handle_inner_native(
             .await
             else {
                 permit.record(false);
+                ctx.trace.health(attempt, false);
                 break;
             };
             upstream = None;
@@ -1857,6 +1904,7 @@ async fn handle_inner_native(
                     ctx.trace.classify_last("request_timeout");
                     metrics::counter!("tokomotive_provider_timeouts_total", "provider" => provider.name.clone(), "kind" => "request").increment(1);
                     permit.record(false);
+                    ctx.trace.health(attempt, false);
                     if permit.is_probe() {
                         break;
                     }
@@ -1895,6 +1943,7 @@ async fn handle_inner_native(
                             .await
                         else {
                             permit.record(false);
+                            ctx.trace.health(attempt, false);
                             break;
                         };
                         let url = if matches!(
@@ -1921,6 +1970,7 @@ async fn handle_inner_native(
                         .await
                         else {
                             permit.record(false);
+                            ctx.trace.health(attempt, false);
                             break;
                         };
                         result = match send_request(req).await {
@@ -1930,6 +1980,7 @@ async fn handle_inner_native(
                                 ctx.trace.classify_last("request_timeout");
                                 metrics::counter!("tokomotive_provider_timeouts_total", "provider" => provider.name.clone(), "kind" => "request").increment(1);
                                 permit.record(false);
+                                ctx.trace.health(attempt, false);
                                 break;
                             }
                         };
@@ -1955,6 +2006,7 @@ async fn handle_inner_native(
                         upstream = None;
                         if !retrying {
                             permit.record(false);
+                            ctx.trace.health(attempt, false);
                         }
                         break;
                     }
@@ -1970,6 +2022,8 @@ async fn handle_inner_native(
                             .is_some();
                     let healthy = !retryable(r.status()) && !credentials_invalid;
                     permit.record(healthy || credentials_invalid || known_reset);
+                    ctx.trace
+                        .health(attempt, healthy || credentials_invalid || known_reset);
                     if (credentials_invalid || rate_limited)
                         && let Some(session) = &mut session
                     {
@@ -1998,6 +2052,7 @@ async fn handle_inner_native(
                         metrics::counter!("tokomotive_provider_timeouts_total", "provider" => provider.name.clone(), "kind" => kind).increment(1);
                     }
                     permit.record(false);
+                    ctx.trace.health(attempt, false);
                     egress.connect_error(&provider.name, &e);
                     tracing::warn!(provider = %provider.name, class = crate::egress::error_class(&e), "upstream request failed");
                 }
@@ -2852,6 +2907,7 @@ fn stream_response(
                     };
                     if ttft.is_none() && tracker.saw_content {
                         ttft = Some(started.elapsed().as_millis() as i64);
+                        ctx.trace.first_token();
                     }
                     ctx.trace.response(&out);
                     cached_body.feed(&out);

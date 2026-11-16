@@ -1,10 +1,10 @@
 {
   "pending_refresh": [
     {"page":"/admin", "reason":"Exact cache hit rate added. Keep the current image until the next requested capture."},
-    {"page":"/admin/routes", "reason":"Request rules, Canary splits and the Try-box session id were added, with exact response cache controls. Refresh dark and light captures at the next requested capture."},
-    {"page":"/admin/settings", "reason":"Exact response cache limits, hit Price and global egress proxy controls added. Keep the current image until the next requested capture."},
+    {"page":"/admin/routes", "reason":"Adaptive strategy and live scores were added, with request rules, Canary splits, the Try-box session id and exact response cache controls. Refresh dark and light captures at the next requested capture."},
+    {"page":"/admin/settings", "reason":"Adaptive router fields were added, with exact response cache limits, hit Price and global egress proxy controls. Keep the current image until the next requested capture."},
     {"page":"/admin/providers", "reason":"Per-Provider egress proxy controls and connection path results added. Keep the current image until the next requested capture."},
-    {"page":"/admin/ledger", "reason":"Route rule filter, matched rule and Canary side were added, with the cache hit flag. Refresh at the next requested capture."}
+    {"page":"/admin/ledger", "reason":"Adaptive score and exploration were added, with Route rule filter, matched rule, Canary side and cache hit flag. Refresh at the next requested capture."}
   ],
   "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],
   "captures": [
@@ -31,6 +31,7 @@
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
+    {"route":"/admin/routes/{name}/scores", "reason":"Read-only adaptive score fragment, shown within the Routes page."},
     {"route":"/admin/mcp/search", "reason":"Search result fragment for the MCP tool access picker."},
     {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page."},
     {"route":"/admin/assets/htmx.min.js", "reason":"JavaScript asset, not an HTML page."},

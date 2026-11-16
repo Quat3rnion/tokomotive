@@ -197,6 +197,19 @@ async fn refresh_retrying_before_send_does_not_open_circuit_with_healthy_fallbac
         f.circuit_available(),
         "local backoff must not open the deployment circuit"
     );
+    let score =
+        f.st.adaptive
+            .scores(
+                &f.st.router_table().routes[0],
+                &f.st.settings().router,
+                false,
+            )
+            .remove(0);
+    assert_eq!(
+        (score.success, score.latency),
+        (0.9, 1000.0),
+        "RefreshRetrying is neutral for adaptive estimates"
+    );
     f.recover().await;
     assert_eq!(f.provider(f.request()).await, "sub");
 }
@@ -209,6 +222,19 @@ async fn refresh_retrying_after_401_does_not_open_circuit_with_healthy_fallback(
     assert!(
         f.circuit_available(),
         "401 refresh backoff must not open the deployment circuit"
+    );
+    let score =
+        f.st.adaptive
+            .scores(
+                &f.st.router_table().routes[0],
+                &f.st.settings().router,
+                false,
+            )
+            .remove(0);
+    assert_eq!(
+        (score.success, score.latency),
+        (0.9, 1000.0),
+        "RefreshRetrying after a 401 is neutral for adaptive estimates"
     );
     f.recover().await;
     assert_eq!(f.provider(f.request()).await, "sub");

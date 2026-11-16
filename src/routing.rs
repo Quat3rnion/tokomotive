@@ -139,6 +139,7 @@ impl RouterTable {
 
 #[derive(Clone)]
 pub struct Candidate {
+    pub adaptive: Option<crate::adaptive::Pick>,
     pub provider: Provider,
     pub model: Option<String>,
     pub rewrite: bool,
@@ -246,7 +247,7 @@ impl AppState {
         let mut order: Vec<_> = route.deployments.iter().collect();
         if !order.is_empty() {
             match route.strategy {
-                Strategy::Priority | Strategy::Quota => {}
+                Strategy::Priority | Strategy::Quota | Strategy::Adaptive => {}
                 Strategy::RoundRobin => {
                     let mut next = self.route_next.lock().expect("route rotation");
                     let n = next.entry(route.name.clone()).or_default();
@@ -281,6 +282,7 @@ impl AppState {
             .into_iter()
             .filter_map(|d| {
                 Some(Candidate {
+                    adaptive: None,
                     provider: table
                         .providers
                         .iter()
@@ -335,6 +337,7 @@ impl AppState {
                 } else if let Some(m) = catalog.resolve(name) {
                     if let Some(provider) = table.providers.iter().find(|p| p.name == m.provider) {
                         out.push(Candidate {
+                            adaptive: None,
                             provider: provider.clone(),
                             model: Some(m.name.clone()),
                             rewrite: true,
@@ -349,6 +352,7 @@ impl AppState {
             && let Some(provider) = table.providers.iter().find(|p| &p.name == provider)
         {
             out.push(Candidate {
+                adaptive: None,
                 provider: provider.clone(),
                 model: Some(model.clone()),
                 rewrite: true,
@@ -428,6 +432,7 @@ mod tests {
         let cfg: Config = toml::from_str("[server]\ndatabase = 'sqlite::memory:'").unwrap();
         let st = crate::init(&cfg, None).await.unwrap();
         let candidate = Candidate {
+            adaptive: None,
             provider: Provider::new("test", ProviderKind::Openai, "http://localhost", vec![]),
             model: Some("test".into()),
             rewrite: true,
@@ -471,6 +476,7 @@ mod tests {
         let cfg: Config = toml::from_str("[server]\ndatabase = 'sqlite::memory:'").unwrap();
         let st = crate::init(&cfg, None).await.unwrap();
         let candidate = Candidate {
+            adaptive: None,
             provider: Provider::new("test", ProviderKind::Openai, "http://localhost", vec![]),
             model: Some("test".into()),
             rewrite: true,

@@ -994,6 +994,54 @@ Cost and Price use upstream Token Classes, before Translation. The Proxy
 continues to read upstream streams after a client disconnect to obtain final
 usage.
 
+### Adaptive routing
+
+On **Routes**, select **Adaptive** to prefer Deployments with better success
+and latency estimates. Route rules and Canary splits select the Deployment
+subset first. Adaptive runs inside that subset. Fallback order does not change.
+
+The Proxy keeps these estimates for each Provider and upstream model pair:
+
+- An exponentially weighted moving average (EWMA) of healthy outcomes.
+- Separate latency EWMAs for streams and other responses. Streams use time to
+  first content token (TTFT). Other responses use total response time divided
+  by output tokens. If output tokens are not available, use total response time.
+- The time of the last sample.
+
+The score is `weight * success_ewma^a / latency_ewma^b`. The fixed defaults are
+`a = 2` and `b = 1`. Latency is in milliseconds, with a minimum of 0.1 ms.
+The neutral prior is 90% success and 1000 ms for each latency estimate.
+A new Deployment starts at this prior. The sample update factor is
+`1 - 2^(-1 / adaptive_half_life)`. The default half-life is 10 samples.
+The success classification is the Circuit Breaker classification, not the
+HTTP success status alone. Connection errors, 5xx, 429 without a known reset
+and terminal token errors are failures. Other outcomes are healthy.
+Client aborts, `concurrency_limited` and OAuth `RefreshRetrying` are neutral.
+Token-count estimates and cache hits do not change these estimates.
+
+With probability `adaptive_epsilon` (default 0.05), choose uniformly among
+Deployments with an available circuit and at least one available account.
+Otherwise, choose at random in proportion to the scores. Retries use the same
+scores without replacement. Weight multiplies the score, not the exploration
+probability. Provider Access, quota skips, Provider limits and attempt limits
+still apply. An open circuit is never used, even if all circuits are open.
+After the cooldown, the existing single-probe rule applies.
+
+After `adaptive_prior_decay_minutes` without a sample (default 5), estimates
+decay toward the prior. Each additional interval halves their difference from
+the prior. A new sample first applies this decay, then updates the EWMA.
+State is in memory only, is not shared between processes and resets on restart.
+
+Set exploration, half-life and prior decay in **Settings > Server and router**,
+in the Router field grid. The Routes page refreshes read-only scores every
+5 seconds. Viewers can read them. It shows healthy percentage, total latency
+per output token, stream TTFT and expected traffic shares before account,
+circuit, concurrency or session checks. Attempt traces show the score at
+selection and whether the pick was exploration. A retained session pin is not
+an exploration pick. The Prometheus gauge
+`tokomotive_deployment_score{route,provider,model}` exposes the weighted
+non-stream score. Requests refresh this gauge, including idle decay.
+
 ### Session affinity
 
 Use Session affinity when a Route has several inference instances of the same
@@ -1031,8 +1079,9 @@ initial prompt under one User can share a pin. Send `x-session-id` to separate
 them. Raw keys and prompt prefixes are not stored in the affinity table,
 Ledger or metrics.
 
-For a new session with the Quota strategy, remaining quota orders the compatible
-Deployments. Other strategies use weighted rendezvous hashing to order the compatible
+For a new session with Quota, remaining quota orders the compatible Deployments.
+With Adaptive, the adaptive selection creates the first pin. Other strategies
+use weighted rendezvous hashing to order the compatible
 Deployments that Provider Access permits. Deployment identity is the Provider
 name plus the upstream model name. A pin also records the account. Weights apply even if the Route strategy
 is Priority or Round robin. A live pin keeps its Deployment when weights
@@ -1043,7 +1092,7 @@ If the pinned Deployment's circuit is open, the Proxy tries the next
 Deployment in rendezvous order. It also retries connection errors, HTTP 429
 and 5xx before it sends a response to the client. Fallbacks, Provider Key
 pools, the attempt limit and half-open probes work as before. The existing
-all-circuits-open recovery rule still applies. A transient failure does not
+all-circuits-open recovery rule still applies, except for Adaptive. A transient failure does not
 replace a live account pin. After the circuit recovers, the session returns to
 that account. An account at the quota exhaustion threshold (default 98% used),
 an active rate limit, or invalid credentials permits failover and a new pin.

@@ -36,9 +36,13 @@ cooldown_secs = 30
 max_attempts = 8
 session_affinity_ttl_secs = 1800
 session_affinity_capacity = 100000
+adaptive_epsilon = 0.05
+adaptive_half_life = 10.0 # Samples, not seconds.
+adaptive_prior_decay_minutes = 5.0
 
 # Optional client-facing model name. Strategies: priority (default),
-# round_robin, weighted. Weighted picks one deployment at random first,
+# round_robin, weighted, quota, adaptive. Adaptive learns success and latency.
+# Weighted picks one deployment at random first,
 # then tries the others in descending weight order.
 # [[routes]]
 # name = "smart"
