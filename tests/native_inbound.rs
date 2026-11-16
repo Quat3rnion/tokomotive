@@ -12,6 +12,61 @@ async fn serve(app: Router) -> (String, tokio::task::JoinHandle<()>) {
 }
 
 #[tokio::test]
+async fn native_authentication_precedes_body_validation() {
+    let (st, url, mut tasks) = setup(Router::new()).await;
+    let http = reqwest::Client::new();
+    for path in [
+        "/v1beta/models/chat:generateContent",
+        "/model/chat/converse",
+        "/model/chat/invoke",
+    ] {
+        for body in ["{", "{}"] {
+            let response = http
+                .post(format!("{url}{path}"))
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 401, "{path}: {body}");
+            if path.starts_with("/model/") {
+                assert_eq!(
+                    response.headers()["x-amzn-errortype"],
+                    "AccessDeniedException"
+                );
+            } else {
+                let value: Value = response.json().await.unwrap();
+                assert_eq!(value["error"]["status"], "UNAUTHENTICATED");
+            }
+        }
+    }
+    let (limited, task) = serve(
+        Router::new()
+            .fallback(tokomotive::inbound::handle)
+            .layer(axum::extract::DefaultBodyLimit::max(16))
+            .with_state(st),
+    )
+    .await;
+    tasks.push(task);
+    for path in [
+        "/v1beta/models/chat:generateContent",
+        "/model/chat/converse",
+        "/model/chat/invoke",
+    ] {
+        let response = http
+            .post(format!("{limited}{path}"))
+            .bearer_auth("sk-native")
+            .body("x".repeat(17))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 413, "{path}");
+    }
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
 async fn bedrock_sdk_converse_tool_round_trip_and_invoke() {
     let (_, url, tasks) = setup(Router::new().route("/v1/chat/completions", post(|Json(body): Json<Value>| async move {
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call-weather");

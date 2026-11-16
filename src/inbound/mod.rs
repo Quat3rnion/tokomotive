@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, Query, State},
+    extract::{FromRequest, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
@@ -189,7 +189,7 @@ pub async fn handle(
     method: Method,
     uri: Uri,
     mut headers: HeaderMap,
-    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+    request: Request,
 ) -> Response {
     let path = uri.path();
     let format = if path.starts_with("/model/") {
@@ -214,6 +214,9 @@ pub async fn handle(
             "Use a Virtual Key as Bearer. SigV4 signatures are not verified.",
         );
     }
+    if let Err(response) = crate::proxy::authenticate(&st, &headers, false).await {
+        return error(format, response.status(), "Invalid or missing Virtual Key.");
+    }
     if method != Method::POST {
         return error(
             format,
@@ -221,7 +224,9 @@ pub async fn handle(
             "Use POST for this operation.",
         );
     }
-    let body = match body {
+    // Authenticate before buffering. The Bytes extractor still enforces the
+    // router's DefaultBodyLimit, including for requests without Content-Length.
+    let body = match Bytes::from_request(request, &st).await {
         Ok(b) => b,
         Err(e) => {
             return error(
