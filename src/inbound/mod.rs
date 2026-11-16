@@ -27,7 +27,6 @@ pub(crate) struct Context {
     pub format: Format,
     pub operation: String,
     pub original: Value,
-    canonical: Value,
     pub sse: bool,
 }
 fn invalid(message: &str) -> TranslateError {
@@ -37,6 +36,12 @@ fn invalid(message: &str) -> TranslateError {
 }
 fn array(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+pub(crate) fn safe_upstream_header(name: &axum::http::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "content-type" | "retry-after" | "x-request-id" | "x-amzn-requestid"
+    )
 }
 fn resource(value: &str) -> Result<String, TranslateError> {
     let value = value
@@ -62,19 +67,27 @@ impl Context {
         ) {
             return Bytes::from(value.to_string());
         }
-        // Retaining optional native metadata must not turn an otherwise valid
-        // response into a body-limit failure in the guardrail/client adapters.
-        if canonical
-            .len()
-            .saturating_mul(2)
-            .saturating_add(raw.to_string().len())
-            .saturating_add(128)
-            > 64 * 1024 * 1024
-        {
-            return Bytes::from(value.to_string());
+        // Only non-content metadata may cross the canonical guardrail boundary.
+        // Never retain candidates, thought parts or Provider extension objects.
+        let mut metadata = json!({});
+        if self.format == Format::Gemini {
+            for key in ["modelVersion", "responseId"] {
+                if let Some(v) = raw.get(key).filter(|v| v.is_string()) {
+                    metadata[key] = v.clone();
+                }
+            }
+        } else if raw["metrics"]["latencyMs"].is_u64() {
+            metadata["metrics"] = json!({"latencyMs": raw["metrics"]["latencyMs"]});
         }
-        if value.is_object() {
-            value["_tokomotive_native"] = json!({"canonical":value.clone(),"body":raw});
+        // Optional metadata must not reduce the usable response body limit.
+        if value.is_object()
+            && canonical
+                .len()
+                .saturating_add(metadata.to_string().len())
+                .saturating_add(32)
+                <= 64 * 1024 * 1024
+        {
+            value["_tokomotive_native"] = metadata;
         }
         Bytes::from(value.to_string())
     }
@@ -111,17 +124,16 @@ impl Context {
         if self.is_gemini_aux() {
             return Ok(Some(gemini::aux_request(&self.operation, body)?));
         }
-        // Preserve native fields only if request guardrails did not change the
-        // canonical request. Never let the raw body bypass redaction.
-        if body == &self.canonical {
-            return Ok(Some(self.original.clone()));
-        }
+        // Always rebuild from the guarded canonical request. Native fields are
+        // retained only by the explicit allowlist below, never by raw restore.
         let mut out = if self.format == Format::Gemini {
             crate::translate_gemini::request(Endpoint::ChatCompletions, body)?
         } else {
             crate::translate_bedrock::request(Endpoint::ChatCompletions, body)?
         };
-        if let Some(safety) = self.original.get("safetySettings") {
+        if self.format == Format::Gemini
+            && let Some(safety) = self.original.get("safetySettings")
+        {
             out["safetySettings"] = safety.clone();
         }
         Ok(Some(out))
@@ -242,7 +254,6 @@ pub async fn handle(
         format,
         operation,
         original,
-        canonical: canonical.clone(),
         sse: uri
             .query()
             .is_some_and(|q| q.split('&').any(|p| p == "alt=sse")),
@@ -386,7 +397,12 @@ async fn finish(context: Context, mut response: Response) -> Response {
     if !parts.status.is_success() {
         let mut response = error(context.format, parts.status, message(&value));
         for (key, value) in &parts.headers {
-            if key != header::CONTENT_TYPE && key != header::CONTENT_LENGTH {
+            if (safe_upstream_header(key) && key != header::CONTENT_TYPE)
+                || matches!(
+                    key.as_str(),
+                    "x-tokomotive-cache" | "x-tokomotive-safety-settings"
+                )
+            {
                 response.headers_mut().insert(key, value.clone());
             }
         }
@@ -395,15 +411,26 @@ async fn finish(context: Context, mut response: Response) -> Response {
     let retained = value
         .as_object_mut()
         .and_then(|o| o.remove("_tokomotive_native"));
-    let value = if let Some(retained) = retained.filter(|v| v["canonical"] == value) {
-        retained["body"].clone()
-    } else if context.format == Format::Gemini {
+    // The inspected canonical form is always the source of response content,
+    // including on cache hits. Raw native content is never restored.
+    let mut value = if context.format == Format::Gemini {
         gemini::response(&context.operation, &value)
     } else if context.format == Format::Converse {
         bedrock::response(&value)
     } else {
         value
     };
+    if let Some(metadata) = retained {
+        if context.format == Format::Gemini {
+            for key in ["modelVersion", "responseId"] {
+                if let Some(v) = metadata.get(key).filter(|v| v.is_string()) {
+                    value[key] = v.clone();
+                }
+            }
+        } else if context.format == Format::Converse && metadata["metrics"]["latencyMs"].is_u64() {
+            value["metrics"] = json!({"latencyMs": metadata["metrics"]["latencyMs"]});
+        }
+    }
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.insert(
         header::CONTENT_TYPE,

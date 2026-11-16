@@ -1963,7 +1963,10 @@ async fn handle_inner_native(
     }
     let mut out_headers = HeaderMap::new();
     for (name, value) in upstream.headers().iter() {
-        if !skip_header(name) && name != header::CONTENT_ENCODING {
+        if !skip_header(name)
+            && name != header::CONTENT_ENCODING
+            && (native.is_none() || crate::inbound::safe_upstream_header(name))
+        {
             out_headers.append(name.clone(), value.clone());
         }
     }
@@ -1978,16 +1981,19 @@ async fn handle_inner_native(
             .map_or(0, |s| s.chars().count()) as i64;
         return extra::speech_response(ctx, upstream, out_headers, characters);
     }
-    let is_sse = upstream
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
-            v.starts_with("text/event-stream")
-                || (ctx.provider.kind == ProviderKind::Bedrock
-                    && status.is_success()
-                    && v.starts_with("application/vnd.amazon.eventstream"))
-        });
+    // Native errors must reach the status-mapped sanitizer even when the
+    // Provider labels its error body as a stream.
+    let is_sse = (native.is_none() || status.is_success())
+        && upstream
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.starts_with("text/event-stream")
+                    || (ctx.provider.kind == ProviderKind::Bedrock
+                        && status.is_success()
+                        && v.starts_with("application/vnd.amazon.eventstream"))
+            });
 
     if is_sse && (extra::audio_upload(endpoint) || endpoint == Endpoint::Rerank) {
         ctx.finish(Outcome::failed(502));
@@ -2211,7 +2217,23 @@ async fn handle_inner_native(
         client_aborted: false,
     };
 
-    let bytes = if !status.is_success()
+    let bytes = if native.is_some() && !status.is_success() {
+        // Sanitize at the upstream boundary so local validation and policy
+        // errors can retain their useful messages in the native adapters.
+        out_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        Bytes::from(translate::translate_provider_error(
+            if endpoint == Endpoint::Messages {
+                Direction::MessagesToChat
+            } else {
+                Direction::ChatToMessages
+            },
+            status.as_u16(),
+            &bytes,
+        ))
+    } else if !status.is_success()
         && (endpoint == Endpoint::Rerank
             || extra::audio_upload(endpoint)
             || endpoint == Endpoint::AudioSpeech)
@@ -2270,9 +2292,9 @@ async fn handle_inner_native(
             } else {
                 Direction::ChatToMessages
             };
-            // Bedrock and Cohere errors are not reflected verbatim: AWS
-            // signature errors can echo the signed session token. Gemini
-            // keeps its message, which carries no request data.
+            // Native client errors are sanitized above. Non-native Gemini
+            // clients retain Provider messages for compatibility. Bedrock
+            // signature errors can echo the signed session token.
             Bytes::from(if kind == ProviderKind::Gemini {
                 translate::translate_error(dir, status.as_u16(), &bytes)
             } else {

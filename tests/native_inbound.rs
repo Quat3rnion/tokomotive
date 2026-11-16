@@ -700,6 +700,321 @@ async fn native_metadata_does_not_reduce_the_response_body_limit() {
 }
 
 #[tokio::test]
+async fn gemini_response_only_returns_inspected_content_live_and_cached() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokomotive::guardrails::{Action, Direction, Kind, Rule};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let (st, url, tasks) = setup_kind(Router::new().route(
+        "/v1beta/models/m:generateContent",
+        post(move || { let seen = seen.clone(); async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Json(json!({"candidates":[
+                {"content":{"role":"model","parts":[{"text":"Allowed"},{"thought":true,"text":"thought@example.com"}]},"finishReason":"STOP"},
+                {"content":{"role":"model","parts":[{"text":"extra@example.com"}]},"finishReason":"STOP"}
+            ],"modelVersion":"gemini-fixture","unknownContent":"hidden@example.com","usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}))
+        }})
+    ), "gemini").await;
+    let rules = vec![Rule {
+        name: "email".into(),
+        action: Action::Redact,
+        direction: Direction::Response,
+        kind: Kind::Detector {
+            detector: "email".into(),
+        },
+    }];
+    let set = sqlx::query("INSERT INTO guardrail_sets(name,rules) VALUES('email',?)")
+        .bind(serde_json::to_string(&rules).unwrap())
+        .execute(&st.db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+    sqlx::query("INSERT INTO guardrail_attachments(set_id,route) VALUES(?,'chat')")
+        .bind(set)
+        .execute(&st.db)
+        .await
+        .unwrap();
+    for expected_cache in ["miss", "hit"] {
+        let r = reqwest::Client::new()
+            .post(format!("{url}/v1beta/models/chat:generateContent"))
+            .bearer_auth("sk-native")
+            .json(&json!({"contents":[{"parts":[{"text":"Hi"}]}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()["x-tokomotive-cache"], expected_cache);
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["candidates"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            body["candidates"][0]["content"]["parts"],
+            json!([{"text":"Allowed"}])
+        );
+        assert!(!body.to_string().contains("@example.com"));
+        assert!(body.get("unknownContent").is_none());
+        assert_eq!(body["modelVersion"], "gemini-fixture");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn gemini_candidate_count_requires_integer_one() {
+    let (_, url, tasks) = setup_kind(
+        Router::new().route(
+            "/v1beta/models/m:generateContent",
+            post(|| async { Json(json!({"candidates":[]})) }),
+        ),
+        "gemini",
+    )
+    .await;
+    for count in [
+        json!(0),
+        json!(2),
+        json!(-1),
+        json!(1.5),
+        json!("1"),
+        Value::Null,
+        json!(true),
+    ] {
+        let r = reqwest::Client::new().post(format!("{url}/v1beta/models/chat:generateContent"))
+            .bearer_auth("sk-native").json(&json!({"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"candidateCount":count}}))
+            .send().await.unwrap();
+        assert_eq!(r.status(), 400, "candidateCount={count}");
+    }
+    let r = reqwest::Client::new()
+        .post(format!("{url}/v1beta/models/chat:generateContent"))
+        .bearer_auth("sk-native")
+        .json(&json!({"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"candidateCount":1}}))
+        .send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn gemini_rejects_unknown_tool_members_including_nested_and_snake_case() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let (_, url, tasks) = setup_kind(
+        Router::new().route(
+            "/v1beta/models/m:generateContent",
+            post(move || {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"candidates":[]}))
+                }
+            }),
+        ),
+        "gemini",
+    )
+    .await;
+    for field in [
+        "retrieval",
+        "googleSearch",
+        "google_search",
+        "codeExecution",
+        "code_execution",
+        "urlContext",
+        "url_context",
+        "unknownTool",
+        "function_declarations",
+    ] {
+        for wrapped in [false, true] {
+            let mut tool = json!({"functionDeclarations":[]});
+            tool[field] = json!({"vertexAiSearch":{"datastore":"private-data"}});
+            let generate = json!({"contents":[{"parts":[{"text":"Hi"}]}],"tools":[tool]});
+            let (op, body) = if wrapped {
+                ("countTokens", json!({"generateContentRequest":generate}))
+            } else {
+                ("generateContent", generate)
+            };
+            let r = reqwest::Client::new()
+                .post(format!("{url}/v1beta/models/chat:{op}"))
+                .bearer_auth("sk-native")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 400, "{op}: {field}");
+            let body = r.text().await.unwrap();
+            assert!(body.contains(field), "{body}");
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn gemini_upstream_request_uses_only_canonical_fields_and_safety_settings() {
+    let (_, url, tasks) = setup_kind(Router::new().route(
+        "/v1beta/models/m:generateContent", post(|Json(body): Json<Value>| async move {
+            assert!(body["contents"][0]["parts"][0].get("unreviewedPart").is_none());
+            assert!(body["tools"][0]["functionDeclarations"][0].get("unreviewedDeclaration").is_none());
+            assert!(body["toolConfig"].get("unreviewedConfig").is_none());
+            assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "weather");
+            assert_eq!(body["safetySettings"][0]["threshold"], "BLOCK_ONLY_HIGH");
+            Json(json!({"candidates":[{"content":{"parts":[{"text":"Allowed"}]},"finishReason":"STOP"}]}))
+        })
+    ), "gemini").await;
+    let r = reqwest::Client::new().post(format!("{url}/v1beta/models/chat:generateContent"))
+        .bearer_auth("sk-native").json(&json!({
+            "contents":[{"parts":[{"text":"Hi","unreviewedPart":{"text":"hidden"}}]}],
+            "tools":[{"functionDeclarations":[{"name":"weather","parameters":{"type":"object"},"unreviewedDeclaration":true}]}],
+            "toolConfig":{"functionCallingConfig":{"mode":"AUTO"},"unreviewedConfig":true},
+            "safetySettings":[{"category":"HARM_CATEGORY_HATE_SPEECH","threshold":"BLOCK_ONLY_HIGH"}]
+        })).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn native_upstream_errors_do_not_reflect_provider_messages() {
+    for kind in ["gemini", "openai", "anthropic"] {
+        let upstream_path = match kind {
+            "gemini" => "/v1beta/models/m:generateContent",
+            "anthropic" => "/v1/messages",
+            _ => "/v1/chat/completions",
+        };
+        let (_, url, tasks) = setup_kind(Router::new().route(upstream_path, post(|| async {
+            (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"credential=secret-provider-token","type":"invalid_request_error"},"message":"credential=secret-provider-token"})))
+        })), kind).await;
+        for (path, body) in [
+            (
+                "/v1beta/models/chat:generateContent",
+                json!({"contents":[{"parts":[{"text":"Hi"}]}]}),
+            ),
+            (
+                "/model/chat/converse",
+                json!({"messages":[{"role":"user","content":[{"text":"Hi"}]}]}),
+            ),
+            (
+                "/model/chat/invoke",
+                json!({"anthropic_version":"bedrock-2023-05-31","max_tokens":32,"messages":[{"role":"user","content":"Hi"}]}),
+            ),
+        ] {
+            let r = reqwest::Client::new()
+                .post(format!("{url}{path}"))
+                .bearer_auth("sk-native")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 400, "{kind}: {path}");
+            let v: Value = r.json().await.unwrap();
+            let message = v["error"]["message"]
+                .as_str()
+                .or_else(|| v["message"].as_str())
+                .unwrap();
+            assert_eq!(message, "upstream request failed", "{kind}: {path}");
+            assert!(!v.to_string().contains("secret-provider-token"));
+        }
+        for task in tasks {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_upstream_error_messages_are_status_mapped_even_with_sse_headers() {
+    for (status, content_type, expected) in [
+        (
+            403,
+            "text/event-stream",
+            "the provider refused the credentials or the request signature",
+        ),
+        (
+            429,
+            "application/json",
+            "the provider rate limit was exceeded",
+        ),
+    ] {
+        let (_, url, tasks) = setup(Router::new().route(
+            "/v1/chat/completions",
+            post(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [("content-type", content_type)],
+                    "{\"error\":{\"message\":\"secret-provider-token\"}}",
+                )
+            }),
+        ))
+        .await;
+        let r = reqwest::Client::new()
+            .post(format!("{url}/v1beta/models/chat:generateContent"))
+            .bearer_auth("sk-native")
+            .json(&json!({"contents":[{"parts":[{"text":"Hi"}]}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status);
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["error"]["message"], expected);
+        for task in tasks {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_upstream_headers_cannot_override_local_errors_or_leak_extensions() {
+    let (_, url, tasks) = setup(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                [
+                    ("x-amzn-errortype", "UpstreamSecretException"),
+                    ("set-cookie", "secret-cookie"),
+                    ("x-provider-debug", "secret-debug"),
+                    ("x-tokomotive-safety-settings", "forged"),
+                    ("retry-after", "3"),
+                    ("x-request-id", "request-fixture"),
+                ],
+                Json(json!({"error":{"message":"invalid"}})),
+            )
+        }),
+    ))
+    .await;
+    let r = reqwest::Client::new()
+        .post(format!("{url}/model/chat/converse"))
+        .bearer_auth("sk-native")
+        .json(&json!({"messages":[{"role":"user","content":[{"text":"Hi"}]}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert_eq!(r.headers()["x-amzn-errortype"], "ValidationException");
+    for name in [
+        "set-cookie",
+        "x-provider-debug",
+        "x-tokomotive-safety-settings",
+    ] {
+        assert!(!r.headers().contains_key(name), "{name}");
+    }
+    assert_eq!(r.headers()["retry-after"], "3");
+    assert_eq!(r.headers()["x-request-id"], "request-fixture");
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
 async fn gemini_sdk_generate_image_function_and_usage() {
     let (st, url, tasks) = setup(Router::new().route("/v1/chat/completions", post(|Json(body): Json<Value>| async move {
         assert_eq!(body["model"], "m");

@@ -1,4 +1,31 @@
 use super::*;
+
+fn validate_tools(body: &Value) -> Result<(), TranslateError> {
+    if let Some(tools) = body.get("tools") {
+        for tool in tools
+            .as_array()
+            .ok_or_else(|| invalid("tools must be an array"))?
+        {
+            for key in tool
+                .as_object()
+                .ok_or_else(|| invalid("Tool must be an object"))?
+                .keys()
+            {
+                if key != "functionDeclarations" {
+                    return Err(invalid(&format!("tools.{key} cannot be translated")));
+                }
+            }
+            if !tool["functionDeclarations"].is_array() {
+                return Err(invalid("Only functionDeclarations tools can be translated"));
+            }
+        }
+    }
+    if let Some(request) = body.get("generateContentRequest") {
+        validate_tools(request)?;
+    }
+    Ok(())
+}
+
 pub(super) fn request(
     uri: &Uri,
     body: &Value,
@@ -28,6 +55,7 @@ pub(super) fn request(
             return Err(invalid(&format!("{key} cannot be translated")));
         }
     }
+    validate_tools(body)?;
     let resource = uri
         .path()
         .strip_prefix("/v1beta/models/")
@@ -224,7 +252,10 @@ pub(super) fn request(
                 )));
             }
         }
-        if config["candidateCount"].as_u64().is_some_and(|n| n != 1) {
+        if config
+            .get("candidateCount")
+            .is_some_and(|n| n.as_u64() != Some(1))
+        {
             return Err(invalid("Only candidateCount = 1 is supported"));
         }
         let schema = config

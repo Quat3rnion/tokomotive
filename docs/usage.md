@@ -471,6 +471,10 @@ calls and results, function declarations, tool choice, temperature, top-p,
 output limits and stop sequences. JSON response options use the OpenAI
 `response_format` field. A target that cannot apply them returns HTTP 400.
 Other generation options and non-image binary parts return HTTP 400.
+`candidateCount`, if supplied, must be the integer `1`. Tools support only
+`functionDeclarations`. Other Tool members, including `retrieval`,
+`googleSearch`, `codeExecution` and `urlContext`, return HTTP 400. This rule
+also rejects their snake_case spellings and applies to `countTokens` requests.
 `safetySettings` goes only to Gemini Providers. The response header
 `x-tokomotive-safety-settings` states this limit.
 
@@ -480,10 +484,16 @@ inference charge. Embeddings support text with Gemini and OpenAI-compatible
 Providers. Gemini embedding responses do not report token usage; the Ledger
 marks their input-token count as an estimate. The estimate is the UTF-8 text
 length divided by four and rounded up. Embedding task types, titles
-and output dimensions are not translated. Streaming responses use the mapped
-text, function and usage fields; Provider-specific metadata is not retained.
-Non-streaming responses can also lose this metadata after response redaction
-or when retaining it would exceed the response body limit.
+and output dimensions are not translated. The Proxy rebuilds requests from
+the guarded mapped fields, plus `safetySettings` for Gemini Providers. It does
+not restore the raw request. It removes unmapped fields inside supported
+parts, function declarations and tool choice.
+
+Responses use the inspected mapped text, function and usage fields. Extra
+candidates and thought text are not returned. Non-streaming Gemini responses
+can retain only `modelVersion` and `responseId` from native metadata. Other
+native metadata is removed. Optional metadata is also removed if it would
+exceed the response body limit. Streaming responses retain no native metadata.
 
 ### AWS Bedrock SDK
 
@@ -515,6 +525,8 @@ Converse supports text, base64 images, system text, tool use and results,
 tool choice and inference limits. Document, video, AWS guardrail and
 Provider-specific request options return HTTP 400. Streaming uses binary AWS
 event-stream frames, with header and message CRC32 checksums.
+Non-streaming Converse responses can retain `metrics.latencyMs` from native
+metadata. Other native response metadata is removed.
 
 The Proxy also accepts `invoke` and `invoke-with-response-stream` at the same
 model path. These operations accept only Anthropic Messages bodies with
@@ -529,6 +541,11 @@ Native client requests use the same Model resolver, permissions, Budgets,
 Rate Limits, Guardrails, Ledger and metrics as other clients. The response
 cache also separates client formats and native request options. Errors use
 the Gemini error object or the Bedrock `x-amzn-ErrorType` header.
+Upstream errors use generic messages based on the HTTP status. Local errors
+keep their validation or policy details. From upstream response headers, the
+Proxy forwards only `content-type`, `retry-after`, `x-request-id` and
+`x-amzn-requestid`. The local Bedrock error type cannot be replaced by an
+upstream header.
 
 ### Endpoints that the Proxy accounts
 
