@@ -1137,6 +1137,110 @@ async fn semantic_rule_ids_and_canary_sides_are_isolated() {
 }
 
 #[tokio::test]
+async fn exact_cache_isolates_route_rules_and_canary_sides_with_legacy_hits() {
+    use tokomotive::cache::{self, Entry, Plan};
+    let e = env("key", "openai").await;
+    let table = e.st.router_table();
+    // Freeze the pre-rule identity so a new no-match key cannot pass by storing
+    // and reading only entries made with the new format.
+    let legacy_identity = json!([
+        null,
+        "cached",
+        "priority",
+        {"enabled":true,"ttl_secs":60,"scope":"key"},
+        [["p", "m", 1]],
+        [],
+        [["p", table.providers[0].base_url, "openai", "api_key", true]]
+    ])
+    .to_string();
+    let legacy_body = json!({"model":"cached","messages":[{"role":"user","content":"legacy"}]});
+    let key = tokomotive::db::lookup_key(&e.st.db, "sk-alice")
+        .await
+        .unwrap()
+        .unwrap();
+    let plan = Plan::new(
+        &table.routes[0].cache,
+        &legacy_identity,
+        "/v1/chat/completions",
+        &legacy_body,
+        &axum::http::HeaderMap::new(),
+        key.key_id,
+        key.team_id,
+    )
+    .unwrap();
+    let legacy_response = br#"{"id":"legacy","model":"m","choices":[{"message":{"role":"assistant","content":"old entry"},"finish_reason":"stop"}]}"#;
+    let mut entry = Entry {
+        body: String::new(),
+        content_type: "application/json".into(),
+        provider: "p".into(),
+        upstream_model: Some("m".into()),
+        model: Some("m".into()),
+        usage: Default::default(),
+        estimated: false,
+    };
+    entry.set_body(legacy_response);
+    cache::store(
+        &e.st.db,
+        &e.st.secret_key,
+        &plan,
+        &e.st.settings().cache,
+        &entry,
+    )
+    .await
+    .unwrap();
+
+    // Keep the Deployment set identical, forcing each side without random
+    // cohort selection. Changing only the id must also create a separate entry.
+    for (id, percent_bp, first) in [
+        ("rule-a", 0, "miss"),
+        ("rule-a", 10000, "miss"),
+        ("rule-b", 10000, "miss"),
+        ("rule-a", 0, "hit"),
+        ("rule-a", 10000, "hit"),
+    ] {
+        let action = json!({"type":"deployments","deployments":[["p","m"]]});
+        let rules = json!([{
+            "id":id,"name":"Pilot","enabled":true,
+            "conditions":{"header_name":"x-cohort","header_op":"equals","header_value":"pilot"},
+            "action":action,
+            "canary":{"percent_bp":percent_bp,"salt":"stable","action":action}
+        }]);
+        sqlx::query("UPDATE routes SET rules=? WHERE name='cached'")
+            .bind(rules.to_string())
+            .execute(&e.st.db)
+            .await
+            .unwrap();
+        let legacy = e
+            .send("sk-alice", "chat/completions", legacy_body.clone(), None)
+            .await;
+        assert_eq!(legacy.status(), 200);
+        assert_eq!(legacy.headers()["x-tokomotive-cache"], "hit");
+        assert_eq!(legacy.bytes().await.unwrap().as_ref(), legacy_response);
+        e.st.flush().await;
+
+        for expected in [first, "hit"] {
+            let r = e
+                .send(
+                    "sk-alice",
+                    "chat/completions",
+                    body(),
+                    Some(("x-cohort", "pilot")),
+                )
+                .await;
+            assert_eq!(r.status(), 200);
+            assert_eq!(
+                r.headers()["x-tokomotive-cache"],
+                expected,
+                "{id}, canary percent {percent_bp}"
+            );
+            r.bytes().await.unwrap();
+            e.st.flush().await;
+        }
+    }
+    assert_eq!(e.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn exact_hit_has_zero_cost_and_cached_ledger_usage() {
     use futures_util::StreamExt;
     let e = env("key", "openai").await;

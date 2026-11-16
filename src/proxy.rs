@@ -1399,7 +1399,7 @@ async fn handle_inner_native(
             ) {
                 return None;
             }
-            let identity = serde_json::json!([
+            let mut identity = serde_json::json!([
                 native.as_ref().map(crate::inbound::Context::cache_identity),
                 r.name,
                 r.strategy,
@@ -1420,8 +1420,14 @@ async fn handle_inner_native(
                         p.include_usage
                     ))
                     .collect::<Vec<_>>()
-            ])
-            .to_string();
+            ]);
+            if let Some(rule) = &matched_rule {
+                identity
+                    .as_array_mut()
+                    .expect("cache identity array")
+                    .extend([serde_json::json!(rule.id), serde_json::json!(rule.side)]);
+            }
+            let identity = identity.to_string();
             crate::cache::Plan::new(
                 &r.cache,
                 &identity,
