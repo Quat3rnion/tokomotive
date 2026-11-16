@@ -11,6 +11,7 @@ struct Mock {
     calls: Mutex<Vec<(HeaderMap, Value, Vec<u8>)>>,
     upstream: Mutex<Vec<Value>>,
     reply: Mutex<Value>,
+    replies: Mutex<std::collections::BTreeMap<String, Value>>,
     answer: Mutex<Option<String>>,
     block_events: AtomicBool,
     event_gate: tokio::sync::Notify,
@@ -45,7 +46,13 @@ async fn webhook(
     if value["stage"] == "event" && m.block_events.load(Ordering::SeqCst) {
         notified.await;
     }
-    let reply = m.reply.lock().unwrap().clone();
+    let reply = m
+        .replies
+        .lock()
+        .unwrap()
+        .get(value["hook"].as_str().unwrap())
+        .cloned()
+        .unwrap_or_else(|| m.reply.lock().unwrap().clone());
     if let Some(delay) = reply["delay_ms"].as_u64() {
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
@@ -118,6 +125,14 @@ async fn env() -> Env {
     }
 }
 impl Env {
+    async fn route(&self, name: &str) {
+        sqlx::query("INSERT INTO routes(name,config_json) SELECT ?,json_set(config_json,'$.name',?) FROM routes WHERE name='chat'")
+            .bind(name).bind(name).execute(&self.st.db).await.unwrap();
+        self.st.reload_settings().await.unwrap();
+    }
+    fn reply(&self, name: &str, reply: Value) {
+        self.mock.replies.lock().unwrap().insert(name.into(), reply);
+    }
     async fn guardrail(&self, action: &str, direction: &str) {
         let rules = json!([{"name":"email","kind":{"type":"detector","detector":"email"},"action":action,"direction":direction}]);
         let id = sqlx::query("INSERT INTO guardrail_sets(name,rules) VALUES('email-policy',?)")
@@ -275,6 +290,115 @@ async fn hook_reject_messages_are_blocked_or_redacted_in_both_directions() {
             e.st.flush().await;
         }
     }
+}
+
+#[tokio::test]
+async fn destination_pre_hook_rejects_after_one_model_hop() {
+    let e = env().await;
+    e.route("destination").await;
+    let (shared, _) = e.create("a-shared", &["pre_request"]).await;
+    e.attach(shared, &[("global", "on")]).await;
+    let (source, _) = e.create("source", &["pre_request"]).await;
+    e.attach(source, &[("route_name", "chat")]).await;
+    let (destination, _) = e.create("destination", &["pre_request"]).await;
+    e.attach(destination, &[("route_name", "destination")])
+        .await;
+    e.reply(
+        "source",
+        json!({"decision":"modify","patch":{"model":"destination"}}),
+    );
+    e.reply(
+        "destination",
+        json!({"decision":"reject","status":403,"message":"Destination policy rejected."}),
+    );
+    let r = e.send("safe", false).await;
+    assert_eq!(r.status(), 403);
+    assert!(
+        r.text()
+            .await
+            .unwrap()
+            .contains("Destination policy rejected.")
+    );
+    e.st.flush().await;
+    assert!(e.mock.upstream.lock().unwrap().is_empty());
+    let calls = e.mock.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|(_, v, _)| v["hook"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a-shared", "source", "destination"]
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|(_, v, _)| v["request_id"] == calls[0].1["request_id"])
+    );
+}
+
+#[tokio::test]
+async fn destination_event_and_post_hooks_join_the_source_set_and_disable_storage() {
+    let e = env().await;
+    e.route("destination").await;
+    let (source, _) = e.create("source", &["pre_request", "event"]).await;
+    e.attach(source, &[("route_name", "chat")]).await;
+    let (destination, _) = e.create("destination", &["post_response", "event"]).await;
+    e.attach(destination, &[("route_name", "destination")])
+        .await;
+    e.reply(
+        "source",
+        json!({"decision":"modify","patch":{"model":"destination"}}),
+    );
+    let r = e.send("safe", false).await;
+    assert_eq!(r.status(), 200);
+    r.bytes().await.unwrap();
+    e.st.flush().await;
+    let cached: i64 = sqlx::query_scalar("SELECT count(*) FROM response_cache")
+        .fetch_one(&e.st.db)
+        .await
+        .unwrap();
+    assert_eq!(cached, 0);
+    let calls = e.mock.calls.lock().unwrap();
+    let events = calls
+        .iter()
+        .filter(|(_, v, _)| v["stage"] == "event")
+        .map(|(_, v, _)| v["hook"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        events,
+        std::collections::BTreeSet::from(["source", "destination"])
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(_, v, _)| v["hook"] == "destination" && v["stage"] == "post_response")
+    );
+}
+
+#[tokio::test]
+async fn destination_hook_cannot_make_a_second_model_hop() {
+    let e = env().await;
+    e.route("destination").await;
+    e.route("third").await;
+    let (source, _) = e.create("source", &["pre_request"]).await;
+    e.attach(source, &[("route_name", "chat")]).await;
+    let (destination, _) = e.create("destination", &["pre_request"]).await;
+    e.attach(destination, &[("route_name", "destination")])
+        .await;
+    e.reply(
+        "source",
+        json!({"decision":"modify","patch":{"model":"destination"}}),
+    );
+    e.reply(
+        "destination",
+        json!({"decision":"modify","patch":{"model":"third"}}),
+    );
+    let r = e.send("safe", false).await;
+    assert_eq!(r.status(), 400);
+    assert!(r.text().await.unwrap().contains("one hop"));
+    e.st.flush().await;
+    assert!(e.mock.upstream.lock().unwrap().is_empty());
+    assert_eq!(e.mock.calls.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

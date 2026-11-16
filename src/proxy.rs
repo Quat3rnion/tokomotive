@@ -1132,7 +1132,7 @@ async fn handle_inner_native(
         return response;
     }
 
-    if !guardrails.hooks.pre_done() {
+    {
         let metadata = ["x-tokomotive-meta-project", "x-tokomotive-meta-environment"]
             .into_iter()
             .filter_map(|name| {
@@ -1421,7 +1421,7 @@ async fn handle_inner_native(
         }
     }
 
-    if !guardrails.hooks.pre_done() {
+    if !guardrails.hooks.pre_done() || guardrails.hooks.has_pending_pre() {
         let hook_admission = if !simple && guardrails.hooks.has_pre() {
             let mut worst = 0;
             for c in &candidates {
@@ -1532,6 +1532,9 @@ async fn handle_inner_native(
                     }
                     let model = model_of(value).unwrap_or_default();
                     if Some(&model) != requested_model.as_ref() {
+                        if guardrails.hooks.model_hopped() {
+                            return Err("Hook model changes are limited to one hop.");
+                        }
                         let index = st.resolution_index.read().expect("resolution index");
                         let resolution =
                             crate::resolve::resolve(&table, &catalog, &index, &model, access);
@@ -1632,8 +1635,9 @@ async fn handle_inner_native(
             drop(hook_admission);
             if audio_upload.is_none() && model_of(value) != requested_model {
                 // Re-enter the same authenticated surface for model resolution
-                // and Provider Access. Admission and pre hooks run only once.
+                // and Provider Access. Only new destination pre hooks may run.
                 // No body field can replace the original authentication headers.
+                guardrails.hooks.mark_model_hop();
                 let body = Bytes::from(value.to_string());
                 return Box::pin(handle_inner_native(
                     st,

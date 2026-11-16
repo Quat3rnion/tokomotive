@@ -134,9 +134,13 @@ Delivery is best effort, with no retries or durable queue.
 Hooks run in increasing priority, then by name. Attachments form a union:
 one hook attached at multiple matching scopes runs once per stage.
 At most 64 hooks can be stored.
-The hook list is selected once from the original resolved Route and
-authenticated identity. A permitted model change does not select a
-second hook list or run pre-request hooks again.
+The first hook list comes from the original resolved Route and authenticated
+identity. If a permitted model change resolves to a different Route, its
+hooks join the list. Destination pre-request hooks run once, except hooks
+that already ran. A destination hook cannot change the model again: a
+second model hop is rejected with a 4xx error. Post-response and event
+hooks use the union of both lists. Any post-response hook in that union
+disables exact and semantic cache storage.
 
 Pre-request hooks run after authentication, rate admission, Budget
 admission and request guardrails, and before cache lookup. The modified

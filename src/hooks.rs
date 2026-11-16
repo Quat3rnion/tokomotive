@@ -11,6 +11,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -183,6 +184,8 @@ pub fn merge_patch(target: &mut Value, patch: &Value) {
 struct Data {
     context: Option<Arc<Context>>,
     pre_done: bool,
+    pre_ran: BTreeSet<i64>,
+    model_hopped: bool,
     status: Option<u16>,
     response: Option<Value>,
     done: bool,
@@ -200,6 +203,20 @@ impl Session {
     pub fn pre_done(&self) -> bool {
         self.0.lock().unwrap().pre_done
     }
+    pub fn has_pending_pre(&self) -> bool {
+        let state = self.0.lock().unwrap();
+        state.context.as_ref().is_some_and(|c| {
+            c.hooks
+                .iter()
+                .any(|h| h.pre_request && !state.pre_ran.contains(&h.id))
+        })
+    }
+    pub fn model_hopped(&self) -> bool {
+        self.0.lock().unwrap().model_hopped
+    }
+    pub fn mark_model_hop(&self) {
+        self.0.lock().unwrap().model_hopped = true;
+    }
     pub async fn configure(
         &self,
         st: &AppState,
@@ -208,16 +225,34 @@ impl Session {
         key: i64,
         request: Value,
     ) -> Result<()> {
-        if self.0.lock().unwrap().context.is_some() {
-            return Ok(());
+        let hooks = if self
+            .context()
+            .is_none_or(|c| c.request["route"] != request["route"])
+        {
+            load(st, route, team, key).await?
+        } else {
+            vec![]
+        };
+        let mut state = self.0.lock().unwrap();
+        if let Some(context) = &mut state.context {
+            let context = Arc::make_mut(context);
+            for hook in hooks {
+                if !context.hooks.iter().any(|h| h.id == hook.id) {
+                    context.hooks.push(hook);
+                }
+            }
+            context
+                .hooks
+                .sort_by(|a, b| (a.priority, &a.name).cmp(&(b.priority, &b.name)));
+            context.request = request;
+        } else {
+            state.context = Some(Arc::new(Context {
+                st: st.clone(),
+                hooks,
+                request_id: new_secret(),
+                request,
+            }));
         }
-        let hooks = load(st, route, team, key).await?;
-        self.0.lock().unwrap().context = Some(Arc::new(Context {
-            st: st.clone(),
-            hooks,
-            request_id: new_secret(),
-            request,
-        }));
         Ok(())
     }
     fn context(&self) -> Option<Arc<Context>> {
@@ -242,6 +277,9 @@ impl Session {
             return Ok(());
         };
         for hook in c.hooks.iter().filter(|h| h.pre_request) {
+            if !self.0.lock().unwrap().pre_ran.insert(hook.id) {
+                continue;
+            }
             let mut data = c.request.clone();
             data["body"] = body.clone();
             data["model"] = body["model"].clone();
