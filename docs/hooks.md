@@ -165,6 +165,8 @@ An HTTP or remote-DNS SOCKS proxy resolves hostnames itself. As with the
 existing secret-store and MCP transports, that proxy must enforce the
 address policy and prevent DNS rebinding. Direct DNS pinning cannot
 control the proxy's resolver.
+The Owner configures this trusted proxy; local private/loopback checks
+still run on literal IPs and locally resolved hostnames before each request.
 
 The event queue holds at most 64 waiting calls, with at most 4 active
 calls. A full queue drops new events. The metric

@@ -370,6 +370,49 @@ async fn public_http_and_private_without_opt_in_are_refused() {
 }
 
 #[tokio::test]
+async fn egress_proxy_does_not_bypass_private_ip_or_local_dns_checks() {
+    let e = env().await;
+    let (id, _) = e.create("proxy-network-policy", &["pre_request"]).await;
+    e.attach(id, &[("global", "on")]).await;
+    let proxy = e.hook.strip_suffix("/hook").unwrap();
+    tokomotive::settings::put(
+        &e.st.db,
+        "egress_proxy",
+        &e.st.secret_key.encrypt(proxy).unwrap(),
+    )
+    .await
+    .unwrap();
+    e.st.reload_settings().await.unwrap();
+    assert!(e.st.egress.label(None).is_some());
+    for url in [e.hook.clone(), e.hook.replace("127.0.0.1", "localhost")] {
+        let r = e
+            .admin(
+                "/admin/hooks",
+                &[
+                    ("name", "denied-private"),
+                    ("url", &url),
+                    ("pre_request", "on"),
+                ],
+            )
+            .await;
+        assert!(r.status().is_client_error());
+        // Also check the live send path, not only dashboard validation.
+        sqlx::query("UPDATE hooks SET url=?,allow_private=0,fail_closed=1 WHERE id=?")
+            .bind(&url)
+            .bind(id)
+            .execute(&e.st.db)
+            .await
+            .unwrap();
+        let r = e.send("private target", false).await;
+        assert_eq!(r.status(), 502);
+        r.bytes().await.unwrap();
+        e.st.flush().await;
+    }
+    assert!(e.mock.calls.lock().unwrap().is_empty());
+    assert!(e.mock.upstream.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn modified_request_changes_exact_cache_key() {
     let e = env().await;
     let (id, _) = e.create("cache-patch", &["pre_request"]).await;
