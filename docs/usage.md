@@ -5,7 +5,7 @@
 Open **Hooks** with an Owner or Admin account. Add a name and URL. Select
 one or more stages: `pre_request`, `post_response` or `event`. Set the
 timeout, priority and failure mode. Save the one-time signing secret
-from the JSON response, then return to the page.
+with the Copy button on the one-time page, then return to Hooks.
 
 Use the Route and Team pickers or select a Virtual Key to attach a hook.
 Select **Global** to apply it to all admitted requests. Select only one
@@ -34,7 +34,7 @@ Use **Rotate secret** to issue a new signing secret. Save the new secret
 and update the receiver. New requests use the new secret. Requests
 already in progress can still use the previous secret for later stages.
 Keep both receiver keys until those requests have ended.
-The HTML page and audit log never show a saved signing secret.
+The Hooks list and audit log never show a saved signing secret.
 
 ## Connect Authentik
 

@@ -182,11 +182,7 @@ impl Env {
         }
         let r = self.admin("/admin/hooks", &form).await;
         assert_eq!(r.status(), 200);
-        let v: Value = r.json().await.unwrap();
-        (
-            v["id"].as_i64().unwrap(),
-            v["secret"].as_str().unwrap().into(),
-        )
+        secret_from_page(&r.text().await.unwrap())
     }
     async fn attach(&self, id: i64, form: &[(&str, &str)]) {
         let r = self.admin(&format!("/admin/hooks/{id}/attach"), form).await;
@@ -471,6 +467,76 @@ async fn allowed_events_use_the_final_redacted_request_body() {
         e.mock.upstream.lock().unwrap()[0]["messages"]
     );
     assert!(!event.to_string().contains("alice@example.com"));
+}
+
+fn secret_from_page(html: &str) -> (i64, String) {
+    let id = regex::Regex::new(r##"href="/admin/hooks#hook-(\d+)""##)
+        .unwrap()
+        .captures(html)
+        .expect("one-time page must link back to its hook")[1]
+        .parse()
+        .unwrap();
+    let secret = regex::Regex::new(r#"id="hook-secret"[^>]*value="([a-f0-9]{64})""#)
+        .unwrap()
+        .captures(html)
+        .expect("one-time page must contain its read-only secret")[1]
+        .into();
+    (id, secret)
+}
+
+#[tokio::test]
+async fn create_and_rotate_show_one_time_secret_pages_with_shared_layout() {
+    let e = env().await;
+    let r = e
+        .admin(
+            "/admin/hooks",
+            &[
+                ("name", "one-time"),
+                ("url", &e.hook),
+                ("pre_request", "on"),
+                ("enabled", "on"),
+                ("allow_private", "on"),
+            ],
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    let html = r.text().await.unwrap();
+    assert!(html.contains("<header>"));
+    assert!(html.contains("readonly"));
+    assert!(html.contains("data-copy="));
+    assert!(html.contains("shown only once"));
+    let (id, first) = secret_from_page(&html);
+    let r = e.admin(&format!("/admin/hooks/{id}/rotate"), &[]).await;
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    assert!(
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let html = r.text().await.unwrap();
+    let (rotated_id, second) = secret_from_page(&html);
+    assert_eq!(id, rotated_id);
+    assert_ne!(first, second);
+    let page = e
+        .client()
+        .get(format!("{}/admin/hooks", e.url))
+        .header("cookie", "tokomotive_session=hooks-session")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!page.contains(&first));
+    assert!(!page.contains(&second));
 }
 
 #[tokio::test]
@@ -1087,7 +1153,7 @@ async fn guardrail_rejection_still_delivers_the_final_ledger_event() {
 }
 
 #[tokio::test]
-async fn viewer_cannot_manage_hooks_and_secrets_stay_out_of_html_audit_and_sqlite() {
+async fn viewer_cannot_manage_hooks_and_saved_secrets_stay_out_of_html_audit_and_sqlite() {
     let e = env().await;
     let (id, secret) = e.create("private-signing", &["pre_request"]).await;
     let html = e
@@ -1104,8 +1170,8 @@ async fn viewer_cannot_manage_hooks_and_secrets_stay_out_of_html_audit_and_sqlit
     assert!(!html.contains("name=\"secret\""));
     let r = e.admin(&format!("/admin/hooks/{id}/rotate"), &[]).await;
     assert_eq!(r.headers()["cache-control"], "no-store");
-    let rotated: Value = r.json().await.unwrap();
-    let new_secret = rotated["secret"].as_str().unwrap();
+    let rotated = secret_from_page(&r.text().await.unwrap());
+    let new_secret = rotated.1.as_str();
     assert_ne!(secret, new_secret);
     let stored: String = sqlx::query_scalar("SELECT secret FROM hooks WHERE id=?")
         .bind(id)

@@ -9,7 +9,7 @@ network access only for a trusted private service. Public HTTP is refused.
 Attach the hook globally, or to Routes, Teams or Virtual Keys.
 
 The server generates the signing secret. Creation and rotation return it
-once as a no-store JSON response, not in HTML. Save it, then return to
+once on a no-store page with a read-only field and Copy button. Save it, then return to
 **Hooks**. Stored secrets are encrypted with the Master Key. Hook create,
 edit, delete, attachment changes and secret rotation appear in the audit
 log without the secret.

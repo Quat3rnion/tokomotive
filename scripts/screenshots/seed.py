@@ -94,8 +94,9 @@ hook = post("/admin/hooks", {
     "pre_request": "on", "post_response": "on", "event": "on",
     "timeout_ms": "2000", "priority": "10", "enabled": "on",
     "fail_closed": "on", "allow_private": "on",
-}).json()
-post(f"/admin/hooks/{hook['id']}/attach", {"route_name": "smart"})
+})
+hook_id = re.search(r'href="/admin/hooks#hook-(\d+)"', hook.text).group(1)
+post(f"/admin/hooks/{hook_id}/attach", {"route_name": "smart"})
 del hook
 
 USERS = [

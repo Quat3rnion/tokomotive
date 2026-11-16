@@ -1,4 +1,4 @@
-//! Structured hook management. Secrets are returned once as JSON, never in HTML.
+//! Structured hook management. Saved secrets are never read back into a page.
 use super::*;
 use crate::hooks::Hook;
 
@@ -121,15 +121,26 @@ async fn save(_: Admin, State(st): State<AppState>, Form(f): Form<HookForm>) -> 
         Err(_) => return form_error("Cannot save hook. Use a unique name."),
     };
     if new {
-        secret_response(result.last_insert_rowid(), &secret)
+        secret_response(&st, result.last_insert_rowid(), &secret)
     } else if result.rows_affected() == 0 {
         StatusCode::NOT_FOUND.into_response()
     } else {
         saved("/admin/hooks", "Hook saved.")
     }
 }
-fn secret_response(id: i64, secret: &str) -> Response {
-    let mut r = axum::Json(serde_json::json!({"id":id,"secret":secret,"message":"Save this signing secret now. It is shown only once. Return to /admin/hooks to add an attachment."})).into_response();
+#[derive(Template)]
+#[template(path = "hook_secret.html")]
+struct SecretPage<'a> {
+    base: Base,
+    id: i64,
+    secret: &'a str,
+}
+fn secret_response(st: &AppState, id: i64, secret: &str) -> Response {
+    let mut r = render(SecretPage {
+        base: Base::new(st),
+        id,
+        secret,
+    });
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r.headers_mut().insert(
@@ -159,7 +170,7 @@ async fn rotate(_: Admin, State(st): State<AppState>, Path(id): Path<i64>) -> Re
     if result.rows_affected() == 0 {
         return form_error("Select a listed hook.");
     }
-    secret_response(id, &secret)
+    secret_response(&st, id, &secret)
 }
 #[derive(Default, Deserialize)]
 #[serde(default)]

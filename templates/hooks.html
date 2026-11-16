@@ -5,7 +5,7 @@
 {% block content %}
 <h1>Hooks</h1>
 <p class="muted">Signed webhooks for trusted extensions. Hooks run by priority, then name. Streaming skips post_response. A post_response attachment disables exact and semantic cache storage.</p>
-<p>New and rotated secrets open once as JSON, not in HTML. Save the secret, then return here. The server stores it encrypted with the Master Key.</p>
+<p>New and rotated secrets appear on a one-time page with a Copy button. Save the secret, then return here. The server stores it encrypted with the Master Key.</p>
 {% for h in hooks %}
 <section class="panel stack" id="hook-{{ h.id }}"><h2>{{ h.name }}</h2>
 <form method="post" action="/admin/hooks" class="stack">
