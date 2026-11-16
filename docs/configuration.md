@@ -451,6 +451,13 @@ private-address permission or body permission. An Admin can change other
 settings and test the saved destination. A sample test never uses unsaved
 form values.
 
+The `route` tag uses the resolved, configured Route name, not the client's
+model text. Calls without a Route omit that tag. The `model` tag uses a
+configured Deployment model or the canonical catalog Model ID. Other names,
+including unrecognized passthrough names on failed calls, use `other`.
+Datadog span model metadata and Maxim trace model metadata use the same rule.
+Client model names do not create new metric labels.
+
 Native exporters share the event-hook queue: 64 waiting entries and 4 active
 network batches. The first size or interval limit sends a batch. A full queue
 drops entries. It does not wait on the Proxy path. An exporter samples each

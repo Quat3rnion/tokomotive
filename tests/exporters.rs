@@ -54,15 +54,25 @@ async fn intake(
     axum::http::StatusCode::from_u16(mock.statuses.lock().unwrap().pop_front().unwrap_or(202))
         .unwrap()
 }
-async fn upstream() -> Json<Value> {
+async fn upstream(Json(request): Json<Value>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if request["model"]
+        .as_str()
+        .is_some_and(|m| m.starts_with("unrecognized-failed-"))
+    {
+        return axum::http::StatusCode::BAD_GATEWAY.into_response();
+    }
     Json(
-        json!({"id":"c","model":"m","choices":[{"message":{"role":"assistant","content":"private answer"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}),
-    )
+        json!({"id":"c","model":request["model"],"choices":[{"message":{"role":"assistant","content":"private answer"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}),
+    ).into_response()
 }
 async fn vault(State(mock): State<Arc<Vendor>>) -> Json<Value> {
     Json(json!({"data":{"data":{"api_key":*mock.vault_key.lock().unwrap()}}}))
 }
 async fn env() -> Env {
+    env_with_unknown_route(false).await
+}
+async fn env_with_unknown_route(unknown_route: bool) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let mock = Arc::new(Vendor::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -77,10 +87,16 @@ async fn env() -> Env {
     let vendor_task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let provider_key = tokomotive::hooks::new_secret();
     let virtual_key = format!("sk-{}", tokomotive::hooks::new_secret());
-    let cfg: Config = toml::from_str(&format!(
+    let mut cfg: Config = toml::from_str(&format!(
         "[server]\ndatabase='sqlite://{}'\nmode='simple'\nadmin_password='password123'\n[[providers]]\nname='p'\nkind='openai'\nbase_url='http://{addr}'\napi_key='{provider_key}'\n[[models]]\nname='m'\nprovider='p'\ncost={{input=1,output=2}}\n[[routes]]\nname='chat'\ndeployments=[{{provider='p',model='m'}}]\n[[users]]\nname='alice'\nkeys=['{virtual_key}']",
         dir.path().join("export.sqlite").display()
     )).unwrap();
+    if unknown_route {
+        cfg.router.unknown_model_route = Some("chat".into());
+        let mut deployment = cfg.routes[0].deployments[0].clone();
+        deployment.model = "configured-only".into();
+        cfg.routes[0].deployments.push(deployment);
+    }
     static METRICS: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> =
         std::sync::OnceLock::new();
     let metrics = METRICS
@@ -106,6 +122,126 @@ async fn env() -> Env {
         vendor: format!("http://{addr}"),
         mock,
         tasks: vec![vendor_task, proxy],
+    }
+}
+
+#[tokio::test]
+async fn unknown_model_routes_bound_vendor_route_and_model_vocabulary() {
+    use std::collections::BTreeSet;
+    for kind in ["datadog", "maxim"] {
+        let e = env_with_unknown_route(true).await;
+        e.create_with(
+            &tokomotive::hooks::new_secret(),
+            &[("kind", kind), ("repo_id", "repository"), ("metrics", "on")],
+        )
+        .await;
+        let requests = (0..32)
+            .map(|i| (format!("made-up-client-{i}"), 200))
+            .chain((0..16).map(|i| (format!("p/unrecognized-passthrough-{i}"), 200)))
+            .chain((0..16).map(|i| (format!("p/unrecognized-failed-{i}"), 502)))
+            .chain((0..16).map(|i| (format!("p/m-2026-11-{i}"), 200)))
+            .chain([(String::from("p/configured-only"), 200)])
+            .collect::<Vec<_>>();
+        for (i, (model, status)) in requests.iter().enumerate() {
+            let response = e
+                .client()
+                .post(format!("{}/v1/chat/completions", e.url))
+                .bearer_auth(&e.virtual_key)
+                .json(&json!({"model":model,"messages":[{"role":"user","content":"safe"}]}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), *status, "{model}");
+            response.bytes().await.unwrap();
+            if i % 16 == 15 {
+                e.st.flush().await;
+            }
+        }
+        e.st.flush().await;
+        let calls = e.mock.calls.lock().unwrap();
+        let mut routes = BTreeSet::new();
+        let mut models = BTreeSet::new();
+        let mut metric_routes = BTreeSet::new();
+        let mut metric_models = BTreeSet::new();
+        let mut records = 0;
+        let mut routed = 0;
+        let mut failed = 0;
+        for (path, _, value) in calls.iter() {
+            if path == "/api/v2/series" {
+                for series in value["series"].as_array().unwrap() {
+                    for tag in series["tags"].as_array().unwrap() {
+                        let tag = tag.as_str().unwrap();
+                        if let Some(route) = tag.strip_prefix("route:") {
+                            metric_routes.insert(route.to_owned());
+                        }
+                        if let Some(model) = tag.strip_prefix("model:") {
+                            metric_models.insert(model.to_owned());
+                        }
+                    }
+                }
+                continue;
+            }
+            let spans = if kind == "datadog" {
+                &value["data"]["attributes"]["spans"]
+            } else {
+                &value["logs"]
+            };
+            for span in spans.as_array().unwrap() {
+                records += 1;
+                let (route, model, metadata_model, error) = if kind == "datadog" {
+                    let tags = span["tags"].as_array().unwrap();
+                    let label = |prefix: &str| {
+                        tags.iter().find_map(|t| {
+                            t.as_str().unwrap().strip_prefix(prefix).map(str::to_owned)
+                        })
+                    };
+                    (
+                        label("route:"),
+                        label("model:").unwrap(),
+                        span["meta"]["model_name"].as_str().unwrap(),
+                        span["status"] == "error",
+                    )
+                } else {
+                    (
+                        span["tags"]["route"].as_str().map(str::to_owned),
+                        span["tags"]["model"].as_str().unwrap().to_owned(),
+                        span["metadata"]["model"].as_str().unwrap(),
+                        span["metadata"]["status"] == 502,
+                    )
+                };
+                assert_eq!(
+                    model, metadata_model,
+                    "tag and metadata must use the same bounded model"
+                );
+                models.insert(model);
+                if let Some(route) = route {
+                    routes.insert(route);
+                    routed += 1;
+                }
+                if error {
+                    failed += 1;
+                    assert_eq!(metadata_model, "other");
+                }
+            }
+        }
+        let expected_models =
+            BTreeSet::from(["m".into(), "configured-only".into(), "other".into()]);
+        assert_eq!(records, requests.len());
+        assert_eq!(failed, 16);
+        assert_eq!(
+            routes,
+            BTreeSet::from(["chat".into()]),
+            "{kind}: use the resolved Route, not client text"
+        );
+        assert_eq!(routed, 32, "provider passthrough does not invent a Route");
+        assert_eq!(
+            models, expected_models,
+            "{kind}: models must come from configuration or be other"
+        );
+        if kind == "datadog" {
+            assert_eq!(metric_routes, BTreeSet::from(["chat".into()]));
+            assert_eq!(metric_models, expected_models);
+        }
     }
 }
 impl Env {

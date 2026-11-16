@@ -508,7 +508,13 @@ impl Session {
                     crate::exporters::Bodies::default()
                 }
             };
-            exporter.enqueue(&c.st, &c.request_id, entry, bodies);
+            exporter.enqueue(
+                &c.st,
+                &c.request_id,
+                c.request["route"].as_str(),
+                entry,
+                bodies,
+            );
         }
     }
 }

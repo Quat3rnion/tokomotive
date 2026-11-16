@@ -166,7 +166,27 @@ pub(crate) struct Destination {
 struct Event {
     request: String,
     entry: db::NewEntry,
+    route: Option<String>,
+    model: String,
     bodies: Bodies,
+}
+fn model_label(st: &AppState, entry: &db::NewEntry) -> String {
+    let Some(model) = entry.model.as_deref() else {
+        return "other".into();
+    };
+    if let Some(deployment) = st
+        .router_table()
+        .routes
+        .iter()
+        .flat_map(|route| &route.deployments)
+        .find(|d| d.provider == entry.provider && d.model == model)
+    {
+        return deployment.model.clone();
+    }
+    st.catalog()
+        .resolve(model)
+        .filter(|m| m.provider == entry.provider)
+        .map_or_else(|| "other".into(), |m| m.name.clone())
 }
 #[derive(Default)]
 pub(crate) struct Bodies {
@@ -183,6 +203,7 @@ impl Destination {
         self: &Arc<Self>,
         st: &AppState,
         request: &str,
+        route: Option<&str>,
         entry: &db::NewEntry,
         bodies: Bodies,
     ) {
@@ -205,6 +226,8 @@ impl Destination {
                 Event {
                     request: request.into(),
                     entry: entry.clone(),
+                    route: route.map(str::to_owned),
+                    model: model_label(st, entry),
                     bodies,
                 },
                 slot,
@@ -309,6 +332,8 @@ pub(crate) async fn test(st: &AppState, exporter: &Exporter) -> Delivery {
         &[Event {
             request: crate::hooks::new_secret(),
             entry,
+            route: None,
+            model: "other".into(),
             bodies: Bodies::default(),
         }],
         1,
@@ -332,7 +357,7 @@ async fn send(st: &AppState, exporter: &Exporter, events: &[Event]) -> Result<u1
     header.set_sensitive(true);
     let mut event_tags = Vec::with_capacity(events.len());
     for event in events {
-        event_tags.push(tags(st, exporter, &event.entry).await?);
+        event_tags.push(tags(st, exporter, event).await?);
     }
     let auth = if exporter.kind == "maxim" {
         "x-maxim-api-key"
@@ -346,7 +371,7 @@ async fn send(st: &AppState, exporter: &Exporter, events: &[Event]) -> Result<u1
             let mut trace = json!({"id":event.request,"type":"trace","name":entry.endpoint,
                 "tags":tags,
                 "metrics":usage_metrics(entry),
-                "metadata":{"start_ms":entry.ts_ms,"latency_ms":entry.latency_ms,"status":entry.status,"model":entry.model,"provider":entry.provider}});
+                "metadata":{"start_ms":entry.ts_ms,"latency_ms":entry.latency_ms,"status":entry.status,"model":event.model,"provider":entry.provider}});
             if let Some(input) = &event.bodies.input { trace["input"] = json!(input); }
             if let Some(output) = &event.bodies.output { trace["output"] = json!(output); }
             trace
@@ -443,15 +468,16 @@ async fn post(
 async fn tags(
     st: &AppState,
     exporter: &Exporter,
-    entry: &db::NewEntry,
+    event: &Event,
 ) -> Result<serde_json::Map<String, Value>> {
+    let entry = &event.entry;
     let mut tags: serde_json::Map<String, Value> = exporter
         .tag_allowlist
         .split(',')
         .filter_map(|key| {
             let value = match key.trim() {
-                "route" => entry.requested_model.as_deref()?,
-                "model" => entry.model.as_deref()?,
+                "route" => event.route.as_deref()?,
+                "model" => &event.model,
                 "provider" => &entry.provider,
                 _ => return None,
             };
@@ -524,7 +550,7 @@ fn span(event: &Event, tags: &serde_json::Map<String, Value>) -> Value {
         "parent_id":"undefined","trace_id":id,"span_id":id,"name":entry.endpoint,
         "start_ns":entry.ts_ms.max(0) as u64 * 1_000_000,"duration":entry.latency_ms.max(0) as u64 * 1_000_000,
         "status":if entry.status < 400 {"ok"} else {"error"},
-        "meta":{"kind":"llm","model_name":entry.model,"model_provider":entry.provider},
+        "meta":{"kind":"llm","model_name":event.model,"model_provider":entry.provider},
         "metrics":usage_metrics(entry),
         "tags":tags
     });
