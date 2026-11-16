@@ -558,6 +558,7 @@ impl Config {
             bail!("Choose an existing Route for unknown model names.");
         }
         for r in &self.routes {
+            r.cache.semantic.validate()?;
             validate_name(&r.name)?;
             if !names.insert(&r.name) {
                 bail!("A Route named {} already exists.", r.name);

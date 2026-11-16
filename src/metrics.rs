@@ -32,6 +32,18 @@ pub fn record(user: &str, e: &NewEntry) {
         ("model", model),
         ("user", user.to_owned()),
         ("cache_hit", e.cache_hit.to_string()),
+        (
+            "cache_kind",
+            if e.semantic_cache_hit {
+                "semantic"
+            } else if e.cache_hit {
+                "exact"
+            } else {
+                "none"
+            }
+            .into(),
+        ),
+        ("semantic_cache_embed", e.semantic_cache_embed.to_string()),
     ];
     let mut with_status = base.to_vec();
     with_status.push(("status", e.status.to_string()));

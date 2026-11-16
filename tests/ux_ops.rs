@@ -130,6 +130,8 @@ impl App {
             &NewEntry {
                 route_rule: None,
                 cache_hit: false,
+                semantic_cache_hit: false,
+                semantic_cache_embed: false,
                 session_affinity: None,
                 reported_cost_micros: None,
                 ts_ms,

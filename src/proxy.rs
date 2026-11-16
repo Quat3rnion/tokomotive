@@ -499,6 +499,9 @@ struct Ctx {
     route: String,
     guardrails: crate::guardrails::Session,
     cache_plan: Option<crate::cache::Plan>,
+    semantic_plan: Option<crate::semantic_cache::WritePlan>,
+    semantic_cache_hit: bool,
+    semantic_cache_embed: bool,
     cache_hit_price: Option<i64>,
     st: AppState,
     auth: KeyAuth,
@@ -604,6 +607,8 @@ impl Ctx {
         // Failed requests with no usage are errors, not Unpriced Entries.
         quote.unpriced = quote.unpriced && o.status < 400;
         let entry = NewEntry {
+            semantic_cache_hit: self.semantic_cache_hit,
+            semantic_cache_embed: self.semantic_cache_embed,
             route_rule: self.trace.route_rule.clone(),
             cache_hit: self.cache_hit_price.is_some(),
             ts_ms: self.ts_ms,
@@ -678,9 +683,13 @@ impl Ctx {
         model: Option<String>,
         estimated: bool,
     ) -> Option<crate::cache::Write> {
+        if self.cache_plan.is_none() && self.semantic_plan.is_none() {
+            return None;
+        }
         Some(crate::cache::Write {
             st: self.st.clone(),
-            plan: self.cache_plan.clone()?,
+            plan: self.cache_plan.clone(),
+            semantic: self.semantic_plan.clone(),
             entry: crate::cache::Entry {
                 body: String::new(),
                 content_type: String::new(),
@@ -802,6 +811,7 @@ pub(crate) async fn handle_native(
         Ok(body),
         guardrails.clone(),
         Some(native),
+        false,
     )
     .await;
     let response = guardrails.response(response, anthropic, false).await;
@@ -817,7 +827,99 @@ async fn handle_inner(
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
     guardrails: crate::guardrails::Session,
 ) -> Response {
-    handle_inner_native(st, method, uri, headers, body, guardrails, None).await
+    handle_inner_native(st, method, uri, headers, body, guardrails, None, false).await
+}
+
+// Keep internal identity out of client-controlled headers. Run the request to
+// completion even when the cache wait expires, so usage is still accounted.
+fn semantic_embedding(
+    st: AppState,
+    headers: &HeaderMap,
+    plan: &crate::semantic_cache::Plan,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<crate::semantic_cache::Embedding>> + Send>,
+> {
+    let mut auth_headers = HeaderMap::new();
+    auth_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    for name in ["authorization", "x-api-key", "api-key"] {
+        if let Some(value) = headers.get(name) {
+            auth_headers.insert(name, value.clone());
+        }
+    }
+    let body = Bytes::from(
+        json!({"model":plan.policy.embedding_model,"input":plan.text,"encoding_format":"float"})
+            .to_string(),
+    );
+    let timeout = std::time::Duration::from_millis(plan.policy.timeout_ms);
+    Box::pin(async move {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let state = st.clone();
+        st.spawn_tracked(async move {
+            let table = state.router_table();
+            let guardrails = crate::guardrails::Session::default();
+            let mut completion = guardrails.completion();
+            let response = handle_inner_native(
+                state.clone(),
+                Method::POST,
+                Uri::from_static("/v1/embeddings"),
+                auth_headers,
+                Ok(body),
+                guardrails.clone(),
+                None,
+                true,
+            )
+            .await;
+            let response = guardrails.response(response, false, false).await;
+            completion.disarm();
+            // Never tag an in-flight vector with a replacement configuration.
+            // The internal request can resolve before or after a settings save.
+            let vector = if response.status().is_success()
+                && std::sync::Arc::ptr_eq(&table, &state.router_table())
+            {
+                let provider = response
+                    .headers()
+                    .get("x-tokomotive-provider")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                let model = response
+                    .headers()
+                    .get("x-tokomotive-model")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                let source = table
+                    .providers
+                    .iter()
+                    .find(|p| p.name == provider)
+                    .map(|p| json!([p.base_url, p.kind, p.auth.as_str()]));
+                axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+                    .await
+                    .ok()
+                    .and_then(|b| {
+                        let version = serde_json::from_slice::<Value>(&b)
+                            .ok()?
+                            .get("model")
+                            .cloned();
+                        Some(crate::semantic_cache::Embedding {
+                            vector: crate::semantic_cache::parse_embedding(&b)?,
+                            identity: json!([provider, model, source, version]).to_string(),
+                        })
+                    })
+            } else {
+                None
+            };
+            let _ = send.send(vector);
+        });
+        tokio::time::timeout(timeout, receive)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -829,6 +931,7 @@ async fn handle_inner_native(
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
     guardrails: crate::guardrails::Session,
     native: Option<crate::inbound::Context>,
+    internal_embedding: bool,
 ) -> Response {
     let started = Instant::now();
     let ts_ms = db::now_ms();
@@ -1044,6 +1147,8 @@ async fn handle_inner_native(
                     metrics::counter!("tokomotive_route_rule_matches_total","route"=>route.to_owned(),"rule"=>selection.rule.id.clone(),"side"=>selection.side).increment(1);
                     if let crate::route_rules::Action::Reject { message } = selection.action {
                         let entry = NewEntry {
+                            semantic_cache_hit: false,
+                            semantic_cache_embed: internal_embedding,
                             route_rule: matched_rule.clone(),
                             cache_hit: false,
                             ts_ms,
@@ -1230,6 +1335,8 @@ async fn handle_inner_native(
     if let Some(value) = &mut json_body {
         if let Some(name) = guardrails.request(value).await {
             let entry = NewEntry {
+                semantic_cache_hit: false,
+                semantic_cache_embed: internal_embedding,
                 route_rule: matched_rule.clone(),
                 cache_hit: false,
                 ts_ms,
@@ -1280,7 +1387,7 @@ async fn handle_inner_native(
         .iter()
         .find(|r| Some(r.name.as_str()) == resolved_route)
         .and_then(|r| {
-            if !r.cache.enabled {
+            if !r.cache.enabled || internal_embedding {
                 return None;
             }
             if !matches!(
@@ -1327,7 +1434,7 @@ async fn handle_inner_native(
                 auth.team_id,
             )
         });
-    let cached = if let Some(plan) = &cache_plan {
+    let mut cached = if let Some(plan) = &cache_plan {
         match crate::cache::lookup(&st.db, &st.secret_key, plan, &settings.cache).await {
             Ok(entry) => entry.filter(|entry| {
                 candidates
@@ -1342,6 +1449,89 @@ async fn handle_inner_native(
     } else {
         None
     };
+    let mut semantic_score = None;
+    if cache_plan.as_ref().is_some_and(|p| p.lookup) && cached.is_none() {
+        metrics::counter!("llm_cache_misses_total").increment(1);
+    }
+    let mut semantic_plan = None;
+    if cached.is_none()
+        && !internal_embedding
+        && matches!(
+            endpoint,
+            Endpoint::ChatCompletions | Endpoint::Messages | Endpoint::Responses
+        )
+        && let Some(route) = table
+            .routes
+            .iter()
+            .find(|r| Some(r.name.as_str()) == resolved_route)
+        && let Some(body) = &json_body
+    {
+        let identity = json!([
+            native
+                .as_ref()
+                .map(crate::inbound::Context::semantic_identity),
+            route.name,
+            route.strategy,
+            route
+                .deployments
+                .iter()
+                .map(|d| (&d.provider, &d.model, d.weight))
+                .collect::<Vec<_>>(),
+            route.fallbacks,
+            table
+                .reachable_providers(&catalog, &route.name)
+                .iter()
+                .map(|p| (
+                    &p.name,
+                    &p.base_url,
+                    p.kind,
+                    p.auth.as_str(),
+                    p.include_usage
+                ))
+                .collect::<Vec<_>>(),
+            matched_rule.as_ref().map(|r| (&r.id, &r.side))
+        ])
+        .to_string();
+        if let Some(mut plan) = crate::semantic_cache::Plan::new(
+            &route.cache.semantic,
+            &identity,
+            uri.path_and_query()
+                .map(|p| p.as_str())
+                .unwrap_or(uri.path()),
+            body,
+            &headers,
+            auth.key_id,
+            auth.team_id,
+        ) && let Some(embedding) = semantic_embedding(st.clone(), &headers, &plan).await
+        {
+            plan.bind_embedding(&embedding.identity);
+            let vector = embedding.vector;
+            match crate::semantic_cache::lookup(
+                &st.db,
+                &st.secret_key,
+                &plan,
+                &vector,
+                &settings.cache,
+            )
+            .await
+            {
+                Ok(Some((entry, score)))
+                    if candidates.iter().any(|c| {
+                        c.provider.name == entry.provider && c.model == entry.upstream_model
+                    }) =>
+                {
+                    cached = Some(entry);
+                    semantic_score = Some(score);
+                }
+                Err(e) => tracing::warn!(error=%e,"semantic cache lookup failed"),
+                _ => {}
+            }
+            if cached.is_none() && plan.exact.lookup {
+                metrics::counter!("llm_semantic_cache_misses_total").increment(1);
+            }
+            semantic_plan = Some(crate::semantic_cache::WritePlan { plan, vector });
+        }
+    }
     let mut reservation = None;
     if !simple {
         let mut worst = 0;
@@ -1433,6 +1623,9 @@ async fn handle_inner_native(
         route: first.route.clone(),
         guardrails,
         cache_plan,
+        semantic_plan,
+        semantic_cache_hit: semantic_score.is_some(),
+        semantic_cache_embed: internal_embedding,
         cache_hit_price: None,
         st: st.clone(),
         auth,
@@ -1478,8 +1671,13 @@ async fn handle_inner_native(
             ttft_ms: streamed.then_some(0),
             client_aborted: false,
         });
-        metrics::counter!("llm_cache_hits_total").increment(1);
-        metrics::counter!("llm_cache_hit_bytes_total").increment(bytes.len() as u64);
+        if semantic_score.is_some() {
+            metrics::counter!("llm_semantic_cache_hits_total").increment(1);
+            metrics::counter!("llm_semantic_cache_hit_bytes_total").increment(bytes.len() as u64);
+        } else {
+            metrics::counter!("llm_cache_hits_total").increment(1);
+            metrics::counter!("llm_cache_hit_bytes_total").increment(bytes.len() as u64);
+        }
         let mut response = Response::new(Body::from(bytes));
         response.headers_mut().extend(resolution_headers);
         response.headers_mut().insert(
@@ -1487,13 +1685,21 @@ async fn handle_inner_native(
             HeaderValue::from_str(&entry.content_type)
                 .unwrap_or(HeaderValue::from_static("application/json")),
         );
-        response
-            .headers_mut()
-            .insert("x-tokomotive-cache", HeaderValue::from_static("hit"));
+        response.headers_mut().insert(
+            "x-tokomotive-cache",
+            semantic_score.map_or(HeaderValue::from_static("hit"), |score| {
+                HeaderValue::from_str(&format!("semantic-hit; similarity={score:.3}"))
+                    .expect("similarity header")
+            }),
+        );
         return response;
     }
-    let cache_status = if ctx.cache_plan.as_ref().is_some_and(|p| p.lookup) {
-        metrics::counter!("llm_cache_misses_total").increment(1);
+    let cache_status = if ctx.cache_plan.as_ref().is_some_and(|p| p.lookup)
+        || ctx
+            .semantic_plan
+            .as_ref()
+            .is_some_and(|p| p.plan.exact.lookup)
+    {
         "miss"
     } else {
         "bypass"
@@ -2852,23 +3058,26 @@ fn stream_response(
         let mut ttft = None;
         let mut client_gone = false;
         let mut upstream_failed = false;
-        let mut cached_body = crate::cache::StreamBody::new(if ctx.cache_plan.is_some() {
-            ctx.st.settings().cache.max_entry_bytes
-        } else {
-            0
-        });
+        let mut cached_body = crate::cache::StreamBody::new(
+            if ctx.cache_plan.is_some() || ctx.semantic_plan.is_some() {
+                ctx.st.settings().cache.max_entry_bytes
+            } else {
+                0
+            },
+        );
         // Chat/Messages translation can synthesize a stop event at EOF. Check
         // the source too, so a truncated upstream cannot become a cached hit.
         let source_check = matches!(
             ctx.provider.kind,
             ProviderKind::Openai | ProviderKind::Anthropic
         );
-        let mut source_body =
-            crate::cache::StreamBody::new(if source_check && ctx.cache_plan.is_some() {
+        let mut source_body = crate::cache::StreamBody::new(
+            if source_check && (ctx.cache_plan.is_some() || ctx.semantic_plan.is_some()) {
                 ctx.st.settings().cache.max_entry_bytes
             } else {
                 0
-            });
+            },
+        );
         let mut idle_timeout = false;
         while let Some(item) = match crate::provider_limits::next_chunk(
             &mut stream,

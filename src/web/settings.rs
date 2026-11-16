@@ -641,6 +641,9 @@ struct RoutesPage {
     providers: Vec<String>,
 }
 impl RoutesPage {
+    fn default_semantic(&self) -> crate::semantic_cache::Policy {
+        Default::default()
+    }
     /// The Add route form starts with no deployments.
     fn no_deployments(&self) -> &'static [DeploymentCfg] {
         &[]
@@ -1044,6 +1047,7 @@ async fn try_model(_: Admin, State(st): State<AppState>, Form(f): Form<TryModelF
 /// `deployment_provider`, `deployment_model` and `deployment_weight` fields.
 #[derive(Default)]
 struct RouteForm {
+    semantic: std::collections::BTreeMap<String, String>,
     cache_enabled: Option<String>,
     cache_ttl_secs: Option<String>,
     cache_scope: Option<String>,
@@ -1062,6 +1066,17 @@ impl RouteForm {
         let mut f = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
+                "semantic_enabled"
+                | "semantic_embedding_model"
+                | "semantic_threshold"
+                | "semantic_scope"
+                | "semantic_ttl_secs"
+                | "semantic_input"
+                | "semantic_max_chars"
+                | "semantic_max_vectors"
+                | "semantic_timeout_ms" => {
+                    f.semantic.insert(key[9..].into(), value);
+                }
                 "cache_enabled" => f.cache_enabled = Some(value),
                 "cache_ttl_secs" => f.cache_ttl_secs = Some(value),
                 "cache_scope" => f.cache_scope = Some(value),
@@ -1215,6 +1230,31 @@ async fn save_route(_: Admin, st: AppState, old: Option<String>, f: RouteForm) -
             Err(_) => return form_error("Choose cache scope Key, Team or Global."),
         };
     }
+    let mut semantic = tryr!(serde_json::to_value(&route.cache.semantic));
+    for (field, value) in f.semantic {
+        semantic[&field] = match field.as_str() {
+            "enabled" => match value.as_str() {
+                "on" => serde_json::Value::Bool(true),
+                "off" => serde_json::Value::Bool(false),
+                _ => return form_error("Choose Semantic cache On or Off."),
+            },
+            "embedding_model" | "scope" | "input" => {
+                serde_json::Value::String(value.trim().to_owned())
+            }
+            _ => match serde_json::from_str::<serde_json::Value>(&value) {
+                Ok(n) if n.is_number() => n,
+                _ => return form_error("Enter valid numbers for the semantic cache settings."),
+            },
+        };
+    }
+    route.cache.semantic = match serde_json::from_value(semantic) {
+        Ok(policy) => policy,
+        Err(_) => {
+            return form_error(
+                "Check the semantic cache settings. Use whole numbers for limits and lifetime.",
+            );
+        }
+    };
     cfg.routes.push(route.clone());
     if let Some(original_name) = &old {
         let rules = tryr!(crate::route_rules::load(&st.db, original_name).await);

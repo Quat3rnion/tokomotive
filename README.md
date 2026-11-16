@@ -42,6 +42,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Offers an encrypted [exact response cache](docs/usage.md#exact-response-cache)
   for JSON and SSE. Each Route sets its lifetime and Virtual Key, Team or global scope.
   Hits have zero Cost and a configurable Price. The cache is off by default.
+- Offers an opt-in [semantic response cache](docs/usage.md#semantic-response-cache).
+  It uses accounted embedding requests and encrypted vectors to find similar
+  prompts. Virtual Key scope is the default. Exact matches take priority.
 - Applies [Guardrails](docs/usage.md#guardrails) to prompts and responses.
   Attach rule sets to Routes, Teams or Virtual Keys. Block, redact or log
   regex, keyword, PII and secret matches. Rules also apply in Simple Mode.
@@ -140,7 +143,8 @@ controls. The default is **Full**. See [usage.md](docs/usage.md#simple-mode).
 The screenshots show demo data from a local test server. The keys are not real.
 The dashboard has a dark and a light theme. The two large images show the
 theme of your GitHub appearance setting.
-The current images do not show the new exact-cache controls, hit flag or hit rate.
+The current images do not show the new exact and semantic cache controls,
+hit flags or hit rates.
 The capture manifest records these changes for the next image refresh.
 
 <picture>

@@ -41,6 +41,22 @@
 <label>Cache scope <select name="cache_scope"><option value="key"{% if scope == "key" %} selected{% endif %}>Virtual Key</option><option value="team"{% if scope == "team" %} selected{% endif %}>Team</option><option value="global"{% if scope == "global" %} selected{% endif %}>Global</option></select></label>
 </div></fieldset>
 {% endmacro %}
+{% macro semantic_fields(p, id) %}
+<fieldset><legend>Semantic response cache</legend>
+<p class="hint">Off by default. Prompts go to the embedding Provider. Vectors and answers are encrypted at rest. Use Virtual Key scope. Global can return one client's answer to another client.</p>
+<div class="row">
+<label>Semantic cache <select name="semantic_enabled"><option value="off"{% if !p.enabled %} selected{% endif %}>Off</option><option value="on"{% if p.enabled %} selected{% endif %}>On</option></select></label>
+<label>Embedding model {% call picker::model(id, "semantic_embedding_model", p.embedding_model, "single", "route,model,provider", "", "", "", "wide", false) %}</label>
+<label>Cosine threshold <input name="semantic_threshold" type="number" min="0" max="1" step="0.001" value="{{ p.threshold }}" required></label>
+<label>Semantic scope <select name="semantic_scope"><option value="key"{% if p.scope.as_str() == "key" %} selected{% endif %}>Virtual Key</option><option value="team"{% if p.scope.as_str() == "team" %} selected{% endif %}>Team</option><option value="global"{% if p.scope.as_str() == "global" %} selected{% endif %}>Global</option></select></label>
+<label>Semantic lifetime (seconds) <input name="semantic_ttl_secs" type="number" min="1" value="{{ p.ttl_secs }}" required></label>
+<label>Text to embed <select name="semantic_input"><option value="last_user"{% if p.input.as_str() == "last_user" %} selected{% endif %}>Last user message</option><option value="conversation"{% if p.input.as_str() == "conversation" %} selected{% endif %}>Whole conversation</option></select></label>
+<label>Maximum input characters <input name="semantic_max_chars" type="number" min="1" max="1000000" value="{{ p.max_chars }}" required></label>
+<label>Maximum vectors per bucket <input name="semantic_max_vectors" type="number" min="1" max="5000" value="{{ p.max_vectors }}" required></label>
+<label>Embedding wait (milliseconds) <input name="semantic_timeout_ms" type="number" min="1" max="60000" value="{{ p.timeout_ms }}" required></label>
+</div><p class="hint">The embedding request uses this Virtual Key's permissions.{% if !base.simple %} Budgets and Rate Limits also apply.{% endif %} Exact hits do not need an embedding request. If the embedding fails, the Proxy uses the normal upstream request.</p>
+</fieldset>
+{% endmacro %}
 {% block content %}
 <h1>Routes</h1>
 <p class="muted">A Route is a model name that clients send. The Proxy sends the request to one of its Deployments. If all fail, it tries the Fallbacks in order.</p>
@@ -83,6 +99,7 @@
   </div>
   {% call deployments_editor(provider_choices, r.deployments, false) %}
   {% call cache_fields(r.cache.enabled, r.cache.ttl_secs, r.cache.scope.as_str()) %}
+  {% call semantic_fields(r.cache.semantic, "") %}
   {% let pager = r.deployment_pager %}{% include "pager.html" %}
   <div class="form-error" role="alert" tabindex="-1"></div>
   <button aria-label="Save Route {{ r.name }}">Save</button>
@@ -111,6 +128,7 @@
   </div>
   {% call deployments_editor(provider_choices, self.no_deployments(), true) %}
   {% call cache_fields(false, 300, "key") %}
+  {% call semantic_fields(self.default_semantic(), "nr-embedding") %}
   <div class="form-error" role="alert" tabindex="-1"></div>
   <button>Add route</button>
 </form>

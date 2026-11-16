@@ -1123,6 +1123,8 @@ async fn account(st: &AppState, o: &Object, value: &Value) -> Result<(), ApiErro
             status,
             streamed: false,
             cache_hit: false,
+            semantic_cache_hit: false,
+            semantic_cache_embed: false,
             usage,
             reported_cost_micros: None,
             quote,

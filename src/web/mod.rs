@@ -867,10 +867,20 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
     let by_team = tryr!(db::by_team(&st.db, since).await);
     let (unpriced, estimated) = tryr!(db::count_flags_since(&st.db, since).await);
     let cache_hits = tryr!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ledger WHERE cache_hit=1 AND ts_ms>=?")
-            .bind(since.saturating_mul(1000))
-            .fetch_one(&st.db)
-            .await
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ledger WHERE cache_hit=1 AND semantic_cache_hit=0 AND ts_ms>=?"
+        )
+        .bind(since.saturating_mul(1000))
+        .fetch_one(&st.db)
+        .await
+    );
+    let semantic_cache_hits = tryr!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ledger WHERE semantic_cache_hit=1 AND ts_ms>=?"
+        )
+        .bind(since.saturating_mul(1000))
+        .fetch_one(&st.db)
+        .await
     );
     let (users, keys, requests): (bool, bool, bool) = tryr!(
         sqlx::query_as(
@@ -894,6 +904,7 @@ async fn overview(_: Admin, State(st): State<AppState>, Query(q): Query<RangeQ>)
         range,
         OverviewData {
             cache_hits,
+            semantic_cache_hits,
             totals: &totals,
             series: &series,
             by_model: &by_model,

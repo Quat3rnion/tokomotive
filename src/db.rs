@@ -583,6 +583,10 @@ pub async fn spend_since(db: &Db, user_id: i64, since_s: i64) -> Result<i64> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewEntry {
     #[serde(default)]
+    pub semantic_cache_hit: bool,
+    #[serde(default)]
+    pub semantic_cache_embed: bool,
+    #[serde(default)]
     pub route_rule: Option<crate::route_rules::Matched>,
     pub cache_hit: bool,
     pub ts_ms: i64,
@@ -673,6 +677,14 @@ pub(crate) async fn insert_entry_in(tx: &mut sqlx::SqliteConnection, e: &NewEntr
     .await?
     .last_insert_rowid();
 
+    if e.semantic_cache_hit || e.semantic_cache_embed {
+        sqlx::query("UPDATE ledger SET semantic_cache_hit=?,semantic_cache_embed=? WHERE id=?")
+            .bind(e.semantic_cache_hit)
+            .bind(e.semantic_cache_embed)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
     if let Some(rule) = &e.route_rule {
         sqlx::query("UPDATE ledger SET route_rule=?,route_rule_name=?,canary_side=? WHERE id=?")
             .bind(&rule.id)
@@ -1085,6 +1097,8 @@ pub async fn update_key_providers(db: &Db, id: i64, providers: &[String]) -> Res
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LedgerRow {
+    pub semantic_cache_hit: bool,
+    pub semantic_cache_embed: bool,
     pub user_id: i64,
     pub key_label: String,
     pub route_rule: Option<String>,
@@ -1198,7 +1212,7 @@ pub async fn ledger_page(db: &Db, q: &LedgerQuery) -> Result<Vec<LedgerRow>> {
 pub(crate) const LEDGER_SELECT: &str = "SELECT l.user_id, (SELECT label FROM virtual_keys k WHERE k.id=l.key_id) AS key_label, COALESCE((SELECT rule_names FROM guardrail_events g WHERE g.ledger_id=l.id),'') AS guardrail_rules, EXISTS(SELECT 1 FROM captured_bodies c WHERE c.ledger_id=l.id) AS captured, l.id, l.ts_ms, u.name AS user, l.provider, l.endpoint, l.requested_model, l.model, l.status, l.streamed,
             l.input, l.output, l.cache_read, l.cache_write_5m, l.cache_write_1h, l.cost_micros, l.price_micros,
             l.unpriced, l.estimated, l.latency_ms, l.ttft_ms, l.client_aborted,
-            l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit, l.route_rule,l.route_rule_name,l.canary_side
+            l.image_input, l.image_output, l.service_units, l.provider_key, l.attempts, l.reported_cost_micros, l.session_affinity, l.cache_hit, l.semantic_cache_hit, l.semantic_cache_embed, l.route_rule,l.route_rule_name,l.canary_side
          FROM ledger l JOIN users u ON u.id = l.user_id WHERE l.id > 0";
 
 /// One extra row is private lookahead, never rendered or returned in an API list.

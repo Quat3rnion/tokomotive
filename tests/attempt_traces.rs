@@ -333,6 +333,8 @@ async fn bounded_export_queue_drops_without_waiting_for_a_collector() {
         status: 200,
         streamed: false,
         cache_hit: false,
+        semantic_cache_hit: false,
+        semantic_cache_embed: false,
         usage: Default::default(),
         reported_cost_micros: None,
         quote: Default::default(),

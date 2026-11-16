@@ -223,6 +223,8 @@ async fn entry_ms(
         &tokomotive::db::NewEntry {
             route_rule: None,
             cache_hit: false,
+            semantic_cache_hit: false,
+            semantic_cache_embed: false,
             ts_ms,
             user_id: auth.user_id,
             key_id: auth.key_id,

@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
+    pub semantic: crate::semantic_cache::Policy,
     pub enabled: bool,
     pub ttl_secs: u64,
     pub scope: Scope,
@@ -21,6 +22,7 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
+            semantic: Default::default(),
             enabled: false,
             ttl_secs: 300,
             scope: Scope::Key,
@@ -162,7 +164,8 @@ impl Entry {
 }
 pub struct Write {
     pub st: crate::state::AppState,
-    pub plan: Plan,
+    pub plan: Option<Plan>,
+    pub semantic: Option<crate::semantic_cache::WritePlan>,
     pub entry: Entry,
 }
 impl Write {
@@ -173,16 +176,29 @@ impl Write {
         }
         self.entry.set_body(bytes);
         self.entry.content_type = content_type.into();
-        if let Err(e) = store(
-            &self.st.db,
-            &self.st.secret_key,
-            &self.plan,
-            &limits,
-            &self.entry,
-        )
-        .await
+        if let Some(plan) = self.plan
+            && let Err(e) = store(
+                &self.st.db,
+                &self.st.secret_key,
+                &plan,
+                &limits,
+                &self.entry,
+            )
+            .await
         {
             tracing::warn!(error=%e,"cache store failed");
+        }
+        if let Some(plan) = self.semantic
+            && let Err(e) = crate::semantic_cache::store(
+                &self.st.db,
+                &self.st.secret_key,
+                &plan,
+                &limits,
+                &self.entry,
+            )
+            .await
+        {
+            tracing::warn!(error=%e,"semantic cache store failed");
         }
     }
 }
@@ -212,6 +228,16 @@ pub async fn store(
     limits: &Limits,
     entry: &Entry,
 ) -> Result<()> {
+    store_with_vector(db, secret, plan, limits, entry, None).await
+}
+pub(crate) async fn store_with_vector(
+    db: &Db,
+    secret: &SecretKey,
+    plan: &Plan,
+    limits: &Limits,
+    entry: &Entry,
+    semantic: Option<(&str, Vec<u8>, usize)>,
+) -> Result<()> {
     if limits.max_entries == 0
         || entry.body.len() as u64 > limits.max_entry_bytes
         || limits.max_bytes == 0
@@ -222,20 +248,33 @@ pub async fn store(
     // Moving a ciphertext to a different cache row must not create a hit.
     let body = secret.encrypt(&serde_json::to_string(&(&plan.key, entry))?)?;
     // Include encryption, metadata and base64 overhead in both byte limits.
-    let size = body.len() as u64;
+    let size = (body.len() + semantic.as_ref().map_or(0, |(_, v, _)| v.len())) as u64;
     if size > limits.max_entry_bytes || size > limits.max_bytes {
         return Ok(());
     }
     let now = db::now_ms();
     let expires = now.saturating_add(plan.ttl_secs.min(i64::MAX as u64 / 1000) as i64 * 1000);
     let mut tx = db::begin_purge(db, "cache_store").await?;
-    sqlx::query("INSERT OR REPLACE INTO response_cache(key,body,body_bytes,created_ms,expires_ms) VALUES(?,?,?,?,?)")
-        .bind(&plan.key).bind(body).bind(size as i64).bind(now).bind(expires).execute(&mut *tx).await?;
+    sqlx::query("INSERT OR REPLACE INTO response_cache(key,body,body_bytes,created_ms,expires_ms,semantic_bucket,vector) VALUES(?,?,?,?,?,?,?)")
+        .bind(&plan.key).bind(body).bind(size as i64).bind(now).bind(expires).bind(semantic.as_ref().map(|(b,_,_)| *b)).bind(semantic.as_ref().map(|(_,v,_)| v)).execute(&mut *tx).await?;
+    if let Some((bucket, _, cap)) = semantic {
+        loop {
+            let deleted = sqlx::query("DELETE FROM response_cache WHERE rowid IN (SELECT rowid FROM response_cache WHERE semantic_bucket=? ORDER BY created_ms DESC,rowid DESC LIMIT 500 OFFSET ?)")
+                .bind(bucket).bind(cap as i64).execute(&mut *tx).await?.rows_affected();
+            if deleted < 500 {
+                break;
+            }
+        }
+    }
     // Store must enforce the cap before commit, even if it takes several
     // bounded eviction batches. Maintenance still runs only one batch.
     while prune(&mut tx, limits).await? == 500 {}
     tx.commit().await?;
-    metrics::counter!("llm_cache_stored_bytes_total").increment(size);
+    if plan.key.starts_with("semantic:") {
+        metrics::counter!("llm_semantic_cache_stored_bytes_total").increment(size);
+    } else {
+        metrics::counter!("llm_cache_stored_bytes_total").increment(size);
+    }
     Ok(())
 }
 pub async fn purge(db: &Db) -> Result<()> {

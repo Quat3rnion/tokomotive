@@ -498,6 +498,7 @@ pub struct OverviewPage {
 
 pub struct OverviewData<'a> {
     pub cache_hits: i64,
+    pub semantic_cache_hits: i64,
     pub totals: &'a Totals,
     pub series: &'a [Bucket],
     pub by_model: &'a [Group],
@@ -578,6 +579,18 @@ impl OverviewPage {
                         "{:.1}% ({} hits)",
                         100.0 * d.cache_hits as f64 / t.requests as f64,
                         d.cache_hits
+                    )
+                },
+            ),
+            (
+                "Semantic cache hit rate",
+                if t.requests == 0 {
+                    "0.0%".into()
+                } else {
+                    format!(
+                        "{:.1}% ({} hits)",
+                        100.0 * d.semantic_cache_hits as f64 / t.requests as f64,
+                        d.semantic_cache_hits
                     )
                 },
             ),
@@ -1388,6 +1401,8 @@ pub fn stamp_opt(ts_s: i64) -> Option<Stamp> {
 }
 
 pub struct LedgerView {
+    pub semantic_cache_hit: bool,
+    pub semantic_cache_embed: bool,
     pub key_label: String,
     pub route: String,
     pub route_rule: String,
@@ -1534,6 +1549,8 @@ impl LedgerView {
             attempts: r.attempts,
             session_affinity: r.session_affinity.clone(),
             cache_hit: r.cache_hit,
+            semantic_cache_hit: r.semantic_cache_hit,
+            semantic_cache_embed: r.semantic_cache_embed,
             guardrail_rules: r.guardrail_rules.clone(),
             key: r
                 .provider_key

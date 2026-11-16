@@ -346,6 +346,103 @@ the selected range. The `/metrics` endpoint exports `llm_cache_hits_total`,
 `llm_cache_stored_bytes_total`. Bypasses are not misses. Ledger-based metrics
 have a `cache_hit` label so that you can separate stored usage from upstream usage.
 
+## Semantic response cache
+
+On **Routes**, use **Semantic response cache**, next to the exact cache.
+The two caches have separate On/Off controls. The default is Off.
+The Proxy checks the exact cache first. Only a miss can need an embedding.
+
+Select an **Embedding model** with the model picker. This can be a Route,
+a catalog Model or a `provider/model` name. The normal model resolver and
+the Virtual Key's Model and Provider permissions apply. The selected Provider
+must support the Proxy's Embeddings endpoint. An unsupported model causes a
+normal upstream request, not a client error from the semantic cache.
+
+The Route controls have these defaults:
+
+| Control | Default | Function |
+| --- | --- | --- |
+| Cosine threshold | 0.95 | Return the best match at or above this value. The range is 0 to 1. |
+| Semantic scope | Virtual Key | Keep each Virtual Key's answers separate. Team and Global are also available. |
+| Semantic lifetime | 300 seconds | Expired entries cannot match. |
+| Text to embed | Last user message | Embed only the last user message, or select Whole conversation. |
+| Maximum input characters | 16,000 | Send only the first N characters of the selected text. The maximum is 1,000,000. |
+| Maximum vectors per bucket | 5,000 | Limit storage and each brute-force search. The range is 1 to 5,000. |
+| Embedding wait | 2,000 milliseconds | Stop waiting for a vector after this time. The maximum is 60,000. |
+
+Whole conversation uses the ordered text messages with their roles.
+Chat Completions and Messages support strings and text-only content blocks.
+Responses supports a string `input`. Image messages, tool results, structured
+Responses inputs and messages with extra fields do not use semantic matching.
+They can still use the exact cache. Requests with `n > 1` bypass both caches.
+
+Each search uses one bucket. The bucket hash separates the Route and Model,
+endpoint, client format, native options, stream mode and SSE usage option.
+It also separates `temperature`, `max_tokens`, `top_p`, `response_format`,
+system prompts and all other non-message request parameters. Tool definitions
+are hashed into the bucket: only identical definitions can share answers.
+The matched Route rule id and Canary side are part of the semantic identity.
+Two sides do not share semantic entries, even if they select the same Deployment.
+The selected embedding Provider, upstream Model and reported model version
+also separate vector spaces. Native Gemini and Bedrock Converse use separate
+client-format buckets. Provider-specific Invoke bodies retain exact identity.
+
+The search decrypts at most the configured number of vectors in the bucket.
+SQLite stores each vector as f32 little-endian bytes inside an encrypted BLOB.
+The vector and the response use AES-256-GCM with the Master Key. Their encrypted
+envelopes bind them to their stored identity. No plaintext embedding input is
+added to this cache. A response can contain text from a prompt.
+
+Semantic entries use the exact cache's entry, byte and entry-size limits on
+**Settings**. Encrypted vector bytes count toward both byte limits. Both caches
+share these storage limits and the oldest-first, batched removal process.
+When both caches are On, a complete miss can store one entry in each cache.
+Only successful, complete JSON responses or complete SSE streams are stored.
+Partial streams, errors and aborted responses are not stored. A streamed hit
+replays the stored client-format bytes. Response Guardrails still apply.
+Request Guardrails run before the lookup and before the embedding request.
+The exact cache's `no-cache`, `no-store` and `bypass` request controls also apply.
+
+Each embedding is an internal request through the normal Proxy path, on the
+same Virtual Key. It has its own Ledger Entry with `semantic_cache_embed`.
+In Full Mode, its Reservation, Cost, Price, RPM and TPM use the normal rules.
+If it fails, is denied or exceeds the wait limit, the main request continues
+without semantic matching. A timed-out wait does not cancel the internal
+request: it finishes under the normal upstream timeout so that its usage is
+still recorded. That embedding can still have a Price. Its late result is
+not stored for the main request. Simple Mode keeps its normal exemptions.
+
+A hit returns a header such as
+`x-tokomotive-cache: semantic-hit; similarity=0.973`. Its Ledger Entry has
+`semantic_cache_hit` and `cache_hit`, zero Cost, and the configured fixed cache
+**Hit Price**. The embedding has a separate Cost and Price. Budgets must cover
+each request. The hit retains the stored usage but does not add those tokens
+to TPM. An embedding does add its tokens. A request can therefore use two RPM
+slots even when it returns a stored answer.
+
+The Overview separates **Exact cache hit rate** and **Semantic cache hit rate**.
+Each divides its hit count by all recorded requests in the selected range,
+including internal embeddings. Metrics use `llm_semantic_cache_hits_total`,
+`llm_semantic_cache_misses_total`, `llm_semantic_cache_hit_bytes_total` and
+`llm_semantic_cache_stored_bytes_total`. The existing `llm_cache_*` counters
+describe only the exact cache. Ledger-based metrics add `cache_kind` with
+`none`, `exact` or `semantic`, and a `semantic_cache_embed` label.
+
+### Semantic cache privacy and answer quality
+
+Use **Virtual Key** scope unless sharing is necessary. **Team** shares only
+within one Team; a User without a Team bypasses this scope. **Global** can
+return one key's answer to another key. Model and Provider permissions do not
+make that sharing private. Do not use Global for personal or confidential data.
+
+Prompts go to the selected embedding Provider. Vectors can reveal information
+about prompts if decrypted. Protect the database and the Master Key together.
+Review the embedding Provider's data policy before you enable this feature.
+Similar prompts do not guarantee equivalent answers. Last user message mode
+does not compare earlier conversation text. Truncation can omit important text.
+Use Whole conversation for context-dependent requests, or leave the cache Off.
+Use `x-tokomotive-cache: bypass` when a request needs a new answer.
+
 ## Dashboard accounts and audit log
 
 Open `/setup` on first use. Choose the first Owner's username and password.

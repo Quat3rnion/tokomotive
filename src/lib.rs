@@ -33,6 +33,7 @@ pub mod ratelimit;
 pub mod resolve;
 pub mod route_rules;
 pub mod routing;
+pub mod semantic_cache;
 pub mod settings;
 pub mod state;
 pub mod translate;

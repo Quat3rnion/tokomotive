@@ -72,6 +72,8 @@ fn entry() -> db::NewEntry {
     db::NewEntry {
         route_rule: None,
         cache_hit: false,
+        semantic_cache_hit: false,
+        semantic_cache_embed: false,
         ts_ms: db::now_ms(),
         user_id: 1,
         key_id: 1,

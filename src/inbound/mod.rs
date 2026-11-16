@@ -94,6 +94,25 @@ impl Context {
     pub fn cache_identity(&self) -> Value {
         json!([format!("{:?}", self.format), self.operation, self.original])
     }
+    pub fn semantic_identity(&self) -> Value {
+        let mut options = self.original.clone();
+        let field = match self.format {
+            Format::Gemini => "contents",
+            Format::Converse => "messages",
+            // Provider-specific Invoke bodies have no common normalization.
+            Format::Invoke => return self.cache_identity(),
+        };
+        if let Some(obj) = options.as_object_mut() {
+            obj.remove(field);
+        }
+        if let Some(obj) = options
+            .get_mut("generateContentRequest")
+            .and_then(Value::as_object_mut)
+        {
+            obj.remove(field);
+        }
+        json!([format!("{:?}", self.format), self.operation, options])
+    }
     pub fn is_gemini_aux(&self) -> bool {
         self.format == Format::Gemini
             && !matches!(

@@ -1,10 +1,10 @@
 {
   "pending_refresh": [
-    {"page":"/admin", "reason":"Exact cache hit rate added. Keep the current image until the next requested capture."},
-    {"page":"/admin/routes", "reason":"Adaptive strategy and live scores were added, with request rules, Canary splits, the Try-box session id and exact response cache controls. Refresh dark and light captures at the next requested capture."},
+    {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
+    {"page":"/admin/routes", "reason":"Semantic cache controls and the embedding model picker were added, with Adaptive scores, request rules, Canary splits and exact cache controls. Refresh dark and light captures at the next requested capture."},
     {"page":"/admin/settings", "reason":"Adaptive router fields were added, with exact response cache limits, hit Price and global egress proxy controls. Keep the current image until the next requested capture."},
     {"page":"/admin/providers", "reason":"Per-Provider egress proxy controls and connection path results added. Keep the current image until the next requested capture."},
-    {"page":"/admin/ledger", "reason":"Adaptive score and exploration were added, with Route rule filter, matched rule, Canary side and cache hit flag. Refresh at the next requested capture."}
+    {"page":"/admin/ledger", "reason":"Semantic cache hit and embedding flags were added, with Adaptive score, exploration, Route rule filter, matched rule, Canary side and exact cache flag. Refresh at the next requested capture."}
   ],
   "surface_globs": ["templates/**", "src/web/**", "assets/**", "src/provider_types.rs", "scripts/screenshots/**"],
   "captures": [
