@@ -53,6 +53,13 @@ post(f"/admin/models/{ids['claude-sonnet-5-5']}/team-price", dict(Z, team_name="
 post(f"/admin/models/{ids['gpt-6-luna']}/price", dict(Z, mode="rates", input="0.20", output="1.00", cache_read="0.02"))
 post("/admin/routes", {"name": "smart", "strategy": "weighted", "fallbacks": "claude-haiku-5-5, gpt-4o-mini", "deployment_provider": ["openai", "anthropic", "anthropic"], "deployment_model": ["gpt-6.1-sol", "claude-sonnet-5-5", "claude-opus-5-5"], "deployment_weight": ["5", "3", "1"]})
 post("/admin/routes", {"name": "fast", "strategy": "priority", "fallbacks": "gpt-4o-mini", "deployment_provider": ["openai", "anthropic"], "deployment_model": ["gpt-6-luna", "claude-haiku-5-5"], "deployment_weight": ["1", "1"]})
+# A request rule on "smart": tool requests use Opus, with a 10% Canary on Sonnet.
+post("/admin/routes/smart/rules", {
+    "rule[0][name]": "tools-to-opus", "rule[0][enabled]": "on", "rule[0][has_tools]": "true",
+    "rule[0][action]": "deployments", "rule[0][deployments]": json.dumps(["anthropic", "claude-opus-5-5"]),
+    "rule[0][canary_percent]": "10", "rule[0][canary_action]": "deployments",
+    "rule[0][canary_deployments]": json.dumps(["anthropic", "claude-sonnet-5-5"]),
+})
 # The rule editor form: one detector, one regex and one keyword rule.
 post("/admin/guardrails", {
     "name": "Contact protection", "max_text_bytes": "1048576", "hook_url": "",

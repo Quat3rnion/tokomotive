@@ -93,7 +93,20 @@ async function capture() {
         await page.locator('table.keys button[data-toggle^="edit-k"]').first().click();
         return [0, (await box('nav.pager', null, null, true)).bottom + 24];
       },
-      routes: async () => [0, (await box('h2', 'smart', 'section')).bottom + 10],
+      routes: async () => {
+        // Show the seeded request rule of "smart".
+        await page.evaluate(() => {
+          const sec = [...document.querySelectorAll('h2')].find(h => h.textContent.trim() === 'smart').closest('section');
+          sec.querySelectorAll('details').forEach(d => { if (/Request rules|tools-to-opus/.test(d.querySelector('summary')?.textContent || '')) d.open = true; });
+        });
+        // End below the rule summary; the full editor stays out of the image.
+        const end = await page.evaluate(() => {
+          const d = [...document.querySelectorAll('details')].find(x => (x.querySelector('summary')?.textContent || '').includes('tools-to-opus'));
+          const r = d.getBoundingClientRect();
+          return Math.ceil(r.bottom + window.scrollY);
+        });
+        return [0, end + 16];
+      },
       providers: async () => [0, (await box('h2', 'codex-cli', 'section')).bottom + 10],
       models: async () => [0, (await box('h2', 'Default Markup', 'section')).bottom + 10],
       pager: async () => [0, (await box('nav.pager', null, null, true)).bottom + 24],
