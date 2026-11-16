@@ -22,7 +22,9 @@ see the reference text, but cannot resolve its value with **Test**.
 
 The Proxy reads references at start, on configuration reload and on each
 store's refresh interval (15 minutes by default). A failed refresh keeps
-the last good value in memory. Provider health shows **secret unavailable**.
+the last good value only while the selected store and its address, auth and
+options stay the same. A changed or deleted store clears that value before
+resolution. Provider health shows **secret unavailable**.
 If the key never resolved, it stays unusable. A selected Provider with no
 usable key fails with HTTP 503 instead of silently using another Provider.
 Restarting the process clears all cached values. The store must be

@@ -77,6 +77,164 @@ impl App {
     }
 }
 
+async fn check_store_binding_change(change: &str) {
+    let live = serve(Router::new().route(
+        "/v1/kv/data/llm",
+        get(|headers: axum::http::HeaderMap| async move {
+            if headers["x-vault-token"] == "fixture" {
+                (
+                    axum::http::StatusCode::OK,
+                    Json(json!({"data":{"data":{"key":"bound-to-original-store"}}})),
+                )
+            } else {
+                (axum::http::StatusCode::FORBIDDEN, Json(json!({})))
+            }
+        }),
+    ))
+    .await;
+    let failing =
+        serve(Router::new().fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }))
+            .await;
+    let a = App::new().await;
+    assert_eq!(
+        a.post(
+            "/admin/settings/secrets",
+            &[
+                ("name", "test"),
+                ("kind", "vault"),
+                ("address", &live),
+                ("credentials", r#"{"token":"fixture"}"#),
+                ("allow_private", "on"),
+                ("is_default", "on")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+    assert_eq!(
+        a.post(
+            "/admin/providers",
+            &[
+                ("name", "p"),
+                ("kind", "openai"),
+                ("base_url", "http://127.0.0.1:9"),
+                ("api_key", "vault:kv/llm#key")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+    assert_eq!(
+        a.st.router_table().providers[0].keys[0],
+        "bound-to-original-store"
+    );
+    let response = match change {
+        "delete" => a.post("/admin/settings/secrets/test/delete", &[]).await,
+        "default" => {
+            a.post(
+                "/admin/settings/secrets",
+                &[
+                    ("name", "replacement"),
+                    ("kind", "vault"),
+                    ("address", &failing),
+                    ("credentials", r#"{"token":"fixture"}"#),
+                    ("allow_private", "on"),
+                    ("is_default", "on"),
+                ],
+            )
+            .await
+        }
+        "address" => {
+            a.post(
+                "/admin/settings/secrets",
+                &[
+                    ("name", "test"),
+                    ("kind", "vault"),
+                    ("address", &failing),
+                    ("allow_private", "on"),
+                    ("is_default", "on"),
+                ],
+            )
+            .await
+        }
+        "auth" => {
+            a.post(
+                "/admin/settings/secrets",
+                &[
+                    ("name", "test"),
+                    ("kind", "vault"),
+                    ("address", &live),
+                    ("credentials", r#"{"token":"changed"}"#),
+                    ("allow_private", "on"),
+                    ("is_default", "on"),
+                ],
+            )
+            .await
+        }
+        "options" => {
+            a.post(
+                "/admin/settings/secrets",
+                &[
+                    ("name", "test"),
+                    ("kind", "vault"),
+                    ("address", &live),
+                    ("options", r#"{"kv_version":"1"}"#),
+                    ("allow_private", "on"),
+                    ("is_default", "on"),
+                ],
+            )
+            .await
+        }
+        _ => unreachable!(),
+    };
+    assert_eq!(response.status(), 303, "{change}");
+    let user = db::create_user(&a.st.db, "binding-test", None, None, false)
+        .await
+        .unwrap();
+    let (_, key) = db::create_key(&a.st.db, user, "test", None).await.unwrap();
+    let response =
+        a.c.post(format!("{}/v1/chat/completions", a.url))
+            .bearer_auth(key)
+            .json(&json!({"model":"p/test","messages":[{"role":"user","content":"hello"}]}))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(response.status(), 503, "{change}");
+    assert!(
+        response
+            .text()
+            .await
+            .unwrap()
+            .contains("secret unavailable"),
+        "{change}"
+    );
+    assert!(
+        a.st.secrets.get("p", "vault:kv/llm#key").is_none(),
+        "{change}"
+    );
+}
+
+#[tokio::test]
+async fn store_binding_delete_discards_the_cached_value() {
+    check_store_binding_change("delete").await;
+}
+#[tokio::test]
+async fn store_binding_default_switch_discards_the_previous_store_value() {
+    check_store_binding_change("default").await;
+}
+#[tokio::test]
+async fn store_binding_address_change_discards_the_cached_value() {
+    check_store_binding_change("address").await;
+}
+#[tokio::test]
+async fn store_binding_auth_and_options_changes_discard_the_cached_value() {
+    for change in ["auth", "options"] {
+        check_store_binding_change(change).await;
+    }
+}
+
 #[tokio::test]
 async fn vault_reference_is_stored_not_its_value() {
     let secret = ["runtime", "only", "provider", "credential"].join("-");

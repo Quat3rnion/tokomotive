@@ -47,6 +47,20 @@ impl std::fmt::Debug for Store {
     }
 }
 impl Store {
+    fn fingerprint(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        // Store identity and trust-boundary settings, never a resolved value.
+        let binding = serde_json::to_vec(&(
+            &self.name,
+            &self.kind,
+            &self.address,
+            &self.credentials,
+            &self.options,
+            self.allow_private,
+        ))
+        .expect("store binding serialization");
+        Sha256::digest(binding).into()
+    }
     pub fn option(&self, name: &str) -> Option<String> {
         serde_json::from_str::<Value>(&self.options)
             .ok()?
@@ -154,6 +168,7 @@ impl<'a> Reference<'a> {
 }
 
 struct Entry {
+    binding: Option<[u8; 32]>,
     value: Option<SecretValue>,
     failed: bool,
     checked: Instant,
@@ -196,10 +211,27 @@ impl Manager {
                 .await?;
         let references: std::collections::HashSet<_> =
             rows.into_iter().filter(|(_, v)| is_secret_ref(v)).collect();
+        let mut rebound = std::collections::HashSet::new();
         let removed = {
             let mut values = self.values.write().expect("secret cache");
             let n = values.len();
             values.retain(|k, _| references.contains(k));
+            // Invalidate all changed bindings before any network work starts,
+            // including entries whose normal refresh interval has not elapsed.
+            for identity in &references {
+                let binding = Reference::parse(&identity.1)
+                    .and_then(|r| r.select(&stores))
+                    .ok()
+                    .map(Store::fingerprint);
+                if let Some(entry) = values.get_mut(identity)
+                    && entry.binding != binding
+                {
+                    entry.binding = binding;
+                    entry.value = None;
+                    entry.failed = true;
+                    rebound.insert(identity.clone());
+                }
+            }
             n != values.len()
         };
         let jobs: Vec<_> = references
@@ -210,6 +242,7 @@ impl Manager {
                     .and_then(|r| r.select(&stores))
                     .map_or(900, |s| s.refresh_secs as u64);
                 force
+                    || rebound.contains(&(p.clone(), r.clone()))
                     || values
                         .get(&(p.clone(), r.clone()))
                         .is_none_or(|e| e.checked.elapsed() >= Duration::from_secs(interval))
@@ -221,6 +254,7 @@ impl Manager {
                 let stores = &stores;
                 async move {
                     let selection = Reference::parse(&reference).and_then(|r| r.select(stores));
+                    let binding = selection.as_ref().ok().map(|s| s.fingerprint());
                     let result = match selection {
                         Ok(store) => tokio::time::timeout(
                             Duration::from_secs(30),
@@ -232,6 +266,7 @@ impl Manager {
                     };
                     let mut values = self.values.write().expect("secret cache");
                     let entry = values.entry((provider, reference)).or_insert(Entry {
+                        binding,
                         value: None,
                         failed: true,
                         checked: Instant::now(),

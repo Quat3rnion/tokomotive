@@ -60,7 +60,9 @@ resolution has a 30-second limit. A value must be nonempty and at most
 
 Only the reference is stored with a Provider. Resolved values stay in
 memory. They do not enter SQLite, the audit log, metrics or error pages.
-On failure, the last good value stays usable until the process stops.
+On failure, the last good value stays usable while its store binding stays
+the same. Deleting the store, changing its address, auth or options, or
+selecting a different default store clears that value before resolution.
 The Provider health view shows **secret unavailable**. A key with no good
 value is unusable. If this leaves the selected Provider without a key,
 the Proxy returns HTTP 503. It does not silently select another Provider.
