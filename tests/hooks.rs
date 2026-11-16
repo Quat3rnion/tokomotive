@@ -540,6 +540,37 @@ async fn create_and_rotate_show_one_time_secret_pages_with_shared_layout() {
 }
 
 #[tokio::test]
+async fn global_attachment_is_grouped_with_the_entity_pickers() {
+    let e = env().await;
+    let (id, _) = e.create("attachment-layout", &["pre_request"]).await;
+    let page = e
+        .client()
+        .get(format!("{}/admin/hooks", e.url))
+        .header("cookie", "tokomotive_session=hooks-session")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let action = format!("action=\"/admin/hooks/{id}/attach\"");
+    let form = page
+        .split(&action)
+        .nth(1)
+        .unwrap()
+        .split("</form>")
+        .next()
+        .unwrap();
+    let fields = form.find("<div class=\"fields\">").unwrap();
+    let global = form.find("name=\"global\"").unwrap();
+    let route = form.find("name=\"route_name\"").unwrap();
+    assert!(
+        fields < global && global < route,
+        "Global must share the picker field grid"
+    );
+}
+
+#[tokio::test]
 async fn pre_request_continue_is_signed_and_keeps_identity() {
     use hmac::{Hmac, Mac};
     let e = env().await;

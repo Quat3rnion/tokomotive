@@ -30,8 +30,8 @@
 <ul class="key-list">{% for a in attachments %}{% if a.hook_id == h.id %}<li>{{ a.target }}<form method="post" action="/admin/hooks/attachments/{{ a.id }}/delete" class="inline"><button class="ghost danger">Delete attachment</button></form></li>{% endif %}{% endfor %}</ul>
 <form method="post" action="/admin/hooks/{{ h.id }}/attach" class="stack subform">
 <p class="hint">Select exactly one target. Add more targets with separate submissions.</p>
-<label class="check"><input type="checkbox" name="global">Global</label>
 <div class="fields">
+<div class="field"><label class="check"><input type="checkbox" name="global">Global</label></div>
 <div class="field"><label for="a{{ h.id }}-route">Route</label>{% call picker::entity("a{}-route"|format(h.id), "route_name", "", "routes", routes, "No Route", false) %}</div>
 <div class="field"><label for="a{{ h.id }}-team">Team</label>{% call picker::entity("a{}-team"|format(h.id), "team_name", "", "teams", teams, "No Team", false) %}</div>
 <div class="field"><label for="a{{ h.id }}-key">Virtual Key</label><select id="a{{ h.id }}-key" name="key_id"><option value="">No Virtual Key</option>{% for k in keys %}{% if k.revoked_at.is_none() %}<option value="{{ k.id }}">{{ k.user }} / {{ k.label }} (#{{ k.id }})</option>{% endif %}{% endfor %}</select></div>
