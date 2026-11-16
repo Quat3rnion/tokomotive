@@ -1151,9 +1151,12 @@ async fn handle_inner_native(
     }
     let anthropic_hint = headers.contains_key("anthropic-version");
     let mut matched_rule = None;
+    let mut request_rules = Vec::new();
+    let mut chosen_rule_action = None;
     let rule_table = if let Some(route) = resolved_route {
         match crate::route_rules::load(&st.db, route).await {
             Ok(rules) => {
+                request_rules = rules;
                 let attributes = crate::route_rules::Attributes {
                     key: auth.key_id,
                     user: auth.user_id,
@@ -1169,7 +1172,12 @@ async fn handle_inner_native(
                         None => "openai",
                     },
                 };
-                if let Some(selection) = crate::route_rules::select(&rules, &attributes) {
+                if let Some(selection) = crate::route_rules::select(&request_rules, &attributes) {
+                    chosen_rule_action = Some(json!([
+                        selection.action,
+                        selection.rule.no_fallback,
+                        selection.side
+                    ]));
                     matched_rule = Some(selection.matched());
                     metrics::counter!("tokomotive_route_rule_matches_total","route"=>route.to_owned(),"rule"=>selection.rule.id.clone(),"side"=>selection.side).increment(1);
                     if let crate::route_rules::Action::Reject { message } = selection.action {
@@ -1485,7 +1493,7 @@ async fn handle_inner_native(
             None
         };
         if let Some(value) = &mut json_body {
-            let result = guardrails
+            let mut result = guardrails
                 .hooks
                 .pre(value, |value| {
                     if audio_upload.is_some() {
@@ -1536,6 +1544,49 @@ async fn handle_inner_native(
                     Ok(())
                 })
                 .await;
+            // Hooks are trusted extensions, not permission to bypass the
+            // request policies already applied to this authenticated request.
+            if result.is_ok() && guardrails.hooks.has_pre() {
+                if let Some(name) = guardrails.request(value).await {
+                    result = Err(Box::new(crate::guardrails::blocked(&name, anthropic)));
+                } else {
+                    let attributes = crate::route_rules::Attributes {
+                        key: auth.key_id,
+                        user: auth.user_id,
+                        team: auth.team_id,
+                        headers: &headers,
+                        body: Some(value),
+                        model: value["model"].as_str().unwrap_or(name),
+                        endpoint: endpoint.name(),
+                        format: match native.as_ref().map(|n| n.format) {
+                            Some(crate::inbound::Format::Gemini) => "gemini",
+                            Some(_) => "bedrock",
+                            None if anthropic => "anthropic",
+                            None => "openai",
+                        },
+                    };
+                    let selection = crate::route_rules::select(&request_rules, &attributes);
+                    if let Some(crate::route_rules::Selection {
+                        action: crate::route_rules::Action::Reject { message },
+                        ..
+                    }) = &selection
+                    {
+                        result = Err(Box::new(error(
+                            StatusCode::FORBIDDEN,
+                            "permission_error",
+                            message,
+                        )));
+                    } else if selection.map(|s| json!([s.action, s.rule.no_fallback, s.side]))
+                        != chosen_rule_action
+                    {
+                        result = Err(Box::new(error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request_error",
+                            "Hook changes the selected Route rule action. Send a request that meets the Route policy.",
+                        )));
+                    }
+                }
+            }
             if let Err(response) = result {
                 let entry = NewEntry {
                     semantic_cache_hit: false,

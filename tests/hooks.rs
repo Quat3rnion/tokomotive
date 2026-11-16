@@ -111,6 +111,27 @@ async fn env() -> Env {
     }
 }
 impl Env {
+    async fn guardrail(&self, action: &str, direction: &str) {
+        let rules = json!([{"name":"email","kind":{"type":"detector","detector":"email"},"action":action,"direction":direction}]);
+        let id = sqlx::query("INSERT INTO guardrail_sets(name,rules) VALUES('email-policy',?)")
+            .bind(rules.to_string())
+            .execute(&self.st.db)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+        sqlx::query("INSERT INTO guardrail_attachments(set_id,route) VALUES(?,'chat')")
+            .bind(id)
+            .execute(&self.st.db)
+            .await
+            .unwrap();
+    }
+    async fn rules(&self, rules: Value) {
+        sqlx::query("UPDATE routes SET rules=? WHERE name='chat'")
+            .bind(rules.to_string())
+            .execute(&self.st.db)
+            .await
+            .unwrap();
+    }
     fn client(&self) -> reqwest::Client {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -153,6 +174,69 @@ impl Env {
         self.client().post(format!("{}/v1/chat/completions", self.url)).bearer_auth("sk-alice")
             .json(&json!({"model":"chat","messages":[{"role":"user","content":text}],"max_tokens":100,"stream":stream})).send().await.unwrap()
     }
+}
+
+#[tokio::test]
+async fn final_hook_body_is_blocked_or_redacted_by_request_guardrails() {
+    for action in ["block", "redact"] {
+        let e = env().await;
+        e.guardrail(action, "request").await;
+        let (id, _) = e.create("insert-email", &["pre_request"]).await;
+        e.attach(id, &[("route_name", "chat")]).await;
+        *e.mock.reply.lock().unwrap() = json!({"decision":"modify","patch":{"messages":[{"role":"user","content":"alice@example.com"}]}});
+        let r = e.send("safe", false).await;
+        assert_eq!(r.status(), if action == "block" { 400 } else { 200 });
+        r.bytes().await.unwrap();
+        e.st.flush().await;
+        let upstream = e.mock.upstream.lock().unwrap();
+        if action == "block" {
+            assert!(upstream.is_empty());
+        } else {
+            assert_eq!(upstream[0]["messages"][0]["content"], "[REDACTED:email]");
+        }
+        assert_eq!(e.mock.calls.lock().unwrap().len(), 1, "never replay hooks");
+    }
+}
+
+#[tokio::test]
+async fn final_hook_tools_and_stream_changes_cannot_bypass_route_rules() {
+    for (condition, patch) in [
+        (
+            json!({"has_tools":true}),
+            json!({"tools":[{"type":"function","function":{"name":"run"}}]}),
+        ),
+        (json!({"stream":true}), json!({"stream":true})),
+    ] {
+        let e = env().await;
+        e.rules(json!([{"id":"restricted","name":"restricted","enabled":true,"conditions":condition,"action":{"type":"reject","message":"Not allowed by Route policy."}}])).await;
+        let (id, _) = e.create("insert-restricted", &["pre_request"]).await;
+        e.attach(id, &[("route_name", "chat")]).await;
+        *e.mock.reply.lock().unwrap() = json!({"decision":"modify","patch":patch});
+        let r = e.send("safe", false).await;
+        assert_eq!(r.status(), 403);
+        assert!(
+            r.text()
+                .await
+                .unwrap()
+                .contains("Not allowed by Route policy.")
+        );
+        e.st.flush().await;
+        assert!(e.mock.upstream.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn final_hook_body_cannot_silently_change_the_chosen_deployments() {
+    let e = env().await;
+    e.rules(json!([{"id":"tools","name":"tools","enabled":true,"conditions":{"has_tools":true},"action":{"type":"deployments","deployments":[["p","m"]]}}])).await;
+    let (id, _) = e.create("insert-tools", &["pre_request"]).await;
+    e.attach(id, &[("route_name", "chat")]).await;
+    *e.mock.reply.lock().unwrap() = json!({"decision":"modify","patch":{"tools":[{"type":"function","function":{"name":"run"}}]}});
+    let r = e.send("safe", false).await;
+    assert_eq!(r.status(), 400);
+    assert!(r.text().await.unwrap().contains("Route rule"));
+    e.st.flush().await;
+    assert!(e.mock.upstream.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
