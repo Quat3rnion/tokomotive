@@ -1208,3 +1208,16 @@ async fn oidc_and_local_sessions_are_secure_for_the_configured_https_public_url(
         assert!(cookie.contains(attribute), "{attribute}");
     }
 }
+
+#[tokio::test]
+async fn oidc_redirect_copy_control_is_inline_with_its_readonly_uri() {
+    let a = app().await;
+    let mut owner = setup(&a).await;
+    let html = owner
+        .get(&format!("{}/admin/settings/oidc", a.url))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains("<div class=\"copy-row\"><input id=\"redirect\" readonly value=\"/admin/oidc/callback\"><button type=\"button\" class=\"ghost\" data-copy=\"/admin/oidc/callback\">Copy redirect URI</button></div>"),"the URI field and copy button must share the existing inline copy row");
+}
