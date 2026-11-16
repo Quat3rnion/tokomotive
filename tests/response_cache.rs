@@ -1147,7 +1147,8 @@ async fn exact_cache_isolates_route_rules_and_canary_sides_with_legacy_hits() {
         null,
         "cached",
         "priority",
-        {"enabled":true,"ttl_secs":60,"scope":"key"},
+        // The Route's cache settings exactly as the proxy serialises them.
+        table.routes[0].cache,
         [["p", "m", 1]],
         [],
         [["p", table.providers[0].base_url, "openai", "api_key", true]]
