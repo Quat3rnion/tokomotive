@@ -1732,6 +1732,15 @@ async fn handle_inner_native(
     let mut limited_candidates = 0;
     let mut retry_at: Option<i64> = None;
     'deployments: for candidate in &candidates {
+        if candidate.provider.secret_unavailable {
+            ctx.trace.skip(candidate, None, "secret_unavailable");
+            ctx.finish(Outcome::failed(503));
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                "secret unavailable",
+            );
+        }
         if ctx.attempts as usize >= table.settings.max_attempts {
             break;
         }

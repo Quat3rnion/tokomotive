@@ -56,6 +56,7 @@ mod oauth;
 mod pickers;
 mod quota;
 mod route_rules;
+mod secrets;
 mod settings;
 
 pub fn router(st: AppState) -> Router<AppState> {
@@ -64,6 +65,15 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/login", get(login_page).post(login))
         .route("/admin/logout", post(logout))
         .route("/admin/assets/htmx.min.js", get(htmx))
+        .route(
+            "/admin/assets/secret-picker.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../assets/secret-picker.js"),
+                )
+            }),
+        )
         .route("/admin/assets/favicon.svg", get(favicon))
         .route("/admin/assets/ibm-plex-sans-latin.woff2", get(font_latin))
         .route(
@@ -94,6 +104,7 @@ pub fn router(st: AppState) -> Router<AppState> {
         .route("/admin/search/{kind}", get(pickers::search))
         .route("/admin/reprice", post(reprice))
         .merge(settings::router())
+        .merge(secrets::router())
         .merge(guardrails::router())
         .merge(route_rules::router())
         .merge(models_dev::router())

@@ -7,6 +7,8 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 aes-gcm = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
 argon2 = "0.5"
 base64 = "0.22"
 anyhow = "1"

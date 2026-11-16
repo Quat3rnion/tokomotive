@@ -1,5 +1,34 @@
 # Operator guide
 
+## Secret-store Provider Keys
+
+1. As Owner, open **Settings > Secret stores**. Add the store address and
+   its auth settings. See the [configuration reference](configuration.md#secret-stores)
+   for the JSON fields and the `bw serve` compose example.
+2. In a Provider Key form, open **Choose a secret from a store**. Select a
+   store. Search its secrets, then select a secret and a field. Use
+   **Next page** for more choices. For Vault folders, select the folder to
+   browse it. **Store root** returns to the configured root.
+3. Select **Test**. It shows a masked value, never the full Provider Key.
+   Add the key with the Provider form's submit button. Leave the pasted
+   key field empty when you select a secret reference.
+4. Use **Advanced: raw reference** only when you already know the complete
+   reference. For example, `vault@prod:kv/llm#openai` selects the `prod`
+   store. The plain form uses the only or default store of that type.
+
+Only Owners can add or remove these references, change secret stores, or
+change a secret-backed Provider's address or authentication. Admins can
+see the reference text, but cannot resolve its value with **Test**.
+
+The Proxy reads references at start, on configuration reload and on each
+store's refresh interval (15 minutes by default). A failed refresh keeps
+the last good value in memory. Provider health shows **secret unavailable**.
+If the key never resolved, it stays unusable. A selected Provider with no
+usable key fails with HTTP 503 instead of silently using another Provider.
+Restarting the process clears all cached values. The store must be
+available to resolve them again. For **vault locked**, unlock the
+`bw serve` sidecar, then wait for refresh or save the store again.
+
 ## Guardrails
 
 Open **Guardrails**. Add a rule set, then attach it to a Route, Team or
@@ -455,11 +484,12 @@ the same password. An empty username also means `admin`.
 In **Settings > Admin accounts**, an Owner can add accounts and set their roles:
 
 - Owner: all configuration, admin accounts, metrics credentials, environment
-  key references and audit retention.
+  and secret-store key references, secret stores and audit retention.
 - Admin: configuration and audit records, without admin-account management or
-  metrics-credential, environment-reference or audit-retention changes. An
+  metrics-credential, environment-reference, secret-store or audit-retention changes. An
   Admin cannot change the address, API format or authentication header of a
-  Provider with environment references. Pasted Provider Keys remain available.
+  Provider with environment or secret-store references. An Admin cannot delete
+  that Provider. Pasted Provider Keys remain available.
 - Viewer: read-only dashboard access. Configuration forms are hidden and
   configuration changes return HTTP 403. Logout and own-password changes
   remain available.
@@ -1366,6 +1396,12 @@ Routes in your dashboard, or a `provider/model` name.
 | `/admin/providers/{name}` | POST | Changes the name, kind and base URL of a Provider. |
 | `/admin/providers/{name}/delete` | POST | Deletes a Provider. |
 | `/admin/providers/{name}/keys` | POST | Adds a Provider Key or an `env:NAME` reference. |
+| `/admin/settings/secrets` | GET, POST | Owner-only secret-store list and settings. |
+| `/admin/settings/secrets/{name}/delete` | POST | Owner-only store deletion. |
+| `/admin/secrets/stores` | GET | Owner-only store choices. |
+| `/admin/secrets/browse` | GET | Owner-only secret search, with a page cursor. |
+| `/admin/secrets/fields` | GET | Owner-only field choices. Returns names, not values. |
+| `/admin/secrets/test` | POST | Owner-only resolution test. Returns only a masked value. |
 | `/admin/providers/{name}/keys/{index}/delete` | POST | Removes one key. |
 | `/admin/providers/{name}/test` | POST | Tests the Provider. |
 | `/admin/routes` | GET, POST | Lists or creates Routes. |

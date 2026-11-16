@@ -68,6 +68,18 @@ pub async fn put(db: &Db, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn encode_provider_key(key: &SecretKey, value: &str) -> Result<String> {
+    if crate::secrets::is_secret_ref(value) {
+        crate::secrets::Reference::parse(value)?;
+        Ok(value.into())
+    } else if let Some(env) = value.strip_prefix("env:") {
+        crate::config::validate_provider_env(env)?;
+        Ok(value.into())
+    } else {
+        key.encrypt(value)
+    }
+}
+
 pub fn hash_password(password: &str) -> Result<String> {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
     let mut bytes = [0; 16];
@@ -114,14 +126,14 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
                 // Resolve the legacy single-key pair once, with env precedence.
                 let value =
                     crate::config::provider_env_value(env).unwrap_or_else(|| fallback.clone());
-                keys.push(key.encrypt(&value)?);
+                keys.push(encode_provider_key(key, &value)?);
             } else if let Some(env) = &p.api_key_env {
                 keys.push(format!("env:{env}"));
             } else if let Some(v) = &p.api_key {
-                keys.push(key.encrypt(v)?);
+                keys.push(encode_provider_key(key, v)?);
             }
             for v in &p.api_keys {
-                keys.push(key.encrypt(v)?);
+                keys.push(encode_provider_key(key, v)?);
             }
             for env in &p.api_keys_env {
                 keys.push(format!("env:{env}"));
@@ -180,6 +192,14 @@ pub async fn seed(db: &Db, cfg: &Config, key: &SecretKey) -> Result<()> {
 }
 
 pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
+    load_resolved(db, key, None).await
+}
+
+pub async fn load_resolved(
+    db: &Db,
+    key: &SecretKey,
+    secrets: Option<&crate::secrets::Manager>,
+) -> Result<(Config, Settings)> {
     let mut settings: Settings = serde_json::from_str(
         &value(db, "runtime_settings")
             .await?
@@ -213,6 +233,10 @@ pub async fn load(db: &Db, key: &SecretKey) -> Result<(Config, Settings)> {
                     crate::config::validate_provider_env(env)?;
                     if let Some(v) = crate::config::provider_env_value(env) {
                         keys.push(v);
+                    }
+                } else if crate::secrets::is_secret_ref(&v) {
+                    if let Some(value) = secrets.and_then(|s| s.get(row.get("name"), &v)) {
+                        keys.push(value.expose().to_owned());
                     }
                 } else {
                     keys.push(key.decrypt(&v)?);

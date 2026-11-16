@@ -320,6 +320,17 @@ impl Egress {
     pub(crate) fn global_proxy(&self) -> Option<String> {
         self.0.read().expect("egress policy").global.clone()
     }
+    pub(crate) fn proxy_for(&self, provider: Option<&str>) -> Result<Option<String>> {
+        let policy = self.0.read().expect("egress policy");
+        match provider {
+            Some(name) => policy
+                .providers
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Provider egress unavailable")),
+            None => Ok(policy.global.clone()),
+        }
+    }
     pub fn label(&self, provider: Option<&str>) -> Option<String> {
         let policy = self.0.read().expect("egress policy");
         let proxy = match provider {

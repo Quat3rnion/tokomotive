@@ -11,6 +11,7 @@
     <li><a href="#proxy-h">Proxy address</a></li>
     <li><a href="#server-h">Server and router</a></li>
     <li><a href="#egress-h">Global egress proxy</a></li>
+    {% if base.owner %}<li><a href="/admin/settings/secrets">Secret stores</a></li>{% endif %}
     {% if !base.simple %}<li><a href="#markup-h">Pricing</a></li>{% endif %}
     <li><a href="#models-dev-h">models.dev Sync</a></li>
     {% if !base.simple %}<li><a href="#alerts-h">Usage alerts</a></li>{% endif %}

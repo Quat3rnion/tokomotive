@@ -1,5 +1,112 @@
 # Configuration reference
 
+## Secret stores
+
+An Owner can open **Settings > Secret stores**. Add a name, a type, an
+address and the auth settings. The Master Key encrypts the auth settings.
+An auth value can be `env:NAME`. This reads a bootstrap credential from the
+Proxy process environment. Do not put a resolved Provider Key in a seed file.
+
+| Type | Reference | Auth settings (JSON) | Store options (JSON) |
+| --- | --- | --- | --- |
+| Vault / OpenBao | `vault:kv/llm#openai` | `{"token":"env:VAULT_TOKEN"}` or `{"role_id":"env:VAULT_ROLE_ID","secret_id":"env:VAULT_SECRET_ID"}` | `{"kv_version":"2","namespace":"team","browse_root":"kv"}`. Omit `namespace` when not needed. Use `"1"` for KV v1. |
+| AWS Secrets Manager | `aws-sm:llm/openai#key` or `aws-sm:arn:aws:secretsmanager:eu-west-1:123456789012:secret:llm#key` | `{"access_key":"env:AWS_ACCESS_KEY_ID","secret_key":"env:AWS_SECRET_ACCESS_KEY","session_token":"env:AWS_SESSION_TOKEN"}`. Omit `session_token` for long-lived credentials. | `{"region":"eu-west-1"}`. An ARN supplies the resolution region. The picker uses the store region. |
+| Google Secret Manager | `gcp-sm:projects/my-project/secrets/openai` | `{"service_account":"env:GCP_SERVICE_ACCOUNT_JSON"}` or `{}` for GCP metadata auth | `{"project":"my-project"}`. The picker needs the project. |
+| Bitwarden Secrets Manager | `bws:00000000-0000-0000-0000-000000000001` | `{"access_token":"env:BWS_ACCESS_TOKEN"}` | `{}` for the cloud defaults. For self-hosted identity, `identity_url` can set the full token endpoint. |
+| Bitwarden / Vaultwarden | `bw:00000000-0000-0000-0000-000000000001#password` | `{}`. Unlock the `bw serve` sidecar separately. | `{}` |
+
+Use the only store of a type, or mark one store as the default. To select a
+store by name, use `vault@prod:kv/llm#openai`. All five types accept `@name`.
+AWS, GCP and BWS return the whole text value when there is no `#field`.
+Add `#field` to read a top-level JSON string field. A GCP reference can end
+with `/versions/NUMBER`; the default is `/versions/latest`.
+
+For Vault, set the address to the server origin, without `/v1`. The default
+is KV v2. AppRole auth logs in for each operation. Thus it does not reuse an
+expired session token. The namespace header applies to login and secret
+requests. Give the account read access and LIST access to the picker root.
+
+For AWS, use an address such as
+`https://secretsmanager.eu-west-1.amazonaws.com`. Set the address for the
+region that holds the secrets. The Proxy signs requests with SigV4. It
+needs `secretsmanager:GetSecretValue` and `secretsmanager:ListSecrets`.
+For GCP, use `https://secretmanager.googleapis.com`. Service-account auth
+signs an RS256 assertion and exchanges it at the Google token endpoint.
+The metadata flow uses only the fixed GCP link-local token endpoint. Enable
+private access for that flow. `token_url` can set an Owner-controlled token
+endpoint, for example for a local test. Give the account secret accessor
+and list permissions.
+
+For BWS cloud US, use `https://api.bitwarden.com`. For cloud EU, use
+`https://api.bitwarden.eu`. For a self-hosted server, use its origin, without
+`/api`. The default identity path there is `/identity/connect/token`.
+The native client decrypts the login payload with the access-token key,
+then reads the organization key and decrypts type-2 EncString values.
+It does not run the `bws` command or write a token state file.
+
+The `bw:` fields are `password`, `username`, `notes`, `totp`, `uri`, or the
+name of a custom field. `uri` uses the first login URI. `totp` asks the
+sidecar for the current code. A locked sidecar returns **vault locked**.
+The Proxy does not unlock it or retain a master password.
+
+### Resolution and network limits
+
+The Proxy resolves references at start, on configuration reload and on the
+store refresh interval. The default interval is 900 seconds (15 minutes).
+Set 1 to 86400 seconds per store. At most four references resolve at once.
+Each HTTP request has a 10-second timeout and a 1 MiB response cap. One
+resolution has a 30-second limit. A value must be nonempty and at most
+64 KiB. The picker shows at most 20 results per page.
+
+Only the reference is stored with a Provider. Resolved values stay in
+memory. They do not enter SQLite, the audit log, metrics or error pages.
+On failure, the last good value stays usable until the process stops.
+The Provider health view shows **secret unavailable**. A key with no good
+value is unusable. If this leaves the selected Provider without a key,
+the Proxy returns HTTP 503. It does not silently select another Provider.
+
+Use HTTPS. Private addresses need the store's explicit **Allow private
+addresses** setting. HTTP is allowed only with that setting and only for
+loopback or private addresses. Redirects are not followed. Each request
+checks DNS addresses and pins direct connections to the checked addresses.
+If an egress proxy resolves DNS, that proxy must also enforce the address
+policy. Resolution follows the Provider's egress policy. The picker and
+**Test** action use the global egress policy.
+
+### Compose example for `bw serve`
+
+Use a vetted container image that contains the Bitwarden `bw` CLI. Log in
+and unlock it first. Keep its CLI data in the `bw-data` volume. Supply the
+unlocked session through `BW_SESSION`. Do not publish the sidecar port.
+
+```yaml
+services:
+  tokomotive:
+    image: ${TOKOMOTIVE_IMAGE}
+    networks: [default, secrets]
+    # Keep the existing database, Master Key and application settings.
+  bw:
+    image: ${BW_CLI_IMAGE:?Set an image that contains the bw CLI}
+    entrypoint: [bw]
+    command: [serve, --hostname, all, --port, "8087"]
+    environment:
+      BITWARDENCLI_APPDATA_DIR: /bw
+      BW_SESSION: ${BW_SESSION:?Unlock the sidecar vault first}
+    volumes: [bw-data:/bw]
+    networks: [secrets]
+volumes:
+  bw-data:
+networks:
+  secrets:
+    internal: true
+```
+
+Add a `bw` store at `http://bw:8087`. Enable private addresses for that
+store. The internal network blocks remote login and sync. Temporarily
+give the sidecar network access for those operations, then remove it.
+Anyone who can reach an unlocked `bw serve` endpoint can read its vault.
+Keep that endpoint off the public network.
+
 ## OAuth refresh
 
 Refresh settings are automatic. There is no seed-file setting. Run only one

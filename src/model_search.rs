@@ -289,7 +289,12 @@ impl Registry {
                 p.keys = Arc::new(
                     raw.into_iter()
                         .filter_map(|k| {
-                            let raw = if k.starts_with("env:") {
+                            let raw = if crate::secrets::is_secret_ref(&k) {
+                                return state
+                                    .secrets
+                                    .get(&p.name, &k)
+                                    .map(|s| s.expose().to_owned());
+                            } else if k.starts_with("env:") {
                                 Some(k)
                             } else {
                                 state.secret_key.decrypt(&k).ok()

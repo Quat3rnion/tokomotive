@@ -1360,6 +1360,9 @@ struct AddForm {
     name: String,
 }
 impl AddForm {
+    fn owner(&self) -> bool {
+        ctx().role == "owner"
+    }
     fn signin(&self) -> bool {
         use crate::provider_types::Category;
         matches!(
@@ -1467,7 +1470,9 @@ impl ProviderView {
     }
     fn health_text(&self) -> String {
         let skipped = self.skipped();
-        if skipped == 1 {
+        if self.quota.iter().any(|a| a.state == "secret_unavailable") {
+            "secret unavailable".into()
+        } else if skipped == 1 {
             "1 account skipped".into()
         } else if skipped > 1 {
             format!("{skipped} accounts skipped")
@@ -1520,7 +1525,7 @@ struct UsageView {
     resets: Option<super::views::Stamp>,
 }
 
-fn last4(plain: &str) -> String {
+pub(super) fn last4(plain: &str) -> String {
     // Show the tail only when at least 8 characters stay hidden.
     if plain.chars().count() < 12 {
         return "****".into();
@@ -1540,7 +1545,19 @@ fn env_value(name: &str) -> Option<String> {
     crate::config::provider_env_value(name)
 }
 
-fn key_view(st: &AppState, stored: &str, index: i64) -> anyhow::Result<KeyView> {
+fn key_view(st: &AppState, provider: &str, stored: &str, index: i64) -> anyhow::Result<KeyView> {
+    if crate::secrets::is_secret_ref(stored) {
+        return Ok(KeyView {
+            quota_id: st
+                .secrets
+                .get(provider, stored)
+                .as_ref()
+                .map(|v| crate::quota::key_id(v.expose())),
+            index,
+            label: stored.into(),
+            env_set: None,
+        });
+    }
     Ok(match stored.strip_prefix("env:") {
         Some(env) => KeyView {
             quota_id: env_value(env).as_deref().map(crate::quota::key_id),
@@ -1582,6 +1599,11 @@ pub(super) async fn key_labels(
                 .bind(provider).bind(offset).fetch_all(&st.db).await?;
             let n = stored.len();
             for value in stored {
+                if crate::secrets::is_secret_ref(&value)
+                    && st.secrets.get(provider, &value).is_none()
+                {
+                    continue;
+                }
                 if value
                     .strip_prefix("env:")
                     .is_some_and(|env| env_value(env).is_none())
@@ -1591,7 +1613,7 @@ pub(super) async fn key_labels(
                 if indices.contains(&index) {
                     out.insert(
                         (provider.to_owned(), index),
-                        if value.starts_with("env:") {
+                        if crate::secrets::is_reference(&value) {
                             value
                         } else {
                             last4(&st.secret_key.decrypt(&value)?)
@@ -1803,7 +1825,12 @@ async fn providers(
             )
         });
         for key in key_rows.into_iter().take(50) {
-            keys.push(tryr!(key_view(&st, key.get("value"), key.get("idx"))));
+            keys.push(tryr!(key_view(
+                &st,
+                row.get("name"),
+                key.get("value"),
+                key.get("idx")
+            )));
         }
         let kind: ProviderKind = tryr!(serde_json::from_str(row.get("kind")));
         let auth: crate::provider::ProviderAuth = tryr!(serde_json::from_value(serde_json::json!(
@@ -1975,6 +2002,8 @@ async fn providers(
 
 #[derive(Deserialize)]
 struct ProviderForm {
+    #[serde(default)]
+    secret_reference: String,
     #[serde(flatten)]
     limits: ProviderLimitsForm,
     default_model: Option<String>,
@@ -2028,12 +2057,7 @@ async fn runtime(st: &AppState) -> anyhow::Result<Config> {
 }
 
 fn encode_key(st: &AppState, key: &str) -> anyhow::Result<String> {
-    if let Some(env) = key.strip_prefix("env:") {
-        crate::config::validate_provider_env(env)?;
-        Ok(key.into())
-    } else {
-        st.secret_key.encrypt(key)
-    }
+    store::encode_provider_key(&st.secret_key, key)
 }
 
 async fn create_provider(
@@ -2061,10 +2085,19 @@ async fn save_provider(
     hx: bool,
 ) -> Response {
     use crate::provider::ProviderAuth;
-    if account.role != "owner" && f.api_key.trim().starts_with("env:") {
+    if !f.secret_reference.trim().is_empty() {
+        if !f.api_key.trim().is_empty() {
+            return form_error("Choose a key or a secret reference, not both.");
+        }
+        f.api_key = f.secret_reference.trim().into();
+        if !crate::secrets::is_secret_ref(&f.api_key) {
+            return form_error("Choose a secret reference.");
+        }
+    }
+    if account.role != "owner" && crate::secrets::is_reference(f.api_key.trim()) {
         return page_error(
             StatusCode::FORBIDDEN,
-            "Only an Owner can change environment key references.",
+            "Only an Owner can change environment or secret-store key references.",
         );
     }
     f.name = f.name.trim().into();
@@ -2110,7 +2143,7 @@ async fn save_provider(
         );
         if let Some((raw, base, kind, header, auth)) = previous {
             let keys: Vec<String> = tryr!(serde_json::from_str(&raw));
-            if keys.iter().any(|k| k.starts_with("env:"))
+            if keys.iter().any(|k| crate::secrets::is_reference(k))
                 && (base != f.base_url
                     || kind != tryr!(serde_json::to_string(&f.kind))
                     || header.as_deref() != f.key_header.map(|h| h.as_str())
@@ -2118,7 +2151,7 @@ async fn save_provider(
             {
                 return page_error(
                     StatusCode::FORBIDDEN,
-                    "Only an Owner can change the address, format or authentication of an environment-backed Provider.",
+                    "Only an Owner can change the address, format or authentication of a reference-backed Provider.",
                 );
             }
         }
@@ -2447,11 +2480,27 @@ async fn after_add(st: AppState, f: ProviderForm, hx: bool) -> Response {
 }
 
 async fn delete_provider(
-    _: Admin,
+    Admin(account): Admin,
     State(st): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
     let _guard = st.settings_write.lock().await;
+    if account.role != "owner" {
+        let keys: Vec<String> = tryr!(
+            sqlx::query_scalar(
+                "SELECT j.value FROM providers p,json_each(p.keys_json) j WHERE p.name=?"
+            )
+            .bind(&name)
+            .fetch_all(&st.db)
+            .await
+        );
+        if keys.iter().any(|k| crate::secrets::is_reference(k)) {
+            return page_error(
+                StatusCode::FORBIDDEN,
+                "Only an Owner can delete a reference-backed Provider.",
+            );
+        }
+    }
     let cfg = tryr!(runtime(&st).await);
     if cfg
         .routes
@@ -2474,18 +2523,30 @@ async fn delete_provider(
 
 #[derive(Deserialize)]
 struct KeyForm {
+    #[serde(default)]
+    secret_reference: String,
+    #[serde(default)]
     api_key: String,
 }
 async fn add_key(
     Admin(account): Admin,
     State(st): State<AppState>,
     Path(name): Path<String>,
-    Form(f): Form<KeyForm>,
+    Form(mut f): Form<KeyForm>,
 ) -> Response {
-    if account.role != "owner" && f.api_key.trim().starts_with("env:") {
+    if !f.secret_reference.trim().is_empty() {
+        if !f.api_key.trim().is_empty() {
+            return form_error("Choose a key or a secret reference, not both.");
+        }
+        f.api_key = f.secret_reference.trim().into();
+        if !crate::secrets::is_secret_ref(&f.api_key) {
+            return form_error("Choose a secret reference.");
+        }
+    }
+    if account.role != "owner" && crate::secrets::is_reference(f.api_key.trim()) {
         return page_error(
             StatusCode::FORBIDDEN,
-            "Only an Owner can change environment key references.",
+            "Only an Owner can change environment or secret-store key references.",
         );
     }
     if f.api_key.trim().is_empty() {
@@ -2535,10 +2596,10 @@ async fn change_keys(
         if i >= keys.len() {
             return form_error("Key not found. Reload the page.");
         }
-        if !owner && keys[i].starts_with("env:") {
+        if !owner && crate::secrets::is_reference(&keys[i]) {
             return page_error(
                 StatusCode::FORBIDDEN,
-                "Only an Owner can change environment key references.",
+                "Only an Owner can change environment or secret-store key references.",
             );
         }
         keys.remove(i);
@@ -2546,7 +2607,9 @@ async fn change_keys(
     let recovery = add
         .as_ref()
         .map(|key| {
-            if let Some(env) = key.strip_prefix("env:") {
+            if crate::secrets::is_secret_ref(key) {
+                Ok(st.secrets.get(&name, key).map(|s| s.expose().to_owned()))
+            } else if let Some(env) = key.strip_prefix("env:") {
                 Ok(env_value(env))
             } else {
                 st.secret_key.decrypt(key).map(Some)
@@ -2577,9 +2640,12 @@ async fn change_keys(
 }
 
 async fn recover_key(st: &AppState, name: &str, key: &str) -> anyhow::Result<()> {
-    let plain = key
-        .strip_prefix("env:")
-        .map_or_else(|| Some(key.to_owned()), env_value);
+    let plain = if crate::secrets::is_secret_ref(key) {
+        st.secrets.get(name, key).map(|v| v.expose().to_owned())
+    } else {
+        key.strip_prefix("env:")
+            .map_or_else(|| Some(key.to_owned()), env_value)
+    };
     if let Some(plain) = plain {
         crate::quota::recover_credentials(&st.db, name, &crate::quota::key_id(&plain)).await?;
     }
@@ -2698,6 +2764,7 @@ async fn save_global_egress(
     }
     st.egress.replace(policy);
     st.set_router_table((*st.router_table()).clone());
+    tryr!(st.refresh_secrets(true).await);
     saved("/admin/settings#egress", "Global egress proxy saved.")
 }
 
@@ -2756,6 +2823,7 @@ async fn save_provider_egress(
     );
     st.egress.replace(policy);
     st.set_router_table((*st.router_table()).clone());
+    tryr!(st.refresh_secrets(true).await);
     saved("/admin/providers", "Provider egress proxy saved.")
 }
 

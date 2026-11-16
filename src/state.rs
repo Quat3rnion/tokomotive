@@ -14,7 +14,7 @@ use crate::db::{self, Db};
 use crate::provider::ProviderKind;
 use crate::routing::RouterTable;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Provider {
     pub gate: Arc<crate::provider_limits::Gate>,
     pub limits: crate::provider_limits::Limits,
@@ -31,9 +31,19 @@ pub struct Provider {
     pub region: String,
     /// The Provider Key pool. Empty when no key is configured.
     pub keys: Arc<Vec<String>>,
+    /// No cached value exists for a secret-backed key and the pool is empty.
+    pub secret_unavailable: bool,
     next: Arc<AtomicUsize>,
     /// Client policy from the same runtime snapshot as these credentials.
     pub(crate) egress: Option<crate::egress::Egress>,
+}
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Provider")
+            .field("name", &self.name)
+            .field("keys", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Provider {
@@ -53,6 +63,7 @@ impl Provider {
             project_id: String::new(),
             region: crate::config::default_region(),
             keys: Arc::new(keys),
+            secret_unavailable: false,
             next: Arc::new(AtomicUsize::new(0)),
             egress: None,
         }
@@ -106,6 +117,8 @@ pub struct Inner {
     pub egress: crate::egress::Egress,
     settings: RwLock<Arc<crate::settings::Settings>>,
     pub secret_key: crate::settings::SecretKey,
+    pub secrets: crate::secrets::Manager,
+    secret_refresh: tokio::sync::Mutex<()>,
     pub oauth: crate::oauth::OAuthManager,
     pub settings_write: tokio::sync::Mutex<()>,
     pub(crate) dashboard: crate::web::accounts::DashboardState,
@@ -148,16 +161,21 @@ impl AppState {
         let secret_key = crate::settings::SecretKey::load(&cfg.server.database)?;
         crate::settings::seed(&db, cfg, &secret_key).await?;
         crate::models_dev::seed(&db).await?;
-        let (runtime, settings) = crate::settings::load(&db, &secret_key).await?;
+        let (_, settings) = crate::settings::load(&db, &secret_key).await?;
         db.configure_writer(
             settings.writer_timeout_secs,
             settings.ledger_spool_max_bytes,
         );
-        let mut router_table = RouterTable::from_config(&runtime);
         let egress = crate::egress::Egress::new(
             crate::egress::Policy::load(&db, &secret_key, settings.upstream_timeout_secs).await?,
         );
+        let secrets = crate::secrets::Manager::default();
+        secrets.refresh(&db, &secret_key, &egress, true).await?;
+        let (runtime, _) = crate::settings::load_resolved(&db, &secret_key, Some(&secrets)).await?;
+        let mut router_table = RouterTable::from_config(&runtime);
         for provider in &mut router_table.providers {
+            provider.secret_unavailable =
+                provider.keys.is_empty() && !secrets.unavailable(&provider.name).is_empty();
             provider.limits = provider.limits.inherit(&settings.provider_defaults);
             provider
                 .gate
@@ -183,6 +201,8 @@ impl AppState {
             egress,
             settings: RwLock::new(Arc::new(settings)),
             secret_key,
+            secrets,
+            secret_refresh: tokio::sync::Mutex::new(()),
             oauth,
             settings_write: tokio::sync::Mutex::new(()),
             dashboard: crate::web::accounts::DashboardState::new()?,
@@ -218,6 +238,14 @@ impl AppState {
             .expect("global client")
     }
     pub fn provider_http(&self, name: &str) -> Result<reqwest::Client> {
+        if self
+            .router_table()
+            .providers
+            .iter()
+            .any(|p| p.name == name && p.secret_unavailable)
+        {
+            anyhow::bail!("secret unavailable");
+        }
         // Preserve the trusted TLS test seam used by Bedrock tests.
         #[cfg(test)]
         if let Some(http) = self.test_http.read().expect("test http").as_ref() {
@@ -227,6 +255,9 @@ impl AppState {
             .client(Some(name), crate::egress::Purpose::Upstream)
     }
     pub(crate) async fn snapshot_http(&self, provider: &Provider) -> Result<reqwest::Client> {
+        if provider.secret_unavailable {
+            anyhow::bail!("secret unavailable");
+        }
         #[cfg(test)]
         if let Some(http) = self.test_http.read().expect("test http").as_ref() {
             return Ok(http.clone());
@@ -247,7 +278,8 @@ impl AppState {
     }
 
     pub async fn reload_settings(&self) -> Result<()> {
-        let (cfg, settings) = crate::settings::load(&self.db, &self.secret_key).await?;
+        let _guard = self.secret_refresh.lock().await;
+        let (_, settings) = crate::settings::load(&self.db, &self.secret_key).await?;
         self.db.configure_writer(
             settings.writer_timeout_secs,
             settings.ledger_spool_max_bytes,
@@ -256,9 +288,29 @@ impl AppState {
             crate::egress::Policy::load(&self.db, &self.secret_key, settings.upstream_timeout_secs)
                 .await?;
         self.egress.replace(policy);
+        self.secrets
+            .refresh(&self.db, &self.secret_key, &self.egress, true)
+            .await?;
+        let (cfg, _) =
+            crate::settings::load_resolved(&self.db, &self.secret_key, Some(&self.secrets)).await?;
         *self.settings.write().expect("settings lock") = Arc::new(settings);
         self.set_router_table(RouterTable::from_config(&cfg));
         self.reload_catalog().await
+    }
+
+    pub async fn refresh_secrets(&self, force: bool) -> Result<()> {
+        let _guard = self.secret_refresh.lock().await;
+        if !self
+            .secrets
+            .refresh(&self.db, &self.secret_key, &self.egress, force)
+            .await?
+        {
+            return Ok(());
+        }
+        let (cfg, _) =
+            crate::settings::load_resolved(&self.db, &self.secret_key, Some(&self.secrets)).await?;
+        self.set_router_table(RouterTable::from_config(&cfg));
+        self.refresh_resolution_index().await
     }
 
     pub async fn reload_catalog(&self) -> Result<()> {
@@ -275,6 +327,8 @@ impl AppState {
     pub fn set_router_table(&self, mut table: RouterTable) {
         let mut current = self.router_table.write().expect("router table");
         for provider in &mut table.providers {
+            provider.secret_unavailable =
+                provider.keys.is_empty() && !self.secrets.unavailable(&provider.name).is_empty();
             provider.limits = provider.limits.inherit(&self.settings().provider_defaults);
             provider.egress = Some(self.egress.snapshot());
             if let Some(old) = current.providers.iter().find(|p| p.name == provider.name) {

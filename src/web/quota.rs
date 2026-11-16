@@ -28,7 +28,7 @@ pub async fn views(
 ) -> anyhow::Result<Vec<AccountView>> {
     let now = chrono::Utc::now().timestamp();
     let settings = st.settings();
-    Ok(quota::accounts(&st.db, provider, limit)
+    let mut views: Vec<_> = quota::accounts(&st.db, provider, limit)
         .await?
         .into_iter()
         .map(|a| {
@@ -85,5 +85,29 @@ pub async fn views(
                     .collect(),
             }
         })
-        .collect())
+        .collect();
+    for p in &st.router_table().providers {
+        if provider.is_some_and(|name| name != p.name) {
+            continue;
+        }
+        for reference in st
+            .secrets
+            .unavailable(&p.name)
+            .into_iter()
+            .take(limit as usize)
+        {
+            views.push(AccountView {
+                provider: p.name.clone(),
+                key: reference,
+                state: "secret_unavailable".into(),
+                reason: "secret unavailable".into(),
+                until: None,
+                skipped: false,
+                failure: Some("secret unavailable; the last good value is kept in memory".into()),
+                failure_at: None,
+                windows: vec![],
+            });
+        }
+    }
+    Ok(views)
 }

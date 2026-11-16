@@ -200,7 +200,10 @@ pub(super) async fn authorize(
     {
         return page_error(StatusCode::FORBIDDEN, "This account has read-only access.");
     }
-    if (path.starts_with("/admin/settings/accounts") || path == "/admin/settings/audit")
+    if (path.starts_with("/admin/settings/accounts")
+        || path == "/admin/settings/audit"
+        || path.starts_with("/admin/settings/secrets")
+        || path.starts_with("/admin/secrets/"))
         && account.role != "owner"
     {
         return page_error(

@@ -150,7 +150,7 @@ impl Default for Server {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
     #[serde(default)]
@@ -182,6 +182,15 @@ pub struct ProviderCfg {
     /// Environment variables, each holds one key of the pool.
     #[serde(default)]
     pub api_keys_env: Vec<String>,
+}
+impl std::fmt::Debug for ProviderCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderCfg")
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("keys", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

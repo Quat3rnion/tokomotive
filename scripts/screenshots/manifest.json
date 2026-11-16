@@ -1,5 +1,6 @@
 {
   "pending_refresh": [
+    {"page":"/admin/settings/secrets", "reason":"TODO(#28 capture): capture the new Secret stores screen, move capture into captures, then remove its temporary exclusion.", "capture":{"image":"secrets.png", "page":"/admin/settings/secrets", "route":"/admin/settings/secrets", "recipe":"full", "caption":"Secret stores", "alt":"Owner-only Secret stores settings with encrypted auth settings, a private-address control and a refresh interval.", "kind":"table"}},
     {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
     {"page":"/admin/routes", "reason":"Semantic cache controls and the embedding model picker were added, with Adaptive scores, request rules, Canary splits and exact cache controls. Refresh dark and light captures at the next requested capture."},
     {"page":"/admin/settings", "reason":"Adaptive router fields were added, with exact response cache limits, hit Price and global egress proxy controls. Keep the current image until the next requested capture."},
@@ -31,6 +32,11 @@
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
+    {"route":"/admin/settings/secrets", "reason":"TODO(#28 capture): new Secret stores page. Parent must add secrets.png and promote the pending capture before merge."},
+    {"route":"/admin/secrets/stores", "reason":"Owner-only JSON source for the secret-store picker."},
+    {"route":"/admin/secrets/browse", "reason":"Owner-only paginated JSON source for the secret picker."},
+    {"route":"/admin/secrets/fields", "reason":"Owner-only JSON source for the secret field picker."},
+    {"route":"/admin/assets/secret-picker.js", "reason":"JavaScript asset for the secret picker, not an HTML page."},
     {"route":"/admin/ledger/live", "reason":"Server-Sent Events, not a page. Keep the Ledger image with Live off."},
     {"route":"/admin/routes/{name}/scores", "reason":"Read-only adaptive score fragment, shown within the Routes page."},
     {"route":"/admin/mcp/search", "reason":"Search result fragment for the MCP tool access picker."},

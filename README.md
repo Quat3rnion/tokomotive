@@ -125,6 +125,9 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
 - Encrypts Provider Keys with AES-256-GCM. The Master Key comes from
   `TOKOMOTIVE_SECRET_KEY` or from a generated `secret.key` file.
 - Lets a Provider Key refer to an environment variable with `env:NAME`.
+  Owners can also select Vault, AWS, GCP, Bitwarden Secrets Manager or
+  `bw serve` references. Resolved values stay only in memory. See
+  [Secret stores](docs/configuration.md#secret-stores).
 - Shows requests, tokens, latency, time to first token, Cost, Price and Profit
   per Model, User and Team in the dashboard.
 - Exports Prometheus metrics at `/metrics`, optionally with a token.
@@ -279,7 +282,6 @@ dashboard. An optional `--config PATH` file seeds the database once. See
 These items are not scheduled. Each item has an issue for discussion.
 
 - OIDC sign-in for dashboard accounts, with a local Owner login for recovery. ([#27](https://git.lumina.software/quaternion/tokomotive/-/work_items/27))
-- Vault and cloud secret-manager references for Provider Keys, next to `env:NAME`. ([#28](https://git.lumina.software/quaternion/tokomotive/-/work_items/28))
 - A Customer level above Teams, for operators who resell access. ([#29](https://git.lumina.software/quaternion/tokomotive/-/work_items/29))
 - Plugin and middleware hooks for trusted extensions. ([#30](https://git.lumina.software/quaternion/tokomotive/-/work_items/30))
 - MCP agent mode and sandboxed code execution. ([#31](https://git.lumina.software/quaternion/tokomotive/-/work_items/31))

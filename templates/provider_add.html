@@ -51,6 +51,7 @@ GET /admin/provider-form?type=ID&name= returns it for the picker.
   <div class="row">
     <div class="field grow"><label for="np-key">API key{% if form.cat() != "api_key" %} (optional){% endif %}</label><input id="np-key" type="password" name="api_key" autocomplete="off" spellcheck="false" aria-describedby="np-key-help"><p class="hint" id="np-key-help">{{ form.t.key_help }} You can write env:NAME to read the key from an environment variable. You can add more keys later.</p>{% if !form.t.docs.is_empty() %}<p class="hint"><a href="{{ form.t.docs }}" target="_blank" rel="noopener noreferrer">Where to get a key (opens in a new tab)</a></p>{% endif %}</div>
   </div>
+  {% if form.owner() %}{% include "secret_picker.html" %}{% endif %}
   {% if form.cat() == "custom" %}
   <div class="row">{% call key_settings(form.t) %}</div>
   {% else %}
