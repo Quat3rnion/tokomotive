@@ -45,7 +45,23 @@ impl Row {
                 && !(*field == "model_op" && self.value("model").is_empty())
                 && !(field.starts_with("canary_") && self.value("canary_percent").is_empty())
         })
-        .map(|(field, label)| (label, self.fields[field].join(", ")))
+        .map(|(field, label)| {
+            let values = &self.fields[field];
+            let text = if field.ends_with("deployments") {
+                // Stored as JSON pairs; show them as `provider / model`.
+                values
+                    .iter()
+                    .map(|v| match serde_json::from_str::<(String, String)>(v) {
+                        Ok((p, m)) => format!("{p} / {m}"),
+                        Err(_) => v.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                values.join(", ")
+            };
+            (label, text)
+        })
         .collect()
     }
     fn value(&self, field: &str) -> &str {

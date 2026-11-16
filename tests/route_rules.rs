@@ -716,3 +716,31 @@ async fn disabled_rules_are_skipped_and_provider_access_is_not_expanded() {
         .unwrap();
     assert_eq!(a.chat(body).await.status(), 403);
 }
+
+/// The rule summary on the Routes page names Deployments as `provider /
+/// model`, not as JSON.
+#[tokio::test]
+async fn rule_summary_shows_readable_deployments() {
+    let a = app().await;
+    let r = a.save("primary", &rule()).await;
+    assert_eq!(r.status(), 303);
+    let html =
+        a.c.get(format!("{}/admin/routes", a.url))
+            .header("cookie", "tokomotive_session=rules-session")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+    let summary = html
+        .split("<dt>Deployment set</dt><dd>")
+        .nth(1)
+        .expect("summary");
+    let summary = &summary[..summary.find("</dd>").unwrap()];
+    assert!(summary.contains("up / canary"), "{summary}");
+    assert!(
+        !summary.contains("[&quot;") && !summary.contains("[\""),
+        "{summary}"
+    );
+}
