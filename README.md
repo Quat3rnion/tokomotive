@@ -108,6 +108,8 @@ The terms in this document are defined in [GLOSSARY.md](GLOSSARY.md).
   Pause and Resume keep the page bounded to 200 entries.
 - Exports request and attempt spans with GenAI attributes through OTLP/HTTP
   JSON. Export is off by default and uses a bounded background queue.
+- Sends native Datadog LLM spans and optional metrics, or Maxim trace batches,
+  through bounded, privacy-controlled exporters in Settings.
 - Captures bodies only when a Route or Virtual Key enables capture. Captures
   are redacted, size-capped, encrypted and retained for 7 days by default.
   Only Admins can read them. See [Request diagnostics](docs/usage.md#request-diagnostics).
@@ -288,7 +290,6 @@ These items are not scheduled. Each item has an issue for discussion.
 - A Customer level above Teams, for operators who resell access. ([#29](https://git.lumina.software/quaternion/tokomotive/-/work_items/29))
 - MCP agent mode and sandboxed code execution. ([#31](https://git.lumina.software/quaternion/tokomotive/-/work_items/31))
 - Postgres storage and more than one Proxy process for each database. ([#32](https://git.lumina.software/quaternion/tokomotive/-/work_items/32))
-- Native Datadog and Maxim exporters. Today, use their OTLP endpoints. ([#33](https://git.lumina.software/quaternion/tokomotive/-/work_items/33))
 
 ## Development
 

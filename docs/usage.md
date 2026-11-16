@@ -1,5 +1,36 @@
 # Operator guide
 
+## Native exporters
+
+1. Open **Settings > Exporters** with an Owner or Admin account.
+2. Add a name. Select **Datadog** or **Maxim**.
+3. Enter an API key or reference. A saved literal key is encrypted and is
+   never shown again. Leave the field blank on later saves to keep it.
+   Only an Owner can add or change a reference. An Admin cannot change the
+   destination or body permission of a reference-backed exporter.
+4. For Datadog, select your site and spans, metrics, or both. The gov site
+   permits metrics only. For Maxim, enter the log repository ID.
+5. Set the sample rate, batch size, interval and tag allowlist.
+6. Keep **Include final request and response bodies** off unless the vendor
+   may receive those bodies. Rejected bodies are never sent, even with this
+   control on.
+7. Select **Enabled**, then save. Use **Test sample** to send one synthetic,
+   body-free event. The result shows the HTTP status, if available, and the
+   delivery outcome. A full queue shows `queue_full` without a vendor call.
+   A test also works when the exporter is disabled or its sample rate is zero.
+   It always uses the saved destination and credential, not unsaved form values.
+
+Use **Advanced** only for a vendor-compatible origin or a private test server.
+Public destinations require HTTPS. Private addresses need explicit permission.
+The global egress proxy also applies. The Proxy never waits for export
+delivery. Failed exports do not change a client's response.
+
+Use the exporter metrics to check delivery and drops. A full shared event
+queue or a final delivery failure drops the batch. There is no durable replay.
+Sampled metrics describe sampled requests, not an estimate of all traffic.
+See [Native exporters](configuration.md#native-exporters) for limits, vendor
+API documentation and site mappings.
+
 ## Hooks
 
 Open **Hooks** with an Owner or Admin account. Add a name and URL. Select
@@ -1777,7 +1808,7 @@ Providers, the panel is open. When there are Providers, select the
 3. The form shows only the fields for that Provider. The name is filled with
    a name that is not in use. Change it if necessary.
 4. Read the summary line, for example
-   `OpenAI format · Bearer key · api.deepseek.com`. It shows what the
+   <code>OpenAI format &middot; Bearer key &middot; api.deepseek.com</code>. It shows what the
    Provider uses.
 5. Select **Add provider**, or **Add and sign in** for a sign-in type.
 

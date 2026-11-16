@@ -1,0 +1,56 @@
+<section class="panel stack" id="exporters" aria-labelledby="exporters-h">
+<h2 id="exporters-h">Exporters</h2>
+<p class="muted">Native Datadog and Maxim export runs after the Ledger write. Exporters and event hooks share 64 waiting slots and 4 active sends. A full queue drops exports, not Proxy requests.</p>
+<p>Bodies are off by default. Rejected bodies are never sent. The API key is encrypted, or stored as an environment or secret-store reference. Saved keys are never shown.</p>
+{% for e in exporters %}
+{% let locked = !base.owner && e.reference_backed() %}
+<div class="item stack" id="exporter-{{ e.id }}">
+<h3>{% if e.id == 0 %}Add an exporter{% else %}{{ e.name }}{% endif %}</h3>
+<form method="post" action="/admin/settings/exporters" class="stack" data-exporter-form data-reference-locked="{{ locked }}">
+{% if e.id != 0 %}<input type="hidden" name="id" value="{{ e.id }}">{% endif %}
+{% if locked %}
+<p class="hint">Only an Owner can change this key reference, its destination or its body permission. Other settings and saved sample tests are available.</p>
+<input type="hidden" name="kind" value="{{ e.kind }}">
+<input type="hidden" name="site" value="{{ e.site }}">
+<input type="hidden" name="repo_id" value="{{ e.repo_id }}">
+<input type="hidden" name="endpoint" value="{{ e.endpoint }}">
+<input type="hidden" name="allow_private" value="{% if e.allow_private %}on{% endif %}">
+<input type="hidden" name="include_bodies" value="{% if e.include_bodies %}on{% endif %}">
+{% endif %}
+<div class="fields">
+<div class="field"><label for="ex{{ e.id }}-name">Name</label><input id="ex{{ e.id }}-name" name="name" value="{{ e.name }}" required maxlength="100"></div>
+<div class="field"><label for="ex{{ e.id }}-kind">Type</label><select id="ex{{ e.id }}-kind" name="kind"{% if locked %} disabled{% endif %}><option value="datadog"{% if e.kind == "datadog" %} selected{% endif %}>Datadog</option><option value="maxim"{% if e.kind == "maxim" %} selected{% endif %}>Maxim</option></select></div>
+<div class="field wide"><label for="ex{{ e.id }}-key">API key or reference</label><input id="ex{{ e.id }}-key" name="api_key" type="password" autocomplete="new-password" spellcheck="false"{% if e.id == 0 %} required{% endif %}{% if locked %} disabled{% endif %} placeholder="{% if e.id == 0 %}Key, env:NAME or secret-store reference{% else %}Blank keeps the saved key{% endif %}"><p class="hint">Only an Owner can add or change a key reference.</p></div>
+<div class="field"><label for="ex{{ e.id }}-rate">Sample rate</label><input id="ex{{ e.id }}-rate" name="sample_rate" type="number" min="0" max="1" step="any" value="{{ e.sample_rate }}" required></div>
+<div class="field"><label for="ex{{ e.id }}-batch">Batch size (entries)</label><input id="ex{{ e.id }}-batch" name="batch_size" type="number" min="1" max="32" value="{{ e.batch_size }}" required></div>
+<div class="field"><label for="ex{{ e.id }}-interval">Batch interval (ms)</label><input id="ex{{ e.id }}-interval" name="interval_ms" type="number" min="10" max="30000" value="{{ e.interval_ms }}" required></div>
+<div class="field wide"><label for="ex{{ e.id }}-tags">Tag allowlist</label><input id="ex{{ e.id }}-tags" name="tag_allowlist" value="{{ e.tag_allowlist }}" aria-describedby="ex{{ e.id }}-tag-help"><p id="ex{{ e.id }}-tag-help" class="hint">Comma-separated: route, model, provider, team, key_name. A blank list sends no tags.</p></div>
+</div>
+<fieldset data-export-kind="datadog"{% if e.kind != "datadog" %} hidden{% endif %}><legend>Datadog</legend>
+<div class="field"><label for="ex{{ e.id }}-site">Site</label><select id="ex{{ e.id }}-site" name="site"{% if locked %} disabled{% endif %}>
+<option{% if e.site == "US1" %} selected{% endif %}>US1</option><option{% if e.site == "US3" %} selected{% endif %}>US3</option><option{% if e.site == "US5" %} selected{% endif %}>US5</option><option{% if e.site == "EU1" %} selected{% endif %}>EU1</option><option{% if e.site == "AP1" %} selected{% endif %}>AP1</option><option{% if e.site == "gov" %} selected{% endif %}>gov</option>
+</select></div>
+<label class="check"><input type="checkbox" name="spans"{% if e.spans %} checked{% endif %}{% if e.site == "gov" %} disabled{% endif %}>LLM Observability spans</label>
+<label class="check"><input type="checkbox" name="metrics"{% if e.metrics %} checked{% endif %}>Request, token{% if !base.simple %}, Cost{% endif %} and latency metrics</label>
+<p class="hint">The gov site supports metrics only. <a href="https://docs.datadoghq.com/llm_observability/setup/api/" rel="noreferrer">Datadog availability</a>.</p>
+</fieldset>
+<fieldset data-export-kind="maxim"{% if e.kind != "maxim" %} hidden{% endif %}><legend>Maxim</legend>
+<div class="field"><label for="ex{{ e.id }}-repo">Log repository ID</label><input id="ex{{ e.id }}-repo" name="repo_id" value="{{ e.repo_id }}" maxlength="256"{% if e.kind == "maxim" %} required{% endif %}{% if locked %} disabled{% endif %}></div>
+</fieldset>
+<label class="check"><input type="checkbox" name="enabled"{% if e.enabled %} checked{% endif %}>Enabled</label>
+<label class="check"><input type="checkbox" name="include_bodies"{% if e.include_bodies %} checked{% endif %}{% if locked %} disabled{% endif %}>Include final request and response bodies</label>
+<details><summary>Advanced</summary><div class="stack">
+<div class="field"><label for="ex{{ e.id }}-endpoint">Base URL override (origin only)</label><input id="ex{{ e.id }}-endpoint" name="endpoint" type="url" value="{{ e.endpoint }}" placeholder="Blank uses the vendor site" spellcheck="false"{% if locked %} disabled{% endif %}></div>
+<label class="check"><input type="checkbox" name="allow_private"{% if e.allow_private %} checked{% endif %}{% if locked %} disabled{% endif %}>Allow private addresses and private HTTP</label>
+</div></details>
+<div class="form-error" role="alert" tabindex="-1"></div><button>{% if e.id == 0 %}Add exporter{% else %}Save exporter{% endif %}</button>
+</form>
+{% if e.id != 0 %}
+<div class="actions">
+<form method="post" action="/admin/settings/exporters/{{ e.id }}/test" hx-post="/admin/settings/exporters/{{ e.id }}/test" hx-target="#ex{{ e.id }}-result" hx-swap="textContent"><button class="ghost">Test sample</button></form>
+<form method="post" action="/admin/settings/exporters/{{ e.id }}/delete" data-confirm="Delete this exporter?"><button class="ghost danger">Delete exporter</button></form>
+</div><output id="ex{{ e.id }}-result" class="code" aria-live="polite">Not tested.</output>
+{% endif %}
+</div>
+{% endfor %}
+</section>

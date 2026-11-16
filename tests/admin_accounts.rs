@@ -660,6 +660,27 @@ async fn every_mutating_route_enforces_the_role_matrix_and_hides_viewer_forms() 
             403,
             "Viewer {path}"
         );
+        if path == "/admin/settings/exporters/1/test" {
+            let key = tokomotive::hooks::new_secret();
+            assert_eq!(
+                a.post(
+                    "/admin/settings/exporters",
+                    &owner,
+                    &[
+                        ("name", "fixture-exporter"),
+                        ("kind", "datadog"),
+                        ("site", "US1"),
+                        ("spans", "on"),
+                        ("endpoint", "http://127.0.0.1:9"),
+                        ("allow_private", "on"),
+                        ("api_key", &key),
+                    ],
+                )
+                .await
+                .status(),
+                303
+            );
+        }
         let before: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_audit")
             .fetch_one(&a.st.db)
             .await

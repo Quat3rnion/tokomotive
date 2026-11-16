@@ -169,6 +169,7 @@ async fn delete_alert(_: Admin, State(st): State<AppState>, Path(id): Path<i64>)
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
+    exporters: Vec<crate::exporters::Exporter>,
     route_choices: Option<Vec<db::ControlChoice>>,
     egress_label: String,
     egress_set: bool,
@@ -189,7 +190,10 @@ struct SettingsPage {
 }
 async fn settings_page(_: Admin, State(st): State<AppState>) -> Response {
     let settings = st.settings();
+    let mut exporters = tryr!(crate::exporters::list(&st.db).await);
+    exporters.push(crate::exporters::Exporter::blank());
     render(SettingsPage {
+        exporters,
         route_choices: tryr!(db::small_choices(&st.db, "routes").await),
         egress_label: st
             .egress

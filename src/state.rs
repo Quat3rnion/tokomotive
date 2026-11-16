@@ -111,6 +111,7 @@ pub struct Inner {
     pub resolution_index: RwLock<crate::resolve::Index>,
     pub mcp: crate::mcp::Sessions,
     pub hooks: crate::hooks::Events,
+    pub exporters: crate::exporters::Exporters,
     pub db: Db,
     pub limiter: crate::ratelimit::RateLimiter,
     #[cfg(test)]
@@ -196,6 +197,7 @@ impl AppState {
             resolution_index: RwLock::new(crate::resolve::Index::default()),
             mcp: crate::mcp::Sessions::default(),
             hooks: crate::hooks::Events::default(),
+            exporters: crate::exporters::Exporters::default(),
             db,
             limiter: crate::ratelimit::RateLimiter::new(),
             #[cfg(test)]
@@ -222,6 +224,7 @@ impl AppState {
             pending: AtomicUsize::new(0),
             idle: Notify::new(),
         }));
+        state.exporters.reload(&state.db).await?;
         state.refresh_resolution_index().await?;
         Ok(state)
     }

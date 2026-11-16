@@ -408,13 +408,104 @@ does not restore access for an old request. Outbound failures record a fixed
 error class, not the request URL or the error chain.
 
 Redirects and response body limits do not change. Provider overrides apply
-to all outbound Provider operations. models.dev Sync and alert webhooks use
-the global default only. Trace export is separate. The clients do not inherit
+to all outbound Provider operations. models.dev Sync, alert webhooks and native
+exporters use the global default only. OTLP trace export is separate. The clients do not inherit
 `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or `NO_PROXY` from the process.
 
 Use network policy to restrict proxy destinations. Private addresses are
 allowed for Operator-managed proxies. A proxy URL must therefore be changed
 only by a trusted Operator. See [Egress proxies](usage.md#egress-proxies).
+
+## Native exporters
+
+An Owner or Admin can use **Settings > Exporters**. These settings are stored
+in the database, not the seed file. At most 16 exporters can be stored.
+Changes and sample tests enter the audit log. API keys and endpoint URLs do
+not enter that log.
+
+| Field | Default | Accepted value |
+| --- | --- | --- |
+| Type | Datadog | Datadog or Maxim |
+| Enabled | Off | On or off |
+| API key or reference | Required | A literal key, `env:NAME`, or a supported [secret-store reference](#secret-stores) |
+| Sample rate | `1` | Number from 0 to 1; `0` sends no request events |
+| Include final bodies | Off | On or off; rejected bodies are always omitted |
+| Tag allowlist | `route,model,provider` | Comma-separated subset of `route,model,provider,team,key_name`; empty sends no tags |
+| Batch size | `16` | 1 to 32 Ledger Entries |
+| Batch interval | `1000` ms | 10 to 30000 ms, measured from the first queued entry |
+| Datadog site | US1 | US1, US3, US5, EU1, AP1 or gov |
+| Datadog spans | On | Native LLM Observability spans; not available on gov |
+| Datadog metrics | Off | Native series for requests, tokens, Cost in USD and mean latency in seconds |
+| Maxim log repository ID | Required for Maxim | 1 to 256 bytes, with no control characters |
+| Advanced: base URL override | Empty | An HTTP or HTTPS origin; no credentials, path, query or fragment |
+| Advanced: allow private addresses | Off | Also permits HTTP to private or loopback addresses; public HTTP is always refused |
+
+Literal keys are encrypted with the Master Key. References use the existing
+environment and secret-store resolver. Resolution runs in the export worker.
+A blank key field keeps the saved credential. The dashboard never reads a
+saved key back into a form.
+
+Only an Owner can add or change a key reference. On a reference-backed
+exporter, only an Owner can change its type, site, origin, repository ID,
+private-address permission or body permission. An Admin can change other
+settings and test the saved destination. A sample test never uses unsaved
+form values.
+
+Native exporters share the event-hook queue: 64 waiting entries and 4 active
+network batches. The first size or interval limit sends a batch. A full queue
+drops entries. It does not wait on the Proxy path. An exporter samples each
+completed request once. Sampling also applies to its optional Datadog metrics;
+counts and Cost are not scaled to estimate the unsampled traffic.
+
+Exporters use the same DNS-pinned network client as hooks and secret stores.
+They do not follow redirects. They use the global egress proxy and do not
+inherit proxy environment variables. Each batch has a 45-second delivery
+deadline. A 429 or 5xx response permits two retries, after at least 100 ms and
+200 ms. An integer `Retry-After` can increase a wait to at most 2 seconds.
+Other errors drop the batch without a retry. A batch is not stored for replay.
+Queued exports can be lost at shutdown.
+
+Each included body has the event-hook limit of 1 MiB and is taken after
+Guardrails and hooks. A missing or oversized body is omitted. The complete
+native trace payload has a 5 MiB local limit; Datadog series have a 512000-byte
+limit. An oversized batch is dropped. Use a smaller batch size for large
+bodies. The Route and Virtual Key body-capture controls do not enable native
+export bodies. Do not enable bodies unless the vendor may receive that data.
+
+Metrics are `llm_exporter_sent_total`, `llm_exporter_failed_total` and
+`llm_exporter_dropped_total`, with the exporter name as a label. Sent counts
+Ledger Entries whose selected deliveries succeeded. Failed counts include
+failed attempts; dropped counts include full queues and final delivery failures.
+Sample tests also count. Entries excluded by sampling do not count as drops.
+
+### Vendor API formats
+
+Datadog spans follow the [LLM Observability HTTP API](https://docs.datadoghq.com/llm_observability/setup/api/):
+`POST /api/intake/llm-obs/v1/trace/spans`, with `DD-API-KEY` and the
+`data.type = "span"` envelope. The application name is `tokomotive`.
+Optional metrics use the [v2 series API](https://docs.datadoghq.com/api/latest/metrics/submit-metrics/):
+`POST /api/v2/series`, with the same API-key header. Metric names are
+`tokomotive.requests`, `tokomotive.tokens`, `tokomotive.cost` and
+`tokomotive.latency`. Count values within one batch and second are summed;
+latency is their mean.
+
+| Site | API origin |
+| --- | --- |
+| US1 | `https://api.datadoghq.com` |
+| US3 | `https://api.us3.datadoghq.com` |
+| US5 | `https://api.us5.datadoghq.com` |
+| EU1 | `https://api.datadoghq.eu` |
+| AP1 | `https://api.ap1.datadoghq.com` |
+| gov | `https://api.ddog-gov.com` |
+
+Datadog does not support LLM Observability on gov. The form disables spans
+for that site, and the server refuses that combination. Metrics are available.
+
+Maxim follows its [public logging API schema](https://www.getmaxim.ai/docs/public-apis/openapi/logging.json):
+`POST https://api.getmaxim.ai/v1/logs/batch`, with `x-maxim-api-key`,
+`repoId` and a `logs` array of complete `trace` records. Token counts and Cost
+use trace metrics. Status, model, Provider and timing use trace metadata.
+Optional input and output are strings. No SDK or OTLP collector is needed.
 
 ## Traces and body capture
 

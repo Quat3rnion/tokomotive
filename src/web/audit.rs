@@ -81,6 +81,28 @@ async fn snapshot(st: &AppState, target: &str) -> anyhow::Result<String> {
         value.insert($table.into(),rows(st,$table,&[$($field),*],$extra).await?);
     }; }
     match target {
+        "exporters" => {
+            table!(
+                "exporters",
+                [
+                    "id",
+                    "name",
+                    "kind",
+                    "site",
+                    "repo_id",
+                    "spans",
+                    "metrics",
+                    "enabled",
+                    "sample_rate",
+                    "include_bodies",
+                    "tag_allowlist",
+                    "batch_size",
+                    "interval_ms",
+                    "allow_private"
+                ],
+                "ORDER BY id"
+            );
+        }
         "hooks" => {
             table!(
                 "hooks",
@@ -247,6 +269,7 @@ fn changed_id(target: &str, before: &str, after: &str) -> Option<String> {
         "accounts" => ("admin_accounts", "id"),
         "alerts" => ("alert_webhooks", "id"),
         "hooks" => ("hooks", "id"),
+        "exporters" => ("exporters", "id"),
         _ => return None,
     };
     let before: Value = serde_json::from_str(before).ok()?;
@@ -293,7 +316,9 @@ pub(super) async fn run(
         .unwrap_or("unknown")
         .to_owned();
     let path = req.uri().path();
-    let target = if matched.starts_with("/admin/settings/accounts") {
+    let target = if matched.starts_with("/admin/settings/exporters") {
+        "exporters"
+    } else if matched.starts_with("/admin/settings/accounts") {
         "accounts"
     } else if matched.starts_with("/admin/settings/alerts") {
         "alerts"

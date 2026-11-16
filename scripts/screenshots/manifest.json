@@ -4,7 +4,7 @@
     {"page":"/admin/settings/secrets", "reason":"Secret stores now use typed per-store fields. Refresh secrets.png at the next parent-requested capture; keep its promoted capture entry and current image."},
     {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
     {"page":"/admin/routes", "reason":"Semantic cache controls and the embedding model picker were added, with Adaptive scores, request rules, Canary splits and exact cache controls. Refresh dark and light captures at the next requested capture."},
-    {"page":"/admin/settings", "reason":"Adaptive router fields were added, with exact response cache limits, hit Price, global egress proxy controls, Single sign-on and My account links. Keep the current image until the next requested capture."},
+    {"page":"/admin/settings", "reason":"Structured native Datadog and Maxim exporter forms were added, with sampling, body permission, batching and sample tests. Adaptive router fields, cache limits, egress controls and account links also need refresh. Keep the current image until the next requested capture."},
     {"page":"/admin/providers", "reason":"Per-Provider egress proxy controls and connection path results added. Keep the current image until the next requested capture."},
     {"page":"/admin/ledger", "reason":"Semantic cache hit and embedding flags were added, with Adaptive score, exploration, Route rule filter, matched rule, Canary side and exact cache flag. Refresh at the next requested capture."}
   ],

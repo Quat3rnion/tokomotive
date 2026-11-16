@@ -197,6 +197,7 @@ struct Context {
     hooks: Vec<Hook>,
     request_id: String,
     request: Value,
+    exporters: Arc<Vec<Arc<crate::exporters::Destination>>>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct Session(Arc<Mutex<Data>>, Arc<tokio::sync::Notify>);
@@ -263,6 +264,7 @@ impl Session {
                 hooks,
                 request_id: new_secret(),
                 request,
+                exporters: st.exporters.snapshot(),
             }));
         }
         Ok(())
@@ -352,10 +354,13 @@ impl Session {
     /// capture drains on disconnect, with at most 1 MiB retained in memory.
     pub async fn capture(&self, response: Response) -> Response {
         use futures_util::StreamExt;
-        if self
-            .context()
-            .is_none_or(|c| !c.hooks.iter().any(|h| h.event && h.include_bodies))
-        {
+        if self.context().is_none_or(|c| {
+            !c.hooks.iter().any(|h| h.event && h.include_bodies)
+                && !c
+                    .exporters
+                    .iter()
+                    .any(|e| e.config.enabled && e.config.include_bodies)
+        }) {
             self.complete();
             return response;
         }
@@ -489,6 +494,22 @@ impl Session {
             c.st.hooks
                 .enqueue(c.st.clone(), hook.clone(), c.request_id.clone(), id, data);
         }
+        for exporter in c.exporters.iter().filter(|e| e.config.enabled) {
+            let bodies = {
+                let state = self.0.lock().unwrap();
+                if exporter.config.include_bodies && !state.body_rejected && entry.status < 400 {
+                    let input = c.request["body"].to_string();
+                    let output = state.response.as_ref().map(Value::to_string);
+                    crate::exporters::Bodies {
+                        input: (input.len() <= RESPONSE_LIMIT).then_some(input),
+                        output: output.filter(|v| v.len() <= RESPONSE_LIMIT),
+                    }
+                } else {
+                    crate::exporters::Bodies::default()
+                }
+            };
+            exporter.enqueue(&c.st, &c.request_id, entry, bodies);
+        }
     }
 }
 pub(crate) fn rejected(status: u16, hook: &str, message: &str) -> Response {
@@ -510,14 +531,19 @@ impl Default for Events {
     }
 }
 impl Events {
+    pub(crate) fn reserve(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.slots.clone().try_acquire_owned().ok()
+    }
+    pub(crate) async fn active(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.active.clone().acquire_owned().await.ok()
+    }
     fn enqueue(&self, st: AppState, hook: Hook, request: String, id: i64, data: Value) {
-        let Ok(slot) = self.slots.clone().try_acquire_owned() else {
+        let Some(slot) = self.reserve() else {
             metrics::counter!("llm_hook_events_dropped_total", "hook" => hook.name).increment(1);
             return;
         };
-        let active = self.active.clone();
         st.clone().spawn_tracked(async move {
-            let Ok(_permit) = active.acquire_owned().await else {
+            let Some(_permit) = st.hooks.active().await else {
                 return;
             };
             drop(slot);

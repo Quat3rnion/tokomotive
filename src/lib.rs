@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod config;
 pub mod db;
 pub mod egress;
+pub mod exporters;
 pub mod guardrails;
 pub mod hooks;
 pub mod inbound;

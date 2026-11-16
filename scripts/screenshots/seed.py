@@ -35,6 +35,16 @@ post("/admin/settings/secrets", {"name": "team-vault", "kind": "vault", "address
     "vault_namespace": "research", "vault_kv_version": "2", "vault_browse_root": "kv",
     "allow_private": "on", "is_default": "on", "refresh_secs": "900"})
 
+# Exporters stay disabled. No vendor key or external service is needed.
+post("/admin/settings/exporters", {"name": "Datadog production", "kind": "datadog",
+    "site": "EU1", "spans": "on", "metrics": "on", "api_key": "env:DEMO_DD_API_KEY",
+    "sample_rate": "0.25", "batch_size": "16", "interval_ms": "1000",
+    "tag_allowlist": "route,model,provider,team", "endpoint": MOCK, "allow_private": "on"})
+post("/admin/settings/exporters", {"name": "Maxim evaluation", "kind": "maxim",
+    "repo_id": "demo-repository", "api_key": "env:DEMO_MAXIM_API_KEY",
+    "sample_rate": "1", "batch_size": "8", "interval_ms": "500",
+    "tag_allowlist": "route,model,provider", "endpoint": MOCK, "allow_private": "on"})
+
 post("/admin/providers", {"name": "openai", "auth": "api_key", "kind": "openai", "base_url": MOCK, "api_key": "sk-demo-openai-primary-7f3a"})
 post("/admin/providers/openai/keys", {"api_key": "sk-demo-openai-backup-91c2"})
 post("/admin/providers", {"name": "anthropic", "auth": "api_key", "kind": "anthropic", "base_url": MOCK, "api_key": "sk-demo-ant-main-4b8e"})
