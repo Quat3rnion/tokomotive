@@ -38,7 +38,7 @@
 </div><button>Add attachment</button></form>
 <form method="post" action="/admin/hooks/{{ h.id }}/test" class="stack subform" hx-post="/admin/hooks/{{ h.id }}/test" hx-target="#test-{{ h.id }}" hx-swap="textContent">
 <div class="field"><label for="stage-{{ h.id }}">Sample stage</label><select name="stage" id="stage-{{ h.id }}">{% if h.pre_request %}<option>pre_request</option>{% endif %}{% if h.post_response %}<option>post_response</option>{% endif %}{% if h.event %}<option>event</option>{% endif %}</select></div>
-<button>Test signed sample</button></form><pre id="test-{{ h.id }}" class="code" aria-live="polite"></pre>
+<button>Test signed sample</button></form><pre id="test-{{ h.id }}" class="code" aria-live="polite" data-hook-result hidden></pre>
 <div class="actions"><form data-plain method="post" action="/admin/hooks/{{ h.id }}/rotate" data-confirm="Rotate the signing secret? Update your receiver after this step."><button class="ghost">Rotate secret</button></form>
 <form method="post" action="/admin/hooks/{{ h.id }}/delete" data-confirm="Delete this hook and its attachments?"><button class="danger ghost">Delete hook</button></form></div>
 </section>
@@ -60,4 +60,14 @@
 <label class="check"><input type="checkbox" name="fail_closed">Fail closed</label>
 <label class="check"><input type="checkbox" name="allow_private">Allow private addresses and private HTTP</label>
 <button>Add hook and show secret once</button></form></section>
+{% endblock %}
+{% block scripts %}
+<script>
+document.addEventListener('htmx:afterSwap', event => {
+  const result = event.detail.target;
+  if (result && result.matches('[data-hook-result]')) {
+    result.hidden = !result.textContent.trim();
+  }
+});
+</script>
 {% endblock %}
