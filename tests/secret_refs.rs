@@ -236,6 +236,94 @@ async fn store_binding_auth_and_options_changes_discard_the_cached_value() {
 }
 
 #[tokio::test]
+async fn model_search_never_sends_a_new_secret_to_an_old_provider_generation() {
+    use std::sync::{Arc, Mutex, RwLock};
+    let value = Arc::new(RwLock::new("old-generation-key".to_owned()));
+    let v = value.clone();
+    let vault = serve(Router::new().route(
+        "/v1/kv/data/llm",
+        get(move || {
+            let v = v.clone();
+            async move { Json(json!({"data":{"data":{"key":v.read().unwrap().clone()}}})) }
+        }),
+    ))
+    .await;
+    let old_seen = Arc::new(Mutex::new(Vec::new()));
+    let seen = old_seen.clone();
+    let old_address = serve(Router::new().route(
+        "/v1/models",
+        get(move |headers: axum::http::HeaderMap| {
+            let seen = seen.clone();
+            async move {
+                seen.lock()
+                    .unwrap()
+                    .push(headers["authorization"].to_str().unwrap().to_owned());
+                Json(json!({"data":[{"id":"model"}]}))
+            }
+        }),
+    ))
+    .await;
+    let new_seen = Arc::new(Mutex::new(Vec::new()));
+    let seen = new_seen.clone();
+    let new_address = serve(Router::new().route(
+        "/v1/models",
+        get(move |headers: axum::http::HeaderMap| {
+            let seen = seen.clone();
+            async move {
+                seen.lock()
+                    .unwrap()
+                    .push(headers["api-key"].to_str().unwrap().to_owned());
+                Json(json!({"data":[{"id":"model"}]}))
+            }
+        }),
+    ))
+    .await;
+    let a = App::new().await;
+    a.store("vault", &vault, &json!({"token":"fixture"})).await;
+    assert_eq!(
+        a.post(
+            "/admin/providers",
+            &[
+                ("name", "p"),
+                ("kind", "openai"),
+                ("base_url", &old_address),
+                ("api_key", "vault:kv/llm#key")
+            ]
+        )
+        .await
+        .status(),
+        303
+    );
+    let old_snapshot = a.st.router_table();
+    // Hold the published generation while a reload has already changed the
+    // database and populated the new Manager value, but has not published yet.
+    sqlx::query("UPDATE providers SET base_url=?,key_header='api-key' WHERE name='p'")
+        .bind(&new_address)
+        .execute(&a.st.db)
+        .await
+        .unwrap();
+    *value.write().unwrap() = "new-generation-key".into();
+    a.st.secrets
+        .refresh(&a.st.db, &a.st.secret_key, &a.st.egress, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.st.secrets.get("p", "vault:kv/llm#key").unwrap().expose(),
+        "new-generation-key"
+    );
+    assert!(Arc::ptr_eq(&old_snapshot, &a.st.router_table()));
+    // Let the connection cache expire while retaining the exact old snapshot.
+    tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+    let path = "/admin/search/models?provider=p&src=provider&q=model";
+    a.html(path).await;
+    assert_eq!(*old_seen.lock().unwrap(), ["Bearer old-generation-key"]);
+    a.st.reload_settings().await.unwrap();
+    a.html(path).await;
+    assert_eq!(*new_seen.lock().unwrap(), ["new-generation-key"]);
+    assert_eq!(*old_seen.lock().unwrap(), ["Bearer old-generation-key"]);
+}
+
+#[tokio::test]
 async fn vault_reference_is_stored_not_its_value() {
     let secret = ["runtime", "only", "provider", "credential"].join("-");
     let payload = json!({"data":{"data":{"openai":secret}}});

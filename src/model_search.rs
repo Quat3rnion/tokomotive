@@ -172,14 +172,6 @@ pub fn merge(q: &str, groups: Vec<Vec<ModelHit>>, limit: usize) -> Vec<ModelHit>
     out.into_iter().map(|(_, h)| h).take(limit).collect()
 }
 
-fn resolved_key(key: &str) -> Option<String> {
-    let key = match key.strip_prefix("env:") {
-        Some(name) => std::env::var(name).ok()?,
-        None => key.to_owned(),
-    };
-    (!key.trim().is_empty()).then_some(key)
-}
-
 /// One credential rule for both model sources. Unknown quota health is usable;
 /// exhausted quota is not a sign-out. Providers have no disabled flag.
 fn connected(
@@ -190,8 +182,8 @@ fn connected(
     if p.auth == ProviderAuth::ApiKey {
         p.keys
             .iter()
-            .filter_map(|k| resolved_key(k))
-            .any(|k| !invalid.contains(&crate::quota::key_id(&k)))
+            .filter(|k| !k.trim().is_empty())
+            .any(|k| !invalid.contains(&crate::quota::key_id(k)))
     } else {
         signin.is_some_and(|s| s.connected && s.last_error.is_none()) && !invalid.contains("signin")
     }
@@ -243,7 +235,7 @@ impl Registry {
             .collect()
     }
 
-    /// Credential and health reads are shared by all sources for five seconds,
+    /// Credential snapshots and health reads are shared for five seconds,
     /// and invalidated immediately when the settings snapshot changes.
     pub(crate) async fn prepare_connections(&self, state: &AppState) {
         let _guard = self.connection_lock.lock().await;
@@ -261,13 +253,6 @@ impl Registry {
         }
         let mut providers = Vec::new();
         let result: anyhow::Result<()> = async {
-            let rows = sqlx::query("SELECT name,keys_json FROM providers")
-                .fetch_all(&state.db)
-                .await?;
-            let keys: HashMap<String, String> = rows
-                .into_iter()
-                .map(|r| (r.get("name"), r.get("keys_json")))
-                .collect();
             let health = sqlx::query(
                 "SELECT provider,account FROM provider_health WHERE state='credentials_invalid'",
             )
@@ -282,27 +267,8 @@ impl Registry {
             }
             for p in &table.providers {
                 let mut p = p.clone();
-                let Some(encoded) = keys.get(&p.name) else {
-                    continue;
-                };
-                let raw: Vec<String> = serde_json::from_str(encoded)?;
-                p.keys = Arc::new(
-                    raw.into_iter()
-                        .filter_map(|k| {
-                            let raw = if crate::secrets::is_secret_ref(&k) {
-                                return state
-                                    .secrets
-                                    .get(&p.name, &k)
-                                    .map(|s| s.expose().to_owned());
-                            } else if k.starts_with("env:") {
-                                Some(k)
-                            } else {
-                                state.secret_key.decrypt(&k).ok()
-                            }?;
-                            resolved_key(&raw)
-                        })
-                        .collect(),
-                );
+                // Address, headers, egress and already-resolved credentials
+                // must remain in the same captured router generation.
                 let signin = if let Some(flow) = crate::oauth::Flow::from_auth(p.auth) {
                     state.oauth.status(&p.name, flow).await.ok()
                 } else {
@@ -795,9 +761,9 @@ mod tests {
         let mut p = crate::state::Provider::new("work", ProviderKind::Openai, "", vec![]);
         let mut invalid = HashSet::new();
         assert!(!connected(&p, None, &invalid));
-        p.keys = Arc::new(vec!["env:MODEL_PICKER_ABSENT_KEY_17".into(), "  ".into()]);
+        p.keys = Arc::new(vec!["  ".into()]);
         assert!(!connected(&p, None, &invalid));
-        p.keys = Arc::new(vec!["env:PATH".into()]);
+        p.keys = Arc::new(vec!["env:literal-resolved-key".into()]);
         assert!(connected(&p, None, &invalid));
         p.keys = Arc::new(vec!["key-one".into()]);
         assert!(connected(&p, None, &invalid));

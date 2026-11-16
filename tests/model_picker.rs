@@ -235,15 +235,17 @@ async fn disconnected_signin_and_missing_env_key_exclude_provider_models() {
         .await
         .unwrap();
     a.st.reload_settings().await.unwrap();
-    // A stale runtime key must not make a missing env reference connected.
-    let mut table = (*a.st.router_table()).clone();
-    table
-        .providers
-        .iter_mut()
-        .find(|p| p.name == "missing-key")
-        .unwrap()
-        .keys = Arc::new(vec!["stale-key".into()]);
-    a.st.set_router_table(table);
+    // The published generation has already resolved the missing environment
+    // reference to an empty pool; model search uses that exact generation.
+    assert!(
+        a.st.router_table()
+            .providers
+            .iter()
+            .find(|p| p.name == "missing-key")
+            .unwrap()
+            .keys
+            .is_empty()
+    );
     a.model("gpt-catalog", "signed-out", "").await;
     assert!(
         a.json("/admin/search/models?provider=signed-out")
