@@ -1,8 +1,5 @@
 {
   "pending_refresh": [
-    {"page":"/admin/settings/oidc", "reason":"TODO(#27 capture): capture the Owner Single sign-on form at the next parent-requested run.", "capture":{"image":"oidc.png", "page":"/admin/settings/oidc", "route":"/admin/settings/oidc", "recipe":"full", "caption":"Single sign-on", "alt":"Owner-only OIDC settings with the redirect URI, masked client secret and structured group-to-role mappings.", "kind":"table"}},
-    {"page":"/admin/account", "reason":"TODO(#27 capture): capture the account identity-linking page at the next parent-requested run.", "capture":{"image":"account.png", "page":"/admin/account", "route":"/admin/account", "recipe":"full", "caption":"My account", "alt":"The signed-in account with its OIDC identity count and Single sign-on status.", "kind":"table"}},
-    {"page":"/admin/login", "reason":"TODO(#27 capture): optional Sign in with Authentik button above the unchanged local password form. Keep the login-page exclusion until a parent-requested capture."},
     {"page":"/admin/settings/secrets", "reason":"Secret stores now use typed per-store fields. Refresh secrets.png at the next parent-requested capture; keep its promoted capture entry and current image."},
     {"page":"/admin", "reason":"Exact and semantic cache hit rates added. Keep the current image until the next requested capture."},
     {"page":"/admin/routes", "reason":"Semantic cache controls and the embedding model picker were added, with Adaptive scores, request rules, Canary splits and exact cache controls. Refresh dark and light captures at the next requested capture."},
@@ -32,12 +29,12 @@
     {"image":"teams.png", "page":"/admin/teams", "route":"/admin/teams", "recipe":"full", "caption":"Teams", "alt":"Teams with their Budgets, spend and member counts.", "kind":"table"},
     {"image":"settings.png", "page":"/admin/settings", "route":"/admin/settings", "recipe":"observability", "caption":"Settings", "alt":"The operating mode, routing settings, metrics and alert controls.", "kind":"table"},
     {"image":"secrets.png", "page":"/admin/settings/secrets", "route":"/admin/settings/secrets", "recipe":"full", "caption":"Secret stores", "alt":"Owner-only Secret stores settings with encrypted auth settings, a private-address control and a refresh interval.", "kind":"table"},
+    {"image":"oidc.png", "page":"/admin/settings/oidc", "route":"/admin/settings/oidc", "recipe":"full", "caption":"Single sign-on", "alt":"Owner-only OIDC settings with the redirect URI, masked client secret and structured group-to-role mappings.", "kind":"table"},
+    {"image":"account.png", "page":"/admin/account", "route":"/admin/account", "recipe":"full", "caption":"My account", "alt":"The signed-in account with its OIDC identity count and Single sign-on status.", "kind":"table"},
     {"image":"audit.png", "page":"/admin/audit?limit=10", "route":"/admin/audit", "recipe":"pager", "caption":"Audit log", "alt":"The audit log: who changed what and when, with filters and the pager.", "kind":"table"},
     {"image":"guardrails.png", "page":"/admin/guardrails", "route":"/admin/guardrails", "recipe":"guardrails", "caption":"Guardrails", "alt":"A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text.", "kind":"table"}
   ],
   "exclusions": [
-    {"route":"/admin/settings/oidc", "reason":"TODO(#27 capture): new full page; final capture entry is in pending_refresh until the parent runs the pipeline."},
-    {"route":"/admin/account", "reason":"TODO(#27 capture): new full page; final capture entry is in pending_refresh until the parent runs the pipeline."},
     {"route":"/admin/oidc/start", "reason":"OIDC authorization redirect, not a page."},
     {"route":"/admin/oidc/callback", "reason":"Transient OIDC completion page with a same-origin meta refresh and fallback link, not a persistent dashboard page."},
     {"route":"/admin/oidc/roles", "reason":"Search result fragment for the Single sign-on role picker."},
@@ -49,7 +46,7 @@
     {"route":"/admin/ledger/live", "reason":"Server-Sent Events, not a page. Keep the Ledger image with Live off."},
     {"route":"/admin/routes/{name}/scores", "reason":"Read-only adaptive score fragment, shown within the Routes page."},
     {"route":"/admin/mcp/search", "reason":"Search result fragment for the MCP tool access picker."},
-    {"route":"/admin/login", "reason":"TODO(#27 capture): unauthenticated login form now has an optional OIDC button; see pending_refresh."},
+    {"route":"/admin/login", "reason":"Unauthenticated password form, not a dashboard page. It shows an optional Single sign-on button."},
     {"route":"/admin/assets/htmx.min.js", "reason":"JavaScript asset, not an HTML page."},
     {"route":"/admin/assets/favicon.svg", "reason":"SVG asset, not an HTML page."},
     {"route":"/admin/assets/ibm-plex-sans-latin.woff2", "reason":"Font asset, not an HTML page."},

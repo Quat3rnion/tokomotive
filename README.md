@@ -176,6 +176,8 @@ The capture manifest records these changes for the next image refresh.
 | [Teams](docs/images/teams.png) | Teams with their Budgets, spend and member counts. |
 | [Settings](docs/images/settings.png) | The operating mode, routing settings, metrics and alert controls. |
 | [Secret stores](docs/images/secrets.png) | Owner-only Secret stores settings with encrypted auth settings, a private-address control and a refresh interval. |
+| [Single sign-on](docs/images/oidc.png) | Owner-only OIDC settings with the redirect URI and group-to-role mappings. |
+| [My account](docs/images/account.png) | The signed-in account and its linked Single sign-on identity. |
 | [Audit log](docs/images/audit.png) | The audit log: who changed what and when, with filters and the pager. |
 | [Guardrails](docs/images/guardrails.png) | A rule set in the rule editor with a detector, a regex and a keyword rule, its Route attachment and a test box for pasted text. |
 | [MCP servers](docs/images/mcp-servers.png) | MCP servers with masked credentials, a connection test and cached tool descriptions. |
